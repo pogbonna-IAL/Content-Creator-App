@@ -51,9 +51,10 @@ COPY --from=builder /app/.next/static ./.next/static
 # Expose port
 EXPOSE 3000
 
-# Health check
+# Health check (uses PORT env var with fallback)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000 || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000} || exit 1
 
 # Start Next.js standalone server if available, otherwise use npm start
-CMD if [ -f "server.js" ]; then node server.js; else npm start; fi
+# Use Railway's PORT environment variable if available
+CMD if [ -f "server.js" ]; then PORT=${PORT:-3000} node server.js; else PORT=${PORT:-3000} npm start; fi
