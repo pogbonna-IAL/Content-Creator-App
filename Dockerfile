@@ -42,6 +42,7 @@ RUN uv pip install --system -r pyproject.toml || \
     sqlalchemy>=2.0.0 \
     alembic>=1.13.0 \
     aiosqlite>=0.19.0 \
+    psycopg2-binary>=2.9.0 \
     fastapi-sso>=0.4.0 \
     pydantic[email]>=2.0.0 \
     python-dotenv>=1.0.0
