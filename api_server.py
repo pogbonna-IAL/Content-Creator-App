@@ -103,14 +103,20 @@ if sys.platform == 'win32':
 
 # Import the package __init__ first to ensure its patch runs
 # Ensure src directory is in Python path for Railway/Docker deployments
-import sys
-from pathlib import Path
+# PYTHONPATH should be set to /app/src:/app in Dockerfile, but add fallbacks
 
-# Add src to Python path if not already there
-src_path = Path(__file__).parent / "src"
-if src_path.exists() and str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+# Add src to Python path (relative to api_server.py)
+src_path = os.path.join(os.path.dirname(__file__), "src")
+if os.path.exists(src_path) and src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
+# Add /app/src if we're in Docker/Railway (should already be in PYTHONPATH, but ensure it)
+docker_src_path = "/app/src"
+if os.path.exists(docker_src_path) and docker_src_path not in sys.path:
+    sys.path.insert(0, docker_src_path)
+
+# Import content_creation_crew package - CRITICAL: this must succeed
+# The package __init__.py contains important patches that must run before other imports
 import content_creation_crew  # noqa: F401
 
 from fastapi import FastAPI, HTTPException, Depends
