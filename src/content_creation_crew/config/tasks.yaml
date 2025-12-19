@@ -1,0 +1,60 @@
+research_task:
+  description: >
+    Research {topic} and provide key insights. Include: 1) Brief introduction, 2) 3-5 main points, 3) Future trends.
+    Be concise and direct. Provide complete analysis now - do not wait for information.
+  expected_output: >
+    Research report (3 paragraphs): Introduction, 3-5 key points, future trends. Ready for writer.
+  agent: researcher
+
+writing_task:
+  description: >
+    Write a blog post about {topic} using the research report in context. Include: title, introduction, 3-5 main sections, conclusion.
+    Be engaging and accessible. Use the research provided - do not wait for it.
+  expected_output: >
+    Complete blog post (500+ words): Title, introduction, 3-5 sections, conclusion. Ready for editing.
+  agent: writer
+  context:
+    - research_task
+
+editing_task:
+  description: >
+    Edit the blog post about {topic} from context. Fix grammar, improve clarity and flow. Make it publication-ready.
+    Output the complete edited blog post.
+  expected_output: >
+    Polished blog post: Grammar fixed, improved clarity/flow, professional formatting. Ready to publish.
+  agent: editor
+  context:
+    - writing_task
+
+social_media_task:
+  description: >
+    Create a social media post about {topic} from the blog post in context. Include: engaging hook, key message, CTA, 3-5 hashtags.
+    Format: LinkedIn post (200-300 words) + Twitter version (under 280 chars). Use emojis appropriately. Generate content now.
+  expected_output: >
+    Social media package: LinkedIn post (200-300 words), Twitter version (under 280 chars), 3-5 hashtags, CTA. Ready to post.
+  agent: social_media_specialist
+  context:
+    - editing_task
+  output_file: 'social_media_output.md'
+
+audio_content_task:
+  description: >
+    Create an audio script about {topic} from the blog post in context. Transform into conversational script for podcasts/audio.
+    Include: intro hook (30-60 sec), main sections with transitions, conclusion with CTA. Natural pacing. Generate now.
+  expected_output: >
+    Audio script: Intro hook (30-60 sec), main sections with transitions, conversational tone, conclusion with CTA. Ready for narration.
+  agent: audio_content_specialist
+  context:
+    - editing_task
+  output_file: 'audio_output.md'
+
+video_content_task:
+  description: >
+    Create a video script about {topic} from the blog post in context. Transform into YouTube/educational video script.
+    Include: hook (15-30 sec), visual cues, on-screen text suggestions, scene descriptions, CTA moments, conclusion. Generate now.
+  expected_output: >
+    Video script: Hook (15-30 sec), main sections with visual cues, on-screen text, scene descriptions, pacing markers, CTA, conclusion. Ready for production.
+  agent: video_content_specialist
+  context:
+    - editing_task
+  output_file: 'video_output.md' 

@@ -1,0 +1,205 @@
+"""
+Authentication utilities and JWT token handling
+"""
+import os
+import hashlib
+from datetime import datetime, timedelta
+from typing import Optional
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+import bcrypt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from .database import get_db, User
+
+# Security configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production-min-32-chars")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use HTTPBearer for more reliable token extraction
+# It handles Authorization header extraction more robustly
+http_bearer = HTTPBearer(auto_error=False)
+
+# Keep OAuth2PasswordBearer for compatibility with login endpoint
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash"""
+    if not plain_password or not hashed_password:
+        return False
+    
+    # Handle bcrypt's 72-byte limit by hashing long passwords first
+    # We need to check if the stored hash was created with a pre-hashed password
+    password_bytes = len(plain_password.encode('utf-8'))
+    if password_bytes > 72:
+        # Hash with SHA256 first if password is too long (matches get_password_hash)
+        # SHA256 produces a 64-byte hex string, which is under bcrypt's limit
+        plain_password = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    
+    try:
+        # Try using passlib first
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        # If passlib fails, try bcrypt directly
+        try:
+            # Extract the salt and hash from the bcrypt hash string
+            # bcrypt hashes are in format: $2b$12$salt+hash
+            if hashed_password.startswith('$2'):
+                # Use bcrypt directly
+                password_bytes = plain_password.encode('utf-8')
+                if len(password_bytes) > 72:
+                    # Pre-hash with SHA256
+                    password_bytes = hashlib.sha256(password_bytes).hexdigest().encode('utf-8')
+                return bcrypt.checkpw(password_bytes, hashed_password.encode('utf-8'))
+            return False
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Password verification failed: {type(e).__name__}")
+            return False
+
+
+def get_password_hash(password: str) -> str:
+    """Hash a password, handling bcrypt's 72-byte limit"""
+    if not password:
+        raise ValueError("Password cannot be empty")
+    
+    # Bcrypt has a 72-byte limit, so we hash long passwords with SHA256 first
+    password_bytes = password.encode('utf-8')
+    password_byte_length = len(password_bytes)
+    
+    if password_byte_length > 72:
+        # Hash with SHA256 first (produces 64-byte hex string), then bcrypt the hash
+        # SHA256 hex digest is always 64 bytes (32 bytes * 2 for hex), which is under bcrypt's 72-byte limit
+        password_hash = hashlib.sha256(password_bytes).hexdigest()
+        # Use the hex digest as bytes for bcrypt
+        password_to_hash = password_hash.encode('utf-8')
+    else:
+        # For passwords <= 72 bytes, use directly
+        password_to_hash = password_bytes
+    
+    # Use bcrypt directly to avoid passlib initialization issues
+    # Generate salt and hash
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_to_hash, salt)
+    
+    # Return as string (bcrypt returns bytes)
+    return hashed.decode('utf-8')
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create a JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def verify_token(token: str) -> Optional[dict]:
+    """Verify and decode a JWT token"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        logger.warning("Token verification failed: Token has expired")
+        return None
+    except jwt.JWTClaimsError as e:
+        logger.warning(f"Token verification failed: Invalid token claims - {str(e)}")
+        return None
+    except JWTError as e:
+        logger.warning(f"Token verification failed: {type(e).__name__} - {str(e)}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during token verification: {type(e).__name__} - {str(e)}")
+        return None
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+    db: Session = Depends(get_db)
+) -> User:
+    """Get current authenticated user from token"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Extract token from credentials
+    if not credentials:
+        logger.warning("Authentication failed: No authorization credentials provided")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token is missing. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = credentials.credentials
+    if not token or not token.strip():
+        logger.warning("Authentication failed: Empty token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token is invalid. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = token.strip()
+    logger.info(f"Verifying token (length: {len(token)})")
+    
+    payload = verify_token(token)
+    if payload is None:
+        logger.warning("Authentication failed: Token verification failed (invalid or expired token)")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Extract user_id from token - JWT 'sub' claim is a string, convert to int
+    user_id_str = payload.get("sub")
+    if user_id_str is None:
+        logger.warning("Authentication failed: Token payload missing user ID")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format: missing user identifier",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Convert string to int (JWT requires 'sub' to be string)
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
+        logger.warning(f"Authentication failed: Invalid user ID format in token: {user_id_str}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format: user identifier is not valid",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    logger.debug(f"Looking up user with ID: {user_id}")
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        logger.warning(f"Authentication failed: User with ID {user_id} not found in database")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account not found. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.is_active:
+        logger.warning(f"Authentication failed: User {user_id} account is inactive")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
+    
+    logger.debug(f"Authentication successful for user: {user.email}")
+    return user
+

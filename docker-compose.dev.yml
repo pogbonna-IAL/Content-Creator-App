@@ -1,0 +1,42 @@
+version: '3.8'
+
+# Development docker-compose with volume mounts for hot reloading
+# Usage: docker-compose -f docker-compose.dev.yml up
+
+services:
+  db:
+    extends:
+      file: docker-compose.yml
+      service: db
+
+  backend:
+    extends:
+      file: docker-compose.yml
+      service: backend
+    volumes:
+      # Mount source code for hot reloading
+      - ./src:/app/src:ro
+      - ./api_server.py:/app/api_server.py:ro
+      - ./alembic:/app/alembic:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./data:/app/data
+    environment:
+      # Enable debug mode
+      - DEBUG=1
+      - PYTHONUNBUFFERED=1
+
+  frontend:
+    extends:
+      file: docker-compose.yml
+      service: frontend
+    volumes:
+      # Mount source code for hot reloading
+      - ./web-ui/app:/app/app:ro
+      - ./web-ui/components:/app/components:ro
+      - ./web-ui/contexts:/app/contexts:ro
+      - ./web-ui/lib:/app/lib:ro
+      - ./web-ui/public:/app/public:ro
+    command: npm run dev
+    environment:
+      - NODE_ENV=development
+

@@ -1,0 +1,110 @@
+# Subscription Tier Configuration
+# This file defines all subscription tiers, their features, and limits
+# Note: Pricing components removed for future implementation
+
+tiers:
+  free:
+    name: "Free"
+    display_name: "Free Tier"
+    # Pricing removed for future implementation
+    # price_monthly: 0  # in cents
+    # price_yearly: 0
+    features:
+      - blog_content
+    limits:
+      blog: 5  # generations per month
+      social: 0
+      audio: 0
+      video: 0
+    content_types:
+      - blog
+    model: "ollama/llama3.2:1b"
+    max_parallel_tasks: 1
+    priority_processing: false
+    api_access: false
+  
+  basic:
+    name: "Basic"
+    display_name: "Basic Plan"
+    # Pricing removed for future implementation
+    # price_monthly: 999  # $9.99
+    # price_yearly: 9999  # $99.99 (save 17%)
+    features:
+      - blog_content
+      - social_media_content
+    limits:
+      blog: 50
+      social: 50
+      audio: 0
+      video: 0
+    content_types:
+      - blog
+      - social
+    model: "ollama/llama3.2:3b"
+    max_parallel_tasks: 2
+    priority_processing: false
+    api_access: false
+  
+  pro:
+    name: "Pro"
+    display_name: "Pro Plan"
+    # Pricing removed for future implementation
+    # price_monthly: 2999  # $29.99
+    # price_yearly: 29999  # $299.99 (save 17%)
+    features:
+      - blog_content
+      - social_media_content
+      - audio_content
+      - video_content
+      - api_access
+      - priority_processing
+    limits:
+      blog: -1  # -1 means unlimited
+      social: -1
+      audio: -1
+      video: -1
+    content_types:
+      - blog
+      - social
+      - audio
+      - video
+    model: "ollama/llama3.1:8b"
+    max_parallel_tasks: 4
+    priority_processing: true
+    api_access: true
+    api_rate_limit: 1000  # requests per day
+  
+  enterprise:
+    name: "Enterprise"
+    display_name: "Enterprise Plan"
+    # Pricing removed for future implementation
+    # price_monthly: -1  # -1 means custom pricing
+    # price_yearly: -1
+    features:
+      - blog_content
+      - social_media_content
+      - audio_content
+      - video_content
+      - api_access
+      - priority_processing
+      - custom_model
+      - dedicated_support
+      - sla_guarantee
+      - white_label
+    limits:
+      blog: -1
+      social: -1
+      audio: -1
+      video: -1
+    content_types:
+      - blog
+      - social
+      - audio
+      - video
+    model: "ollama/llama3.1:70b"  # or custom model
+    max_parallel_tasks: 8
+    priority_processing: true
+    api_access: true
+    api_rate_limit: -1  # unlimited
+    sla_uptime: 99.9  # percentage
+

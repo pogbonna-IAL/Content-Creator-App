@@ -1,0 +1,42 @@
+[project]
+name = "content_creation_crew"
+version = "0.1.0"
+description = "content_creation_crew using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]==1.7.0",
+    "litellm>=1.30.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "rq>=2.0.0",
+    "pyyaml>=6.0",
+    "appdirs>=1.4.0",
+    "backoff>=2.0.0",
+    "apscheduler>=3.10.0",
+    "email-validator>=2.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.6",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.19.0",
+    "fastapi-sso>=0.4.0",
+    "pydantic[email]>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+content_creation_crew = "content_creation_crew.main:run"
+run_crew = "content_creation_crew.main:run"
+train = "content_creation_crew.main:train"
+replay = "content_creation_crew.main:replay"
+test = "content_creation_crew.main:test"
+run_with_trigger = "content_creation_crew.main:run_with_trigger"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"

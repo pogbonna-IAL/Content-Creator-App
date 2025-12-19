@@ -1,0 +1,180 @@
+'use client'
+
+import { useState } from 'react'
+
+export default function ContactForm() {
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    message: ''
+  })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [errorMessage, setErrorMessage] = useState('')
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value
+    })
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsSubmitting(true)
+    setSubmitStatus('idle')
+    setErrorMessage('')
+
+    try {
+      const response = await fetch('/api/contact', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to send message')
+      }
+
+      setSubmitStatus('success')
+      setFormData({ name: '', email: '', phone: '', message: '' })
+      
+      // Reset success message after 5 seconds
+      setTimeout(() => {
+        setSubmitStatus('idle')
+      }, 5000)
+    } catch (error) {
+      setSubmitStatus('error')
+      setErrorMessage(error instanceof Error ? error.message : 'An error occurred while sending your message')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="glass-effect neon-border rounded-2xl p-8">
+      <h2 className="text-3xl font-bold text-gradient mb-6">Contact Us</h2>
+      <p className="text-gray-400 mb-6">
+        Have a question or feedback? We'd love to hear from you!
+      </p>
+
+      {submitStatus === 'success' ? (
+        <div className="text-center py-8">
+          <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h3 className="text-xl font-semibold text-neon-cyan mb-2">Message Sent!</h3>
+          <p className="text-gray-300">Thank you for contacting us. We'll get back to you soon.</p>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label htmlFor="contact-name" className="block text-sm font-medium text-gray-300 mb-2">
+                Name <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                id="contact-name"
+                name="name"
+                required
+                value={formData.name}
+                onChange={handleChange}
+                className="w-full px-4 py-2 bg-dark-card border border-dark-border rounded-lg 
+                         text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan 
+                         transition-colors"
+                placeholder="Your full name"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="contact-email" className="block text-sm font-medium text-gray-300 mb-2">
+                Email <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="email"
+                id="contact-email"
+                name="email"
+                required
+                value={formData.email}
+                onChange={handleChange}
+                className="w-full px-4 py-2 bg-dark-card border border-dark-border rounded-lg 
+                         text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan 
+                         transition-colors"
+                placeholder="your.email@example.com"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="contact-phone" className="block text-sm font-medium text-gray-300 mb-2">
+              Contact Phone
+            </label>
+            <input
+              type="tel"
+              id="contact-phone"
+              name="phone"
+              value={formData.phone}
+              onChange={handleChange}
+              className="w-full px-4 py-2 bg-dark-card border border-dark-border rounded-lg 
+                       text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan 
+                       transition-colors"
+              placeholder="+1 (555) 123-4567"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="contact-message" className="block text-sm font-medium text-gray-300 mb-2">
+              Message <span className="text-red-400">*</span>
+            </label>
+            <textarea
+              id="contact-message"
+              name="message"
+              required
+              rows={6}
+              value={formData.message}
+              onChange={handleChange}
+              className="w-full px-4 py-2 bg-dark-card border border-dark-border rounded-lg 
+                       text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan 
+                       transition-colors resize-none"
+              placeholder="Tell us how we can help you..."
+            />
+          </div>
+
+          {submitStatus === 'error' && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+              <p className="text-sm text-red-300">{errorMessage}</p>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="px-8 py-3 bg-gradient-to-r from-neon-cyan to-neon-purple rounded-lg 
+                       text-white font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 
+                       disabled:cursor-not-allowed flex items-center space-x-2"
+            >
+              {isSubmitting ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  <span>Sending...</span>
+                </>
+              ) : (
+                <span>Send Message</span>
+              )}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+

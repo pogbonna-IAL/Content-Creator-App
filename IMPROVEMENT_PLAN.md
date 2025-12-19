@@ -1,0 +1,692 @@
+# Content Creator - Improvement Plan
+## Performance Optimization & Tiered Pricing Architecture
+
+This document outlines step-by-step improvements to make content generation faster and implement a modular tiered pricing system.
+
+---
+
+## PART A: Performance Optimization for Faster Content Generation
+
+### Step 1: Implement Parallel Task Processing
+**Current Issue:** All tasks run sequentially (research → writing → editing → social/audio/video), causing delays.
+
+**Solution:**
+- Use CrewAI's hierarchical or parallel process modes
+- Run independent tasks (social media, audio, video) in parallel after editing task completes
+- Implement task dependency optimization
+
+**Implementation:**
+```python
+# In crew.py, change from sequential to hierarchical/parallel
+@crew
+def crew(self) -> Crew:
+    return Crew(
+        agents=self.agents,
+        tasks=self.tasks,
+        process=Process.hierarchical,  # Better for parallel execution
+        verbose=True,
+    )
+```
+
+**Expected Impact:** 30-50% reduction in generation time for multi-content-type requests
+
+---
+
+### Step 2: Optimize Content Extraction
+**Current Issue:** File-based extraction with retry loops (10 attempts, 2-second waits) causes delays.
+
+**Solution:**
+- Extract content directly from CrewAI result objects instead of waiting for files
+- Implement in-memory content caching
+- Reduce file I/O operations
+
+**Implementation:**
+```python
+# Create new extraction method that works directly with result objects
+def extract_content_from_result(result) -> str:
+    """Extract content directly from CrewAI result without file I/O"""
+    if hasattr(result, 'tasks_output') and result.tasks_output:
+        # Extract from task outputs directly
+        for task in reversed(result.tasks_output):
+            if hasattr(task, 'raw') and task.raw:
+                return str(task.raw)
+    return ""
+```
+
+**Expected Impact:** 5-10 seconds saved per generation
+
+---
+
+### Step 3: Implement Content Caching
+**Current Issue:** Same topics generate content from scratch every time.
+
+**Solution:**
+- Cache generated content by topic hash
+- Implement Redis or in-memory cache for frequently requested topics
+- Cache research results separately (they change less frequently)
+
+**Implementation:**
+```python
+# Add caching layer
+from functools import lru_cache
+import hashlib
+import json
+
+class ContentCache:
+    def __init__(self):
+        self.cache = {}  # Or use Redis
+    
+    def get_cache_key(self, topic: str) -> str:
+        return hashlib.md5(topic.lower().strip().encode()).hexdigest()
+    
+    def get(self, topic: str) -> Optional[str]:
+        key = self.get_cache_key(topic)
+        return self.cache.get(key)
+    
+    def set(self, topic: str, content: str, ttl: int = 3600):
+        key = self.get_cache_key(topic)
+        self.cache[key] = {
+            'content': content,
+            'timestamp': time.time(),
+            'ttl': ttl
+        }
+```
+
+**Expected Impact:** 90%+ reduction in generation time for cached topics
+
+---
+
+### Step 4: Optimize LLM Model Selection
+**Current Issue:** Using same small model (llama3.2:1b) for all tiers, limiting quality.
+
+**Solution:**
+- Use faster models for lower tiers
+- Use higher-quality models for premium tiers
+- Implement model selection based on subscription tier
+
+**Implementation:**
+```python
+# In crew.py, add tier-based model selection
+def __init__(self, tier: str = 'free'):
+    model_map = {
+        'free': 'ollama/llama3.2:1b',  # Fast, basic
+        'basic': 'ollama/llama3.2:3b',  # Better quality
+        'pro': 'ollama/llama3.1:8b',   # High quality
+        'enterprise': 'ollama/llama3.1:70b'  # Best quality
+    }
+    model = model_map.get(tier, model_map['free'])
+    self.llm = LLM(model=model, base_url="http://localhost:11434", ...)
+```
+
+**Expected Impact:** Better quality for paid tiers, faster for free tier
+
+---
+
+### Step 5: Reduce Task Complexity for Lower Tiers
+**Current Issue:** All tiers generate all content types regardless of subscription.
+
+**Solution:**
+- Skip optional tasks (social media, audio, video) for free tier
+- Generate only requested content types based on tier
+- Simplify agent prompts for faster execution
+
+**Implementation:**
+```python
+# Conditional task execution based on tier
+def crew(self, tier: str = 'free', content_types: List[str] = None):
+    tasks = [self.research_task(), self.writing_task(), self.editing_task()]
+    
+    if tier in ['basic', 'pro', 'enterprise']:
+        if 'social' in content_types:
+            tasks.append(self.social_media_task())
+        if 'audio' in content_types:
+            tasks.append(self.audio_content_task())
+        if 'video' in content_types:
+            tasks.append(self.video_content_task())
+    
+    return Crew(agents=self.agents, tasks=tasks, ...)
+```
+
+**Expected Impact:** 40-60% faster for free tier users
+
+---
+
+### Step 6: Implement Streaming Optimization
+**Current Issue:** Content is chunked after generation, not during.
+
+**Solution:**
+- Stream content as it's being generated by agents
+- Implement incremental content delivery
+- Reduce buffering delays
+
+**Expected Impact:** Perceived faster generation, better UX
+
+---
+
+### Step 7: Database Query Optimization
+**Current Issue:** Multiple database queries for user validation.
+
+**Solution:**
+- Cache user data in session
+- Batch database queries
+- Use database indexes effectively
+
+**Expected Impact:** Faster authentication checks
+
+---
+
+## PART B: Modular Architecture for Tiered Pricing
+
+### Step 8: Create Subscription/Tier Database Models
+**Current Issue:** No subscription or tier tracking in database.
+
+**Solution:**
+- Add subscription and usage tracking tables
+- Implement tier management system
+
+**Implementation:**
+```python
+# In database.py, add new models:
+
+class SubscriptionTier(Base):
+    __tablename__ = "subscription_tiers"
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True)  # 'free', 'basic', 'pro', 'enterprise'
+    price_monthly = Column(Integer)  # in cents
+    price_yearly = Column(Integer)  # in cents
+    features = Column(String)  # JSON string of features
+    limits = Column(String)  # JSON string of limits
+
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    tier_id = Column(Integer, ForeignKey("subscription_tiers.id"))
+    status = Column(String)  # 'active', 'cancelled', 'expired'
+    current_period_start = Column(DateTime)
+    current_period_end = Column(DateTime)
+    cancel_at_period_end = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", back_populates="subscription")
+    tier = relationship("SubscriptionTier")
+
+class UsageTracking(Base):
+    __tablename__ = "usage_tracking"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    content_type = Column(String)  # 'blog', 'social', 'audio', 'video'
+    generation_count = Column(Integer, default=0)
+    period_start = Column(DateTime)  # Start of billing period
+    period_end = Column(DateTime)  # End of billing period
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User")
+```
+
+---
+
+### Step 9: Create Subscription Service Layer
+**Current Issue:** No abstraction for subscription management.
+
+**Solution:**
+- Create service layer for subscription operations
+- Implement tier checking, usage tracking, and feature gating
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/services/subscription_service.py
+
+class SubscriptionService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def get_user_tier(self, user_id: int) -> str:
+        """Get user's current subscription tier"""
+        subscription = self.db.query(UserSubscription).filter(
+            UserSubscription.user_id == user_id,
+            UserSubscription.status == 'active',
+            UserSubscription.current_period_end > datetime.utcnow()
+        ).first()
+        
+        if subscription:
+            return subscription.tier.name
+        return 'free'
+    
+    def check_feature_access(self, user_id: int, feature: str) -> bool:
+        """Check if user has access to a feature"""
+        tier = self.get_user_tier(user_id)
+        tier_config = self.get_tier_config(tier)
+        return feature in tier_config.get('features', [])
+    
+    def check_usage_limit(self, user_id: int, content_type: str) -> tuple[bool, int]:
+        """Check if user has remaining usage for content type"""
+        tier = self.get_user_tier(user_id)
+        tier_config = self.get_tier_config(tier)
+        limit = tier_config.get('limits', {}).get(content_type, 0)
+        
+        # Get current period usage
+        usage = self.get_current_period_usage(user_id, content_type)
+        remaining = max(0, limit - usage)
+        
+        return remaining > 0, remaining
+    
+    def record_usage(self, user_id: int, content_type: str):
+        """Record content generation usage"""
+        # Implementation for tracking usage
+        pass
+```
+
+---
+
+### Step 10: Create Feature Gating Middleware
+**Current Issue:** No enforcement of tier-based feature restrictions.
+
+**Solution:**
+- Create middleware/decorators to check tier access
+- Implement rate limiting based on tier
+- Add feature flags
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/middleware/tier_middleware.py
+
+from functools import wraps
+from fastapi import HTTPException, Depends
+from .subscription_service import SubscriptionService
+
+def require_tier(*allowed_tiers: str):
+    """Decorator to require specific subscription tier"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Get user from request
+            user = kwargs.get('current_user')
+            if not user:
+                raise HTTPException(401, "Authentication required")
+            
+            subscription_service = SubscriptionService(get_db())
+            user_tier = subscription_service.get_user_tier(user.id)
+            
+            if user_tier not in allowed_tiers:
+                raise HTTPException(
+                    403,
+                    f"This feature requires {allowed_tiers[0]} tier or higher"
+                )
+            
+            return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+def check_content_type_access(content_type: str):
+    """Check if user can access specific content type"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            user = kwargs.get('current_user')
+            subscription_service = SubscriptionService(get_db())
+            
+            has_access, remaining = subscription_service.check_usage_limit(
+                user.id, content_type
+            )
+            
+            if not has_access:
+                raise HTTPException(
+                    403,
+                    f"You've reached your {content_type} generation limit for this period"
+                )
+            
+            # Record usage before generation
+            subscription_service.record_usage(user.id, content_type)
+            
+            return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+```
+
+---
+
+### Step 11: Update API Endpoints with Tier Checks
+**Current Issue:** API endpoints don't check subscription tiers.
+
+**Solution:**
+- Add tier checks to generate endpoint
+- Implement content type restrictions
+- Add usage limit enforcement
+
+**Implementation:**
+```python
+# In api_server.py, update generate endpoint:
+
+@app.post("/api/generate")
+async def generate_content(
+    request: TopicRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from content_creation_crew.services.subscription_service import SubscriptionService
+    from content_creation_crew.middleware.tier_middleware import check_content_type_access
+    
+    subscription_service = SubscriptionService(db)
+    user_tier = subscription_service.get_user_tier(current_user.id)
+    
+    # Check if user can generate requested content type
+    requested_type = request.content_type or 'blog'
+    has_access, remaining = subscription_service.check_usage_limit(
+        current_user.id, requested_type
+    )
+    
+    if not has_access:
+        raise HTTPException(
+            403,
+            f"You've reached your {requested_type} generation limit. "
+            f"Upgrade your plan or wait for the next billing period."
+        )
+    
+    # Pass tier to crew for optimized generation
+    crew = ContentCreationCrew(tier=user_tier)
+    
+    # Record usage
+    subscription_service.record_usage(current_user.id, requested_type)
+    
+    # Continue with generation...
+```
+
+---
+
+### Step 12: Create Tier Configuration System
+**Current Issue:** Tier features hardcoded in terms page.
+
+**Solution:**
+- Create centralized tier configuration
+- Make it database-driven or config file-based
+- Easy to update without code changes
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/config/tiers.yaml
+
+tiers:
+  free:
+    name: "Free"
+    price_monthly: 0
+    price_yearly: 0
+    features:
+      - blog_content
+    limits:
+      blog: 5
+      social: 0
+      audio: 0
+      video: 0
+    content_types:
+      - blog
+    model: "ollama/llama3.2:1b"
+    max_parallel_tasks: 1
+  
+  basic:
+    name: "Basic"
+    price_monthly: 999  # $9.99
+    price_yearly: 9999  # $99.99
+    features:
+      - blog_content
+      - social_media_content
+    limits:
+      blog: 50
+      social: 50
+      audio: 0
+      video: 0
+    content_types:
+      - blog
+      - social
+    model: "ollama/llama3.2:3b"
+    max_parallel_tasks: 2
+  
+  pro:
+    name: "Pro"
+    price_monthly: 2999  # $29.99
+    price_yearly: 29999  # $299.99
+    features:
+      - blog_content
+      - social_media_content
+      - audio_content
+      - video_content
+      - api_access
+      - priority_processing
+    limits:
+      blog: -1  # unlimited
+      social: -1
+      audio: -1
+      video: -1
+    content_types:
+      - blog
+      - social
+      - audio
+      - video
+    model: "ollama/llama3.1:8b"
+    max_parallel_tasks: 4
+  
+  enterprise:
+    name: "Enterprise"
+    price_monthly: -1  # custom
+    price_yearly: -1
+    features:
+      - all_pro_features
+      - custom_model
+      - dedicated_support
+      - sla_guarantee
+    limits:
+      blog: -1
+      social: -1
+      audio: -1
+      video: -1
+    content_types:
+      - blog
+      - social
+      - audio
+      - video
+    model: "ollama/llama3.1:70b"
+    max_parallel_tasks: 8
+```
+
+---
+
+### Step 13: Create Usage Tracking Service
+**Current Issue:** No usage tracking for billing periods.
+
+**Solution:**
+- Track usage per billing period
+- Reset counters on period renewal
+- Provide usage statistics to users
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/services/usage_service.py
+
+class UsageService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def get_current_period_usage(self, user_id: int, content_type: str) -> int:
+        """Get usage count for current billing period"""
+        subscription = self.get_active_subscription(user_id)
+        if not subscription:
+            return 0
+        
+        period_start = subscription.current_period_start
+        period_end = subscription.current_period_end
+        
+        usage = self.db.query(UsageTracking).filter(
+            UsageTracking.user_id == user_id,
+            UsageTracking.content_type == content_type,
+            UsageTracking.period_start >= period_start,
+            UsageTracking.period_end <= period_end
+        ).first()
+        
+        return usage.generation_count if usage else 0
+    
+    def increment_usage(self, user_id: int, content_type: str):
+        """Increment usage counter"""
+        subscription = self.get_active_subscription(user_id)
+        if not subscription:
+            return
+        
+        usage = self.db.query(UsageTracking).filter(
+            UsageTracking.user_id == user_id,
+            UsageTracking.content_type == content_type,
+            UsageTracking.period_start == subscription.current_period_start
+        ).first()
+        
+        if usage:
+            usage.generation_count += 1
+        else:
+            usage = UsageTracking(
+                user_id=user_id,
+                content_type=content_type,
+                generation_count=1,
+                period_start=subscription.current_period_start,
+                period_end=subscription.current_period_end
+            )
+            self.db.add(usage)
+        
+        self.db.commit()
+```
+
+---
+
+### Step 14: Create Subscription Management API
+**Current Issue:** No API endpoints for subscription management.
+
+**Solution:**
+- Create endpoints for subscription operations
+- Implement upgrade/downgrade logic
+- Add usage statistics endpoint
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/subscription_routes.py
+
+router = APIRouter(prefix="/api/subscription", tags=["subscription"])
+
+@router.get("/current")
+async def get_current_subscription(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get user's current subscription details"""
+    subscription_service = SubscriptionService(db)
+    tier = subscription_service.get_user_tier(current_user.id)
+    usage = subscription_service.get_usage_stats(current_user.id)
+    
+    return {
+        "tier": tier,
+        "usage": usage,
+        "limits": subscription_service.get_tier_limits(tier)
+    }
+
+@router.post("/upgrade")
+async def upgrade_subscription(
+    tier_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upgrade user subscription"""
+    # Implementation for subscription upgrade
+    pass
+
+@router.get("/usage")
+async def get_usage_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get usage statistics for current period"""
+    usage_service = UsageService(db)
+    return usage_service.get_usage_stats(current_user.id)
+```
+
+---
+
+### Step 15: Update Frontend for Tier Display
+**Current Issue:** Frontend doesn't show tier information or usage limits.
+
+**Solution:**
+- Add tier badge/indicator in UI
+- Show usage statistics
+- Display upgrade prompts when limits reached
+
+**Implementation:**
+```typescript
+// Create web-ui/components/SubscriptionBadge.tsx
+// Create web-ui/components/UsageStats.tsx
+// Create web-ui/components/UpgradePrompt.tsx
+```
+
+---
+
+### Step 16: Implement Payment Integration
+**Current Issue:** No payment processing system.
+
+**Solution:**
+- Integrate Stripe or similar payment processor
+- Create webhook handlers for subscription events
+- Implement billing cycle management
+
+**Implementation:**
+```python
+# Create src/content_creation_crew/payment_service.py
+# Integrate Stripe API
+# Handle webhooks for subscription events
+```
+
+---
+
+## Implementation Priority
+
+### Phase 1: Foundation (Weeks 1-2)
+1. Step 8: Database models for subscriptions
+2. Step 9: Subscription service layer
+3. Step 12: Tier configuration system
+
+### Phase 2: Core Features (Weeks 3-4)
+4. Step 10: Feature gating middleware
+5. Step 11: Update API endpoints
+6. Step 13: Usage tracking service
+
+### Phase 3: Performance (Weeks 5-6)
+7. Step 1: Parallel task processing
+8. Step 2: Optimize content extraction
+9. Step 3: Implement caching
+10. Step 4: Model selection by tier
+
+### Phase 4: User Experience (Weeks 7-8)
+11. Step 14: Subscription management API
+12. Step 15: Frontend tier display
+13. Step 16: Payment integration
+
+---
+
+## Expected Results
+
+### Performance Improvements:
+- **Free Tier:** 40-60% faster (fewer tasks, simpler model)
+- **Paid Tiers:** 30-50% faster (parallel processing, caching)
+- **Cached Content:** 90%+ faster (instant retrieval)
+
+### Architecture Benefits:
+- Modular, maintainable code
+- Easy to add new tiers
+- Scalable usage tracking
+- Clear separation of concerns
+- Testable components
+
+---
+
+## Migration Path
+
+1. **Backward Compatibility:** Ensure existing users default to 'free' tier
+2. **Data Migration:** Create migration script to initialize subscription tiers
+3. **Gradual Rollout:** Implement tier checks behind feature flags
+4. **Testing:** Comprehensive testing of tier restrictions and usage tracking
+
