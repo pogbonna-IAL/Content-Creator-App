@@ -183,7 +183,13 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    """Health check endpoint for Railway and monitoring"""
+    try:
+        # Simple health check - just verify the server is running
+        return {"status": "healthy", "service": "content-creation-crew"}
+    except Exception as e:
+        # If there's any error, return unhealthy status
+        return {"status": "unhealthy", "error": str(e)}, 503
 
 
 async def run_crew_async(topic: str, tier: str = 'free', content_types: list = None, use_cache: bool = True) -> AsyncGenerator[str, None]:
@@ -1070,6 +1076,14 @@ async def generate_content(
 if __name__ == "__main__":
     import uvicorn
     import sys
+    import logging
+    
+    # Set up basic logging for startup
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
     
     # Configure Python to use unbuffered output for better streaming
     if hasattr(sys.stdout, 'reconfigure'):
@@ -1077,13 +1091,24 @@ if __name__ == "__main__":
     if hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(line_buffering=True)
     
+    # Get port from environment variable (Railway provides PORT)
+    # Default to 8000 for local development
+    port = int(os.getenv("PORT", 8000))
+    
+    logger.info(f"Starting Content Creation Crew API server on port {port}")
+    logger.info(f"Health check endpoint: http://0.0.0.0:{port}/health")
+    
     # Configure uvicorn to disable buffering for streaming
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_config=None,  # Use default logging
-        access_log=True,
-        loop="asyncio",
-    )
+    try:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",  # Listen on all interfaces (required for Railway)
+            port=port,
+            log_config=None,  # Use default logging
+            access_log=True,
+            loop="asyncio",
+        )
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}", exc_info=True)
+        sys.exit(1)
 

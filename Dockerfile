@@ -69,9 +69,10 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Health check
+# Health check (Railway will override PORT, but this is for local Docker)
+# Railway uses its own health check configured in railway.json
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
 # Run the application
 CMD ["python", "api_server.py"]
