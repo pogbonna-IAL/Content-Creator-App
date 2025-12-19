@@ -42,6 +42,14 @@ RUN uv pip install --system -r pyproject.toml || \
 # Copy application code
 COPY . .
 
+# Install the package in editable mode so imports work
+# This makes the content_creation_crew package importable
+RUN pip install -e . || (echo "Package install failed, using PYTHONPATH fallback" && true)
+
+# Add src directory to PYTHONPATH (ensures package can be imported even if install fails)
+# This is critical for the content_creation_crew package to be found
+ENV PYTHONPATH=/app/src:/app:${PYTHONPATH}
+
 # Create directory for database
 RUN mkdir -p /app/data
 

@@ -38,5 +38,8 @@ run_with_trigger = "content_creation_crew.main:run_with_trigger"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatchling.build.targets.wheel]
+packages = ["src/content_creation_crew"]
+
 [tool.crewai]
 type = "crew"
