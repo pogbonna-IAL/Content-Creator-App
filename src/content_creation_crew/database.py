@@ -8,15 +8,51 @@ from datetime import datetime, timedelta
 
 # Database URL from environment variable, default to SQLite
 import os
+import logging
+
+logger = logging.getLogger(__name__)
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./content_crew.db")
 
-# Configure engine based on database type
-if DATABASE_URL.startswith("postgresql"):
-    # PostgreSQL connection
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
-else:
-    # SQLite connection
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Configure engine based on database type with better error handling
+def create_database_engine():
+    """Create database engine with proper error handling"""
+    try:
+        if DATABASE_URL.startswith("postgresql"):
+            # PostgreSQL connection with connection pool settings
+            # Use connect_args to handle connection errors gracefully
+            engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,  # Verify connections before using
+                pool_size=10,
+                max_overflow=20,
+                connect_args={
+                    "connect_timeout": 10,  # 10 second connection timeout
+                }
+            )
+            logger.info("PostgreSQL engine created successfully")
+        else:
+            # SQLite connection
+            engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+            logger.info("SQLite engine created successfully")
+        return engine
+    except Exception as e:
+        logger.error(f"Failed to create database engine: {e}", exc_info=True)
+        # For PostgreSQL, if connection fails, fall back to SQLite for development
+        if DATABASE_URL.startswith("postgresql"):
+            logger.warning("PostgreSQL connection failed, falling back to SQLite")
+            fallback_url = "sqlite:///./content_crew.db"
+            return create_engine(fallback_url, connect_args={"check_same_thread": False})
+        raise
+
+# Create engine with error handling
+try:
+    engine = create_database_engine()
+except Exception as e:
+    logger.error(f"Critical: Could not create database engine: {e}", exc_info=True)
+    # Create a minimal SQLite engine as last resort
+    engine = create_engine("sqlite:///./content_crew.db", connect_args={"check_same_thread": False})
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
@@ -147,13 +183,26 @@ class UsageTracking(Base):
 
 def init_db():
     """Initialize database tables using Alembic migrations"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Test database connection first
+    try:
+        logger.info("Testing database connection...")
+        with engine.connect() as conn:
+            conn.execute("SELECT 1")
+        logger.info("Database connection successful")
+    except Exception as e:
+        logger.error(f"Database connection test failed: {e}", exc_info=True)
+        logger.warning("Skipping database initialization - will retry on first request")
+        logger.warning("Application will continue but database features may not work until connection is established")
+        return
+    
     try:
         # Run migrations using Alembic
         from alembic.config import Config
         from alembic import command
-        import logging
         
-        logger = logging.getLogger(__name__)
         logger.info("Running database migrations...")
         
         alembic_cfg = Config("alembic.ini")
@@ -161,10 +210,13 @@ def init_db():
         logger.info("Database migrations completed successfully")
     except Exception as e:
         # Fallback to create_all if migrations fail (for backwards compatibility)
-        import logging
-        logger = logging.getLogger(__name__)
         logger.warning(f"Migration failed: {e}. Falling back to create_all.")
-        Base.metadata.create_all(bind=engine)
+        try:
+            Base.metadata.create_all(bind=engine)
+            logger.info("Database tables created using create_all")
+        except Exception as create_error:
+            logger.error(f"Failed to create database tables: {create_error}", exc_info=True)
+            logger.warning("Database initialization failed - application will continue but database features may not work")
 
 
 def get_db():
