@@ -135,8 +135,15 @@ import asyncio
 import json
 from typing import AsyncGenerator
 
-# Initialize database
-init_db()
+# Initialize database with error handling
+try:
+    init_db()
+except Exception as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Database initialization failed: {e}", exc_info=True)
+    # Continue anyway - app might work for read-only operations
+    # Database will be initialized on first request if needed
 
 app = FastAPI(title="Content Creation Crew API")
 
@@ -1085,18 +1092,42 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger(__name__)
     
+    # Log startup information for debugging
+    logger.info("=" * 50)
+    logger.info("Content Creation Crew API - Starting Up")
+    logger.info("=" * 50)
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Working directory: {os.getcwd()}")
+    logger.info(f"PYTHONPATH: {os.getenv('PYTHONPATH', 'NOT SET')}")
+    logger.info(f"PORT: {os.getenv('PORT', 'NOT SET (using default 8000)')}")
+    logger.info(f"DATABASE_URL: {'SET' if os.getenv('DATABASE_URL') else 'NOT SET (using SQLite)'}")
+    
     # Configure Python to use unbuffered output for better streaming
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
     if hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(line_buffering=True)
     
+    # Test critical imports
+    try:
+        logger.info("Testing critical imports...")
+        import content_creation_crew
+        logger.info("✓ content_creation_crew imported successfully")
+    except Exception as e:
+        logger.error(f"✗ Failed to import content_creation_crew: {e}", exc_info=True)
+        sys.exit(1)
+    
     # Get port from environment variable (Railway provides PORT)
     # Default to 8000 for local development
-    port = int(os.getenv("PORT", 8000))
+    try:
+        port = int(os.getenv("PORT", 8000))
+    except ValueError:
+        logger.warning(f"Invalid PORT value: {os.getenv('PORT')}, using default 8000")
+        port = 8000
     
     logger.info(f"Starting Content Creation Crew API server on port {port}")
     logger.info(f"Health check endpoint: http://0.0.0.0:{port}/health")
+    logger.info("=" * 50)
     
     # Configure uvicorn to disable buffering for streaming
     try:
