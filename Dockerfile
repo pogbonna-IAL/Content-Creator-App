@@ -19,7 +19,10 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir uv
 
 # Copy dependency files
-COPY pyproject.toml uv.lock* ./
+COPY pyproject.toml ./
+# Copy uv.lock if it exists (optional - will be skipped if not in build context)
+# Railway should include uv.lock if it exists in the repository
+COPY uv.lock* ./
 
 # Install Python dependencies using UV
 RUN uv pip install --system -r pyproject.toml || \
