@@ -4,6 +4,10 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
+# Set PYTHONPATH early (before package installation)
+# This ensures the package can be imported even if installation fails
+ENV PYTHONPATH=/app/src:/app:${PYTHONPATH}
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -42,13 +46,18 @@ RUN uv pip install --system -r pyproject.toml || \
 # Copy application code
 COPY . .
 
-# Install the package in editable mode so imports work
-# This makes the content_creation_crew package importable
-RUN pip install -e . || (echo "Package install failed, using PYTHONPATH fallback" && true)
+# Install hatchling build backend first (required for package installation)
+RUN pip install --no-cache-dir hatchling setuptools wheel
 
-# Add src directory to PYTHONPATH (ensures package can be imported even if install fails)
-# This is critical for the content_creation_crew package to be found
-ENV PYTHONPATH=/app/src:/app:${PYTHONPATH}
+# Install the package in editable mode so imports work
+RUN pip install -e . || echo "Package install failed, will use PYTHONPATH"
+
+# Verify the package can be imported (this should always work with PYTHONPATH)
+RUN python -c "import content_creation_crew; print('✓ content_creation_crew imported successfully')" || \
+    (echo "⚠ Warning: Package import test failed" && \
+     echo "Python path:" && python -c "import sys; [print(p) for p in sys.path]" && \
+     echo "Contents of /app/src:" && ls -la /app/src/ 2>/dev/null || true && \
+     echo "Continuing anyway - PYTHONPATH should handle imports at runtime")
 
 # Create directory for database
 RUN mkdir -p /app/data

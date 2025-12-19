@@ -102,6 +102,15 @@ if sys.platform == 'win32':
             setattr(signal, sig_name, sig_value)
 
 # Import the package __init__ first to ensure its patch runs
+# Ensure src directory is in Python path for Railway/Docker deployments
+import sys
+from pathlib import Path
+
+# Add src to Python path if not already there
+src_path = Path(__file__).parent / "src"
+if src_path.exists() and str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 import content_creation_crew  # noqa: F401
 
 from fastapi import FastAPI, HTTPException, Depends
