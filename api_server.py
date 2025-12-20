@@ -258,15 +258,18 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         # Check if Ollama is accessible before starting
         try:
             import httpx
+            # Get Ollama URL from environment variable
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get("http://localhost:11434/api/tags")
+                response = await client.get(f"{ollama_url}/api/tags")
                 if response.status_code != 200:
                     raise Exception("Ollama is not responding correctly")
-            logger.info("Ollama connection verified")
+            logger.info(f"Ollama connection verified at {ollama_url}")
         except Exception as ollama_error:
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             error_msg = json.dumps({
                 'type': 'error',
-                'message': f'Ollama is not accessible at http://localhost:11434. Please ensure Ollama is running. Error: {str(ollama_error)}',
+                'message': f'Ollama is not accessible at {ollama_url}. Please ensure Ollama is running. Error: {str(ollama_error)}',
                 'error_type': 'OllamaConnectionError'
             })
             yield f"data: {error_msg}\n\n"
@@ -499,7 +502,8 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         if "terminated" in error_message.lower() or error_type == "Terminated":
             error_message = "Content generation was terminated. This may be due to a timeout or connection issue. Please check if Ollama is running and try again."
         elif "connection" in error_message.lower() or "connect" in error_message.lower():
-            error_message = f"Connection error: {error_message}. Please ensure Ollama is running at http://localhost:11434"
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            error_message = f"Connection error: {error_message}. Please ensure Ollama is running at {ollama_url}"
         elif "timeout" in error_message.lower():
             error_message = f"Request timeout: {error_message}. The content generation took too long. Please try with a simpler topic or check server logs."
         
