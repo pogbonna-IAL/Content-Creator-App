@@ -25,17 +25,21 @@ def create_database_engine():
             engine = create_engine(
                 DATABASE_URL,
                 pool_pre_ping=True,  # Verify connections before using (reconnects if needed)
-                pool_size=3,  # Further reduced for Railway (very small instances)
-                max_overflow=5,  # Reduced overflow
-                pool_recycle=1800,  # Recycle connections after 30 minutes (more aggressive)
-                pool_timeout=20,  # Reduced timeout to fail faster
+                pool_size=2,  # Minimal pool size for Railway (very small instances)
+                max_overflow=3,  # Minimal overflow
+                pool_recycle=900,  # Recycle connections after 15 minutes (very aggressive)
+                pool_timeout=10,  # Reduced timeout to fail faster
                 echo=False,  # Disable SQL logging for performance
+                # Use NullPool for very constrained environments (uncomment if still having issues)
+                # poolclass=NullPool,  # Disables pooling entirely - use only if pool issues persist
                 connect_args={
-                    "connect_timeout": 5,  # Reduced connection timeout
+                    "connect_timeout": 3,  # Very short connection timeout
                     "keepalives": 1,  # Enable TCP keepalives
                     "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
                     "keepalives_interval": 10,  # Send keepalive every 10 seconds
                     "keepalives_count": 3,  # Reduced keepalive failures before disconnect
+                    # Add application_name for better connection tracking
+                    "application_name": "content_creation_crew",
                 }
             )
             
@@ -48,6 +52,7 @@ def create_database_engine():
             @event.listens_for(Pool, "checkout")
             def receive_checkout(dbapi_conn, connection_record, connection_proxy):
                 """Called when a connection is retrieved from the pool"""
+                # Connection is already validated by pool_pre_ping
                 logger.debug("Connection checked out from pool")
             
             @event.listens_for(Pool, "checkin")
@@ -252,13 +257,44 @@ def init_db():
 def get_db():
     """Get database session with proper error handling and connection management"""
     db = None
+    max_retries = 3
+    retry_delay = 0.1  # 100ms
+    
+    # Retry loop for getting connection from pool
+    for attempt in range(max_retries):
+        try:
+            db = SessionLocal()
+            break  # Successfully got connection
+        except Exception as e:
+            # Check if it's a pool-related error
+            error_str = str(e).lower()
+            is_pool_error = any(keyword in error_str for keyword in [
+                'pool', 'connection', 'timeout', 'checkout', '_do_get', 'could not get connection'
+            ])
+            
+            if attempt < max_retries - 1 and is_pool_error:
+                # Pool error, retry after short delay
+                logger.warning(
+                    f"Database pool error getting connection (attempt {attempt + 1}/{max_retries}): {e}. Retrying..."
+                )
+                import time
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                continue
+            else:
+                # Not a pool error or max retries reached
+                logger.error(f"Failed to get database connection: {e}", exc_info=True)
+                raise
+    
+    # Now yield the session (this is the generator part)
     try:
-        db = SessionLocal()
         yield db
         db.commit()
     except Exception as e:
         if db:
-            db.rollback()
+            try:
+                db.rollback()
+            except Exception:
+                pass  # Ignore rollback errors
         logger.error(f"Database session error: {e}", exc_info=True)
         raise
     finally:
