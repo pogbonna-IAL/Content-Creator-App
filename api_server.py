@@ -1112,11 +1112,35 @@ if __name__ == "__main__":
     if hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(line_buffering=True)
     
-    # Test critical imports
+    # Test critical imports with timeout to prevent hanging
     try:
         logger.info("Testing critical imports...")
-        import content_creation_crew
-        logger.info("✓ content_creation_crew imported successfully")
+        import signal
+        import threading
+        
+        import_result = [None]
+        import_exception = [None]
+        
+        def _import_target():
+            try:
+                import content_creation_crew
+                import_result[0] = True
+            except Exception as e:
+                import_exception[0] = e
+        
+        import_thread = threading.Thread(target=_import_target, daemon=True)
+        import_thread.start()
+        import_thread.join(timeout=10.0)  # 10 second timeout for imports
+        
+        if import_thread.is_alive():
+            logger.error("✗ Import timed out after 10 seconds - possible database connection hang")
+            logger.error("Check DATABASE_URL in Railway Variables - may be using 'db' hostname")
+            sys.exit(1)
+        elif import_exception[0]:
+            logger.error(f"✗ Failed to import content_creation_crew: {import_exception[0]}", exc_info=True)
+            sys.exit(1)
+        else:
+            logger.info("✓ content_creation_crew imported successfully")
     except Exception as e:
         logger.error(f"✗ Failed to import content_creation_crew: {e}", exc_info=True)
         sys.exit(1)

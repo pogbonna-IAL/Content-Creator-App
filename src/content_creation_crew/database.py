@@ -153,7 +153,8 @@ def create_engine_with_fallback():
         logger.warning("Falling back to SQLite database...")
         return create_engine("sqlite:///./content_crew.db", connect_args={"check_same_thread": False})
 
-# Create engine with error handling
+# Create engine immediately - create_engine() is lazy and doesn't connect until first use
+# But we add error handling to catch any issues during engine creation
 try:
     engine = create_engine_with_fallback()
 except Exception as e:
