@@ -1,7 +1,7 @@
 """
 Database models and setup for authentication and subscriptions
 """
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, event
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, event, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.pool import Pool
@@ -13,7 +13,42 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Get DATABASE_URL from environment
+# On Railway, this is automatically provided when PostgreSQL service is linked
+# Format: postgresql://user:password@hostname:port/database
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./content_crew.db")
+
+# Log DATABASE_URL info (without exposing credentials)
+def _log_database_url_info():
+    """Log database URL information without exposing credentials"""
+    if DATABASE_URL.startswith("postgresql"):
+        # Parse URL to show structure without credentials
+        try:
+            # Extract hostname from URL
+            if "@" in DATABASE_URL:
+                host_part = DATABASE_URL.split("@")[1].split("/")[0]
+                if ":" in host_part:
+                    hostname = host_part.split(":")[0]
+                else:
+                    hostname = host_part
+                logger.info(f"DATABASE_URL configured for PostgreSQL (host: {hostname})")
+                
+                # Check if using Docker Compose hostname (won't work on Railway)
+                if hostname == "db":
+                    logger.error("⚠️  DATABASE_URL uses 'db' hostname (Docker Compose) - this won't work on Railway!")
+                    logger.error("⚠️  Railway provides DATABASE_URL automatically when PostgreSQL service is linked")
+                    logger.error("⚠️  Check Railway dashboard: Backend service → Variables → DATABASE_URL")
+            else:
+                logger.warning("DATABASE_URL format appears incorrect (missing @)")
+        except Exception:
+            logger.warning("Could not parse DATABASE_URL for logging")
+    elif DATABASE_URL.startswith("sqlite"):
+        logger.info("DATABASE_URL configured for SQLite (local development)")
+    else:
+        logger.warning(f"DATABASE_URL uses unknown format: {DATABASE_URL[:20]}...")
+
+# Log database URL info on module import
+_log_database_url_info()
 
 # Configure engine based on database type with better error handling
 def create_database_engine():
@@ -52,8 +87,13 @@ def create_database_engine():
             @event.listens_for(Pool, "checkout")
             def receive_checkout(dbapi_conn, connection_record, connection_proxy):
                 """Called when a connection is retrieved from the pool"""
-                # Connection is already validated by pool_pre_ping
-                logger.debug("Connection checked out from pool")
+                try:
+                    # Connection is already validated by pool_pre_ping
+                    # But we can add additional validation here if needed
+                    logger.debug("Connection checked out from pool")
+                except Exception as e:
+                    logger.warning(f"Error during connection checkout: {e}")
+                    # Don't raise - let SQLAlchemy handle it
             
             @event.listens_for(Pool, "checkin")
             def receive_checkin(dbapi_conn, connection_record):
@@ -80,12 +120,45 @@ def create_database_engine():
             return create_engine(fallback_url, connect_args={"check_same_thread": False})
         raise
 
+# Create engine with error handling and fallback to NullPool if needed
+def create_engine_with_fallback():
+    """Create database engine with fallback options"""
+    try:
+        return create_database_engine()
+    except Exception as e:
+        logger.error(f"Critical: Could not create database engine: {e}", exc_info=True)
+        
+        # If PostgreSQL and pool issues, try NullPool (no pooling)
+        if DATABASE_URL.startswith("postgresql"):
+            logger.warning("Attempting to create engine with NullPool (no connection pooling)...")
+            try:
+                from sqlalchemy.pool import NullPool
+                return create_engine(
+                    DATABASE_URL,
+                    poolclass=NullPool,  # No pooling - new connection for each request
+                    pool_pre_ping=True,
+                    connect_args={
+                        "connect_timeout": 3,
+                        "keepalives": 1,
+                        "keepalives_idle": 30,
+                        "keepalives_interval": 10,
+                        "keepalives_count": 3,
+                        "application_name": "content_creation_crew",
+                    }
+                )
+            except Exception as null_pool_error:
+                logger.error(f"Failed to create engine with NullPool: {null_pool_error}", exc_info=True)
+        
+        # Last resort: SQLite
+        logger.warning("Falling back to SQLite database...")
+        return create_engine("sqlite:///./content_crew.db", connect_args={"check_same_thread": False})
+
 # Create engine with error handling
 try:
-    engine = create_database_engine()
+    engine = create_engine_with_fallback()
 except Exception as e:
-    logger.error(f"Critical: Could not create database engine: {e}", exc_info=True)
-    # Create a minimal SQLite engine as last resort
+    logger.error(f"Critical: Could not create any database engine: {e}", exc_info=True)
+    # Absolute last resort: SQLite
     engine = create_engine("sqlite:///./content_crew.db", connect_args={"check_same_thread": False})
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -224,11 +297,77 @@ def init_db():
     # Test database connection first
     try:
         logger.info("Testing database connection...")
+        
+        # Log connection attempt details (without credentials)
+        if DATABASE_URL.startswith("postgresql"):
+            try:
+                if "@" in DATABASE_URL:
+                    host_part = DATABASE_URL.split("@")[1].split("/")[0]
+                    if ":" in host_part:
+                        hostname = host_part.split(":")[0]
+                    else:
+                        hostname = host_part
+                    logger.info(f"Attempting to connect to PostgreSQL at: {hostname}")
+                    
+                    # Check for Docker Compose hostname
+                    if hostname == "db":
+                        logger.error("=" * 60)
+                        logger.error("❌ RAILWAY DATABASE CONNECTION ERROR")
+                        logger.error("=" * 60)
+                        logger.error("DATABASE_URL uses 'db' hostname (Docker Compose service name)")
+                        logger.error("This hostname only works in Docker Compose, NOT on Railway!")
+                        logger.error("")
+                        logger.error("SOLUTION:")
+                        logger.error("1. Go to Railway Dashboard")
+                        logger.error("2. Select your Backend service")
+                        logger.error("3. Go to 'Variables' tab")
+                        logger.error("4. Check if DATABASE_URL is set")
+                        logger.error("5. If not set, link PostgreSQL service:")
+                        logger.error("   - Go to PostgreSQL service")
+                        logger.error("   - Click 'Connect' or 'Add Service'")
+                        logger.error("   - Select your Backend service")
+                        logger.error("   - Railway will automatically add DATABASE_URL")
+                        logger.error("=" * 60)
+                        raise ConnectionError(
+                            "DATABASE_URL uses 'db' hostname - not valid on Railway. "
+                            "Link PostgreSQL service to Backend service in Railway dashboard."
+                        )
+            except ConnectionError:
+                # Re-raise connection errors (like the 'db' hostname error)
+                raise
+            except Exception as parse_error:
+                logger.warning(f"Could not parse DATABASE_URL: {parse_error}")
+        
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        logger.info("Database connection successful")
+            conn.execute(text("SELECT 1"))
+        logger.info("✓ Database connection test successful")
+    except ConnectionError:
+        # Re-raise connection errors (like the 'db' hostname error)
+        raise
     except Exception as e:
-        logger.error(f"Database connection test failed: {e}", exc_info=True)
+        error_msg = str(e).lower()
+        logger.error(f"✗ Database connection test failed: {e}", exc_info=True)
+        
+        # Provide helpful error messages
+        if "could not translate host name" in error_msg or "name or service not known" in error_msg:
+            logger.error("=" * 60)
+            logger.error("❌ DATABASE HOSTNAME RESOLUTION ERROR")
+            logger.error("=" * 60)
+            logger.error("The database hostname cannot be resolved.")
+            logger.error("")
+            logger.error("POSSIBLE CAUSES:")
+            logger.error("1. DATABASE_URL uses Docker Compose hostname (e.g., 'db')")
+            logger.error("2. PostgreSQL service not linked to Backend service on Railway")
+            logger.error("3. DATABASE_URL environment variable not set correctly")
+            logger.error("")
+            logger.error("SOLUTION:")
+            logger.error("1. Go to Railway Dashboard → Backend service → Variables")
+            logger.error("2. Verify DATABASE_URL is set (should start with 'postgresql://')")
+            logger.error("3. If missing, link PostgreSQL service to Backend:")
+            logger.error("   - PostgreSQL service → Connect → Select Backend service")
+            logger.error("4. Railway will automatically set DATABASE_URL")
+            logger.error("=" * 60)
+        
         logger.warning("Skipping database initialization - will retry on first request")
         logger.warning("Application will continue but database features may not work until connection is established")
         return
@@ -268,9 +407,17 @@ def get_db():
         except Exception as e:
             # Check if it's a pool-related error
             error_str = str(e).lower()
+            error_traceback = str(e)
+            
+            # Check for various pool-related errors including checkout
             is_pool_error = any(keyword in error_str for keyword in [
-                'pool', 'connection', 'timeout', 'checkout', '_do_get', 'could not get connection'
+                'pool', 'connection', 'timeout', 'checkout', '_do_get', 
+                'could not get connection', '_connectionrecord', 'checkout(pool)'
             ])
+            
+            # Also check traceback for pool-related patterns
+            if not is_pool_error and ('checkout' in error_traceback.lower() or '_connectionrecord' in error_traceback.lower()):
+                is_pool_error = True
             
             if attempt < max_retries - 1 and is_pool_error:
                 # Pool error, retry after short delay
@@ -282,6 +429,24 @@ def get_db():
                 continue
             else:
                 # Not a pool error or max retries reached
+                if is_pool_error:
+                    logger.error("=" * 60)
+                    logger.error("❌ DATABASE POOL CHECKOUT ERROR")
+                    logger.error("=" * 60)
+                    logger.error(f"Failed to checkout connection from pool: {e}")
+                    logger.error("")
+                    logger.error("POSSIBLE CAUSES:")
+                    logger.error("1. Connection pool exhausted (all connections in use)")
+                    logger.error("2. Database connectivity issues")
+                    logger.error("3. DATABASE_URL incorrect (check Railway Variables)")
+                    logger.error("4. PostgreSQL service not properly linked")
+                    logger.error("")
+                    logger.error("SOLUTION:")
+                    logger.error("1. Verify DATABASE_URL is correct in Railway Variables")
+                    logger.error("2. Ensure PostgreSQL service is linked to Backend")
+                    logger.error("3. Check PostgreSQL service logs for connectivity issues")
+                    logger.error("4. Consider using NullPool if pool issues persist")
+                    logger.error("=" * 60)
                 logger.error(f"Failed to get database connection: {e}", exc_info=True)
                 raise
     
