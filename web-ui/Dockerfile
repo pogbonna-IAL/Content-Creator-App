@@ -45,8 +45,17 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # Copy necessary files from builder
 # For standalone output
 COPY --from=builder /app/public ./public
+
+# Copy standalone build (preferred method)
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+
+# Copy package.json for npm start fallback
+COPY --from=builder /app/package.json ./package.json
+
+# Copy node_modules for npm start fallback (if standalone doesn't work)
+# Only copy production dependencies to keep image size small
+COPY --from=builder /app/node_modules ./node_modules
 
 # Expose port
 EXPOSE 3000
@@ -57,4 +66,20 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Start Next.js standalone server if available, otherwise use npm start
 # Use Railway's PORT environment variable if available
-CMD if [ -f "server.js" ]; then PORT=${PORT:-3000} node server.js; else PORT=${PORT:-3000} npm start; fi
+# Next.js standalone creates server.js in the standalone directory
+CMD if [ -f "./server.js" ]; then \
+      echo "✓ Starting Next.js standalone server (./server.js)..." && \
+      PORT=${PORT:-3000} HOSTNAME=0.0.0.0 node ./server.js; \
+    elif [ -f "server.js" ]; then \
+      echo "✓ Starting Next.js standalone server (server.js)..." && \
+      PORT=${PORT:-3000} HOSTNAME=0.0.0.0 node server.js; \
+    elif [ -d "./.next" ] && [ -f "./package.json" ]; then \
+      echo "✓ Using npm start fallback..." && \
+      PORT=${PORT:-3000} HOSTNAME=0.0.0.0 npm start; \
+    else \
+      echo "✗ Error: Cannot start server - missing files!" && \
+      echo "Contents of /app:" && ls -la && \
+      echo "Looking for server.js or .next directory..." && \
+      find . -name "server.js" -o -name ".next" 2>/dev/null | head -10 && \
+      exit 1; \
+    fi
