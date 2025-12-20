@@ -20,17 +20,23 @@ def create_database_engine():
     try:
         if DATABASE_URL.startswith("postgresql"):
             # PostgreSQL connection with connection pool settings
-            # Use connect_args to handle connection errors gracefully
+            # Optimized for Railway deployment - smaller pool, better error handling
             engine = create_engine(
                 DATABASE_URL,
-                pool_pre_ping=True,  # Verify connections before using
-                pool_size=10,
-                max_overflow=20,
+                pool_pre_ping=True,  # Verify connections before using (reconnects if needed)
+                pool_size=5,  # Reduced from 10 for Railway (smaller instances)
+                max_overflow=10,  # Reduced from 20
+                pool_recycle=3600,  # Recycle connections after 1 hour
+                pool_timeout=30,  # Wait up to 30 seconds for connection from pool
                 connect_args={
                     "connect_timeout": 10,  # 10 second connection timeout
+                    "keepalives": 1,  # Enable TCP keepalives
+                    "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
+                    "keepalives_interval": 10,  # Send keepalive every 10 seconds
+                    "keepalives_count": 5,  # Max keepalive failures before disconnect
                 }
             )
-            logger.info("PostgreSQL engine created successfully")
+            logger.info("PostgreSQL engine created successfully with optimized pool settings")
         else:
             # SQLite connection
             engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
