@@ -1,9 +1,10 @@
 """
 Database models and setup for authentication and subscriptions
 """
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.pool import Pool
 from datetime import datetime, timedelta
 
 # Database URL from environment variable, default to SQLite
@@ -24,19 +25,42 @@ def create_database_engine():
             engine = create_engine(
                 DATABASE_URL,
                 pool_pre_ping=True,  # Verify connections before using (reconnects if needed)
-                pool_size=5,  # Reduced from 10 for Railway (smaller instances)
-                max_overflow=10,  # Reduced from 20
-                pool_recycle=3600,  # Recycle connections after 1 hour
-                pool_timeout=30,  # Wait up to 30 seconds for connection from pool
+                pool_size=3,  # Further reduced for Railway (very small instances)
+                max_overflow=5,  # Reduced overflow
+                pool_recycle=1800,  # Recycle connections after 30 minutes (more aggressive)
+                pool_timeout=20,  # Reduced timeout to fail faster
+                echo=False,  # Disable SQL logging for performance
                 connect_args={
-                    "connect_timeout": 10,  # 10 second connection timeout
+                    "connect_timeout": 5,  # Reduced connection timeout
                     "keepalives": 1,  # Enable TCP keepalives
                     "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
                     "keepalives_interval": 10,  # Send keepalive every 10 seconds
-                    "keepalives_count": 5,  # Max keepalive failures before disconnect
+                    "keepalives_count": 3,  # Reduced keepalive failures before disconnect
                 }
             )
-            logger.info("PostgreSQL engine created successfully with optimized pool settings")
+            
+            # Add event listeners for better connection pool error handling
+            @event.listens_for(engine, "connect")
+            def set_sqlite_pragma(dbapi_conn, connection_record):
+                """Set connection-level settings"""
+                pass  # PostgreSQL doesn't need pragma settings
+            
+            @event.listens_for(Pool, "checkout")
+            def receive_checkout(dbapi_conn, connection_record, connection_proxy):
+                """Called when a connection is retrieved from the pool"""
+                logger.debug("Connection checked out from pool")
+            
+            @event.listens_for(Pool, "checkin")
+            def receive_checkin(dbapi_conn, connection_record):
+                """Called when a connection is returned to the pool"""
+                logger.debug("Connection checked in to pool")
+            
+            @event.listens_for(Pool, "invalidate")
+            def receive_invalidate(dbapi_conn, connection_record, exception):
+                """Called when a connection is invalidated"""
+                logger.warning(f"Connection invalidated: {exception}")
+            
+            logger.info("PostgreSQL engine created successfully with optimized pool settings and event listeners")
         else:
             # SQLite connection
             engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -226,10 +250,21 @@ def init_db():
 
 
 def get_db():
-    """Get database session"""
-    db = SessionLocal()
+    """Get database session with proper error handling and connection management"""
+    db = None
     try:
+        db = SessionLocal()
         yield db
+        db.commit()
+    except Exception as e:
+        if db:
+            db.rollback()
+        logger.error(f"Database session error: {e}", exc_info=True)
+        raise
     finally:
-        db.close()
+        if db:
+            try:
+                db.close()
+            except Exception as e:
+                logger.warning(f"Error closing database session: {e}", exc_info=True)
 
