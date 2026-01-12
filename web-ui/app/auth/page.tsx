@@ -6,7 +6,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import AuthForm from '@/components/AuthForm'
 import ContactForm from '@/components/ContactForm'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// Import validated API URL from env module
+import { API_URL } from '@/lib/env'
 
 export default function AuthPage() {
   const [isSignUp, setIsSignUp] = useState(false)

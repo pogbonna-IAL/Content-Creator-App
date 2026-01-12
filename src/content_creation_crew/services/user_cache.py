@@ -98,9 +98,25 @@ _cache_instance: Optional[UserCache] = None
 
 
 def get_user_cache() -> UserCache:
-    """Get global user cache instance"""
+    """
+    Get global user cache instance
+    
+    Returns Redis-backed cache if Redis is available, otherwise in-memory cache
+    """
     global _cache_instance
     if _cache_instance is None:
-        _cache_instance = UserCache()
+        # Try Redis first, fall back to in-memory
+        try:
+            from .redis_cache import RedisUserCache
+            redis_cache = RedisUserCache()
+            if redis_cache.use_redis:
+                _cache_instance = redis_cache
+            else:
+                _cache_instance = UserCache()
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to initialize Redis user cache: {e}, using in-memory cache")
+            _cache_instance = UserCache()
     return _cache_instance
 

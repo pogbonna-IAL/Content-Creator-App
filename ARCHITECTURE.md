@@ -1,22 +1,95 @@
 # Content Creation Crew - Architecture Documentation
 
+> **📖 For Non-Technical Readers**: This document explains how the Content Creation Crew system works. If you're not a developer, start with the [Non-Technical Overview](#non-technical-overview) section below. Technical readers can jump directly to [System Overview](#system-overview).
+
 ## Table of Contents
 
-1. [System Overview](#system-overview)
-2. [Architecture Patterns](#architecture-patterns)
-3. [System Architecture](#system-architecture)
-4. [Component Breakdown](#component-breakdown)
-5. [Data Flow](#data-flow)
-6. [API Structure](#api-structure)
-7. [Database Schema](#database-schema)
-8. [Frontend Architecture](#frontend-architecture)
-9. [Authentication & Authorization](#authentication--authorization)
-10. [Content Generation Engine](#content-generation-engine)
-11. [Performance Optimizations](#performance-optimizations)
-12. [Security Considerations](#security-considerations)
-13. [Deployment & Infrastructure](#deployment--infrastructure)
-14. [Configuration Management](#configuration-management)
-15. [Future Considerations](#future-considerations)
+### For Everyone
+- [Non-Technical Overview](#non-technical-overview) - How the system works in plain language
+- [System Overview](#system-overview) - High-level technical overview
+
+### For Technical Readers
+- [Architecture Patterns](#architecture-patterns)
+- [System Architecture](#system-architecture)
+- [Component Breakdown](#component-breakdown)
+- [Data Flow](#data-flow)
+- [API Structure](#api-structure)
+- [Database Schema](#database-schema)
+- [Frontend Architecture](#frontend-architecture)
+- [Authentication & Authorization](#authentication--authorization)
+- [Content Generation Engine](#content-generation-engine)
+- [Performance Optimizations](#performance-optimizations)
+- [Security Considerations](#security-considerations)
+- [Deployment & Infrastructure](#deployment--infrastructure)
+- [Configuration Management](#configuration-management)
+- [Future Considerations](#future-considerations)
+
+---
+
+## Non-Technical Overview
+
+### What Is Content Creation Crew?
+
+Imagine having a team of specialized content creators working together to produce high-quality content for you. That's exactly what Content Creation Crew does, but instead of human creators, it uses AI agents - specialized AI programs that each have a specific job.
+
+### How Does It Work? (Simple Explanation)
+
+Think of it like a content creation assembly line:
+
+1. **You provide a topic** (e.g., "Artificial Intelligence in Healthcare")
+2. **The Researcher** gathers information and key insights about your topic
+3. **The Writer** uses that research to create a comprehensive blog post
+4. **The Editor** polishes the blog post for quality and readability
+5. **Specialists** (if you have access) adapt the content for:
+   - Social media platforms (LinkedIn, Twitter, Facebook)
+   - Audio/podcast scripts
+   - Video/YouTube scripts
+
+All of this happens automatically, and you can watch the progress in real-time!
+
+### The Three Main Parts
+
+**1. The Web Interface (Frontend)**
+- This is what you see and interact with in your browser
+- You enter your topic, select content types, and see the results
+- Built with modern web technologies for a smooth experience
+
+**2. The Brain (Backend)**
+- This is where the AI agents work
+- Handles authentication, manages user accounts, and coordinates the AI agents
+- Communicates with the AI models to generate content
+
+**3. The AI Models (Ollama)**
+- These are the actual AI brains that create the content
+- Different models are used based on your subscription tier
+- Free tier uses faster, smaller models; Enterprise uses more powerful models
+
+### Subscription Tiers Explained
+
+The system has four tiers, each with different capabilities:
+
+- **Free**: Blog content only, limited generations per month, fastest model
+- **Basic**: Blog + Social media, more generations, better model
+- **Pro**: All content types, unlimited generations, best model, API access
+- **Enterprise**: Everything in Pro, plus custom models, priority support, and SLA guarantees
+
+### Key Features Explained
+
+**Real-Time Streaming**: Instead of waiting for everything to finish, you see content being created piece by piece, like watching someone type in real-time.
+
+**Content Caching**: If someone requests content about the same topic recently, the system can provide it instantly from memory instead of regenerating it.
+
+**Multi-Agent Collaboration**: Each AI agent has a specific expertise. They work together, with each agent building on the previous one's work, just like a real content team.
+
+**Tier-Based Access**: Your subscription determines which features you can use, how many times you can generate content, and which AI model is used (affecting speed and quality).
+
+### Why This Architecture?
+
+- **Scalability**: The system can handle many users simultaneously
+- **Performance**: Caching and parallel processing make it fast
+- **Flexibility**: Easy to add new content types or features
+- **Security**: Proper authentication and authorization protect user data
+- **Reliability**: Built with production-ready technologies
 
 ---
 
@@ -99,6 +172,8 @@ Users are assigned tiers that determine:
 
 ### High-Level Architecture
 
+**For Non-Technical Readers**: This diagram shows how the different parts of the system connect. The frontend (what you see) talks to the backend (the brain), which coordinates AI agents and stores data.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Frontend (Next.js)                    │
@@ -180,6 +255,14 @@ Users are assigned tiers that determine:
 │  └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Simple Explanation**: 
+- **Top Layer (Frontend)**: The web interface you interact with
+- **Middle Layer (Backend)**: The API server that handles requests and coordinates AI agents
+- **AI Agents Layer**: The specialized AI workers that create content
+- **Services Layer**: Helper services for caching and subscription management
+- **Database Layer**: Where user data and settings are stored
+- **External Services**: AI models (Ollama) and OAuth providers (Google, etc.)
 
 ---
 
@@ -331,6 +414,8 @@ Users are assigned tiers that determine:
 
 ### Content Generation Flow
 
+**For Non-Technical Readers**: This shows the step-by-step process of what happens when you request content. Each step builds on the previous one, and you can see progress updates in real-time.
+
 ```
 1. User enters topic in frontend
    │
@@ -384,6 +469,13 @@ Users are assigned tiers that determine:
    a. Updates status/progress
    b. Displays content in appropriate panels
 ```
+
+**What This Means**:
+- Steps 1-3: You enter a topic, and the system prepares to generate content
+- Step 4: The system checks if you're logged in, what tier you have, and if this content was recently generated (cache check)
+- Step 5: The AI agents work together - Researcher finds information, Writer creates content, Editor improves it, and Specialists adapt it for different formats
+- Steps 6-7: The system extracts the final content and saves it for quick access later
+- Steps 8-9: You see the content appear in real-time in your browser
 
 ### Authentication Flow
 
@@ -714,45 +806,51 @@ Auth (auth/page.tsx)
 
 ### CrewAI Architecture
 
+**For Non-Technical Readers**: This section explains how the AI agents work together. Think of it like a content creation team where each person has a specific job, and they pass their work to the next person.
+
 The system uses CrewAI's multi-agent framework with the following structure:
 
 #### Agents
 
+Each agent is like a specialized team member:
+
 1. **Researcher**
-   - Role: Research Analyst
-   - Goal: Research topic and provide key insights
-   - Model: Tier-based (fastest for free tier)
+   - **What they do**: Gather information and insights about your topic
+   - **Like**: A research assistant who finds all relevant information
+   - **Model**: Uses faster models for free tier users, better models for paid tiers
 
 2. **Writer**
-   - Role: Content Writer
-   - Goal: Write engaging blog posts
-   - Context: Uses research_task output
+   - **What they do**: Create the actual blog post content
+   - **Like**: A content writer who transforms research into engaging prose
+   - **Uses**: The research findings from the Researcher
 
 3. **Editor**
-   - Role: Content Editor
-   - Goal: Edit for quality and readability
-   - Context: Uses writing_task output
-   - Output: Final blog post
+   - **What they do**: Polish and improve the blog post
+   - **Like**: An editor who fixes grammar, improves flow, and ensures quality
+   - **Uses**: The draft from the Writer
+   - **Output**: The final blog post
 
 4. **Social Media Specialist**
-   - Role: Social Media Strategist
-   - Goal: Create social media posts
-   - Context: Uses editing_task output
-   - Conditional: Only for 'social' content type
+   - **What they do**: Adapt the blog content for social media platforms
+   - **Like**: A social media manager who creates posts optimized for LinkedIn, Twitter, etc.
+   - **Uses**: The final blog post from the Editor
+   - **Only runs**: If you have access to social media content (Basic tier+)
 
 5. **Audio Specialist**
-   - Role: Audio Producer
-   - Goal: Create audio scripts
-   - Context: Uses editing_task output
-   - Conditional: Only for 'audio' content type
+   - **What they do**: Create scripts for podcasts or audio narration
+   - **Like**: A podcast script writer who makes content conversational
+   - **Uses**: The final blog post from the Editor
+   - **Only runs**: If you have access to audio content (Pro tier+)
 
 6. **Video Specialist**
-   - Role: Video Producer
-   - Goal: Create video scripts
-   - Context: Uses editing_task output
-   - Conditional: Only for 'video' content type
+   - **What they do**: Create scripts for YouTube or video content
+   - **Like**: A video script writer who adds visual cues and scene descriptions
+   - **Uses**: The final blog post from the Editor
+   - **Only runs**: If you have access to video content (Pro tier+)
 
 #### Task Flow
+
+**Visual Representation**:
 
 ```
 Research Task (Researcher)
@@ -769,6 +867,13 @@ Editing Task (Editor)    │
 Social Media Task    Audio Task         Video Task
 (Social Specialist) (Audio Specialist) (Video Specialist)
 ```
+
+**What This Means**:
+- The Researcher works first (gathering information)
+- The Writer uses that research to create content
+- The Editor improves the Writer's work
+- The three specialists work in parallel (at the same time) using the Editor's final output
+- This parallel work makes the system faster for users with Pro or Enterprise tiers
 
 #### Process Types
 

@@ -6,9 +6,29 @@ import { AuthProvider } from '@/contexts/AuthContext'
 export const metadata: Metadata = {
   title: 'Content Creator',
   description: 'AI-powered content creation with CrewAI',
+  manifest: '/manifest.json',
+  themeColor: '#00f0ff',
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    maximumScale: 5,
+    userScalable: true,
+    viewportFit: 'cover',
+  },
   icons: {
-    icon: '/favicon.svg',
-    apple: '/icon.svg',
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Content Crew',
   },
 }
 

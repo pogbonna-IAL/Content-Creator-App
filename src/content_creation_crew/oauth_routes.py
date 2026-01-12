@@ -2,6 +2,7 @@
 OAuth authentication routes for Google, Facebook, and GitHub
 """
 import os
+import json
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from datetime import timedelta
 from fastapi_sso import GoogleSSO, FacebookSSO, GithubSSO
 from .database import get_db, User
 from .auth import create_access_token, get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
+from .config import config
 
 router = APIRouter(prefix="/api/auth/oauth", tags=["oauth"])
 
@@ -137,10 +139,43 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
             data={"sub": str(user.id)}, expires_delta=access_token_expires
         )
         
-        # Redirect to frontend with token
-        return RedirectResponse(
+        # Create redirect response with httpOnly cookie
+        response = RedirectResponse(
             url=f"{FRONTEND_CALLBACK_URL}?token={access_token}&provider=google"
         )
+        
+        # Set httpOnly cookie for token (secure in production)
+        cookie_max_age = int(access_token_expires.total_seconds())
+        response.set_cookie(
+            key="auth_token",
+            value=access_token,
+            max_age=cookie_max_age,
+            httponly=True,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        # Set user info cookie
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "provider": user.provider
+        }
+        response.set_cookie(
+            key="auth_user",
+            value=json.dumps(user_data),
+            max_age=cookie_max_age,
+            httponly=False,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        return response
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -189,10 +224,43 @@ async def facebook_callback(request: Request, db: Session = Depends(get_db)):
             data={"sub": str(user.id)}, expires_delta=access_token_expires
         )
         
-        # Redirect to frontend with token
-        return RedirectResponse(
+        # Create redirect response with httpOnly cookie
+        response = RedirectResponse(
             url=f"{FRONTEND_CALLBACK_URL}?token={access_token}&provider=facebook"
         )
+        
+        # Set httpOnly cookie for token
+        cookie_max_age = int(access_token_expires.total_seconds())
+        response.set_cookie(
+            key="auth_token",
+            value=access_token,
+            max_age=cookie_max_age,
+            httponly=True,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        # Set user info cookie
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "provider": user.provider
+        }
+        response.set_cookie(
+            key="auth_user",
+            value=json.dumps(user_data),
+            max_age=cookie_max_age,
+            httponly=False,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        return response
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -241,10 +309,43 @@ async def github_callback(request: Request, db: Session = Depends(get_db)):
             data={"sub": str(user.id)}, expires_delta=access_token_expires
         )
         
-        # Redirect to frontend with token
-        return RedirectResponse(
+        # Create redirect response with httpOnly cookie
+        response = RedirectResponse(
             url=f"{FRONTEND_CALLBACK_URL}?token={access_token}&provider=github"
         )
+        
+        # Set httpOnly cookie for token
+        cookie_max_age = int(access_token_expires.total_seconds())
+        response.set_cookie(
+            key="auth_token",
+            value=access_token,
+            max_age=cookie_max_age,
+            httponly=True,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        # Set user info cookie
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "provider": user.provider
+        }
+        response.set_cookie(
+            key="auth_user",
+            value=json.dumps(user_data),
+            max_age=cookie_max_age,
+            httponly=False,
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        return response
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

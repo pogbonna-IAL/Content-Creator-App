@@ -64,9 +64,9 @@ class ContentCreationCrew():
         tier_config = self.tier_config.get(tier, {})
         temperature = 0.3 if tier == 'free' else 0.5  # Lower temp for free tier = faster
         
-        # Get Ollama base URL from environment variable, default to localhost
-        import os
-        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Get Ollama base URL from config
+        from .config import config
+        ollama_base_url = config.OLLAMA_BASE_URL
         
         self.llm = LLM(
             model=model,

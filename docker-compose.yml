@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   db:
@@ -20,16 +18,41 @@ services:
       retries: 5
     networks:
       - content-crew-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: content-crew-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - content-crew-network
+    restart: unless-stopped
 
   # Backend API Service
-  backend:
+  api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: content-crew-backend
+    container_name: content-crew-api
     environment:
+      # Environment
+      ENV: ${ENV:-dev}
+      
       # Database
       DATABASE_URL: postgresql://${POSTGRES_USER:-contentcrew}:${POSTGRES_PASSWORD:-contentcrew123}@db:5432/${POSTGRES_DB:-content_crew}
+      
+      # Redis
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       
       # Security
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production-min-32-chars}
@@ -42,27 +65,37 @@ services:
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       
+      # Payment providers (optional - set in .env)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      PAYSTACK_WEBHOOK_SECRET: ${PAYSTACK_WEBHOOK_SECRET:-}
+      
       # Frontend callback URLs
       FRONTEND_CALLBACK_URL: ${FRONTEND_CALLBACK_URL:-http://localhost:3000/auth/callback}
       API_BASE_URL: ${API_BASE_URL:-http://localhost:8000}
       
-      # Ollama connection (use ollama service name when Ollama is in Docker)
+      # Ollama connection (use ollama service name when Ollama is in Docker, or external URL)
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      
+      # Build metadata
+      BUILD_VERSION: ${BUILD_VERSION:-dev}
+      COMMIT_HASH: ${COMMIT_HASH:-unknown}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
       
       # Python
       PYTHONUNBUFFERED: 1
+      PORT: 8000
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
-      - ./alembic:/app/alembic
-      - ./alembic.ini:/app/alembic.ini
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      redis:
+        condition: service_healthy
+    # Note: Ollama dependency removed - use external Ollama or enable via profile
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -74,20 +107,23 @@ services:
     restart: unless-stopped
 
   # Frontend Web UI
-  frontend:
+  web:
     build:
       context: ./web-ui
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    container_name: content-crew-frontend
+    container_name: content-crew-web
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      NEXT_PUBLIC_FACEBOOK_CLIENT_ID: ${NEXT_PUBLIC_FACEBOOK_CLIENT_ID:-}
+      NEXT_PUBLIC_GITHUB_CLIENT_ID: ${NEXT_PUBLIC_GITHUB_CLIENT_ID:-}
       NODE_ENV: production
     ports:
       - "3000:3000"
     depends_on:
-      backend:
+      api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
@@ -99,7 +135,7 @@ services:
       - content-crew-network
     restart: unless-stopped
 
-  # Ollama Service
+  # Ollama Service (optional - use profile to enable)
   ollama:
     image: ollama/ollama:latest
     container_name: content-crew-ollama
@@ -110,6 +146,8 @@ services:
     networks:
       - content-crew-network
     restart: unless-stopped
+    profiles:
+      - ollama
     # Note: After starting, you need to pull models manually:
     # docker exec content-crew-ollama ollama pull llama3.2:1b
     # docker exec content-crew-ollama ollama pull llama3.2:3b
@@ -117,6 +155,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local
   ollama_data:
     driver: local

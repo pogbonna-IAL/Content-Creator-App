@@ -1,12 +1,13 @@
 """
 Middleware for tier-based access control and feature gating
+Uses PlanPolicy internally for consistent enforcement
 """
 from functools import wraps
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Callable
 from ..database import User
-from ..services.subscription_service import SubscriptionService
+from ..services.plan_policy import PlanPolicy
 
 
 def require_tier(*allowed_tiers: str):
@@ -37,14 +38,14 @@ def require_tier(*allowed_tiers: str):
                     detail="Database session not available"
                 )
             
-            subscription_service = SubscriptionService(db)
-            user_tier = subscription_service.get_user_tier(current_user.id)
+            policy = PlanPolicy(db, current_user)
+            user_plan = policy.get_plan()
             
-            if user_tier not in allowed_tiers:
+            if user_plan not in allowed_tiers:
                 tier_names = ', '.join(allowed_tiers)
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"This feature requires {tier_names} tier. Your current tier: {user_tier}"
+                    detail=f"This feature requires {tier_names} plan. Your current plan: {user_plan}"
                 )
             
             return await func(*args, **kwargs)
@@ -73,29 +74,23 @@ def check_content_type_access(content_type: str):
                     detail="Authentication required"
                 )
             
-            subscription_service = SubscriptionService(db)
+            policy = PlanPolicy(db, current_user)
             
-            # Check if tier supports content type
-            if not subscription_service.check_content_type_access(current_user.id, content_type):
+            # Check if plan supports content type
+            if not policy.check_content_type_access(content_type):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Your subscription tier does not include {content_type} content generation."
+                    detail=f"Your subscription plan does not include {content_type} content generation."
                 )
             
-            # Check usage limits
-            has_remaining, remaining = subscription_service.check_usage_limit(
-                current_user.id, content_type
-            )
+            # Enforce monthly limit (raises HTTPException if exceeded)
+            try:
+                policy.enforce_monthly_limit(content_type)
+            except HTTPException:
+                raise  # Re-raise HTTPException from enforce_monthly_limit
             
-            if not has_remaining:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"You've reached your {content_type} generation limit for this period. "
-                           f"Please wait for the next billing period."
-                )
-            
-            # Record usage before generation
-            subscription_service.record_usage(current_user.id, content_type)
+            # Note: Usage is incremented after successful generation, not before
+            # This prevents counting failed generations against limits
             
             return await func(*args, **kwargs)
         return wrapper
@@ -123,12 +118,12 @@ def check_feature_access(feature: str):
                     detail="Authentication required"
                 )
             
-            subscription_service = SubscriptionService(db)
+            policy = PlanPolicy(db, current_user)
             
-            if not subscription_service.check_feature_access(current_user.id, feature):
+            if not policy.check_feature_access(feature):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"This feature requires a higher subscription tier."
+                    detail=f"This feature requires a higher subscription plan."
                 )
             
             return await func(*args, **kwargs)

@@ -13,8 +13,14 @@ from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorization
 from sqlalchemy.orm import Session
 from .database import get_db, User
 
+# Import config for SECRET_KEY (will be imported after config is initialized)
+# Use lazy import to avoid circular dependency
+def get_secret_key():
+    """Get secret key from config module"""
+    from .config import config
+    return config.SECRET_KEY
+
 # Security configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production-min-32-chars")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
@@ -98,7 +104,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    secret_key = get_secret_key()
+    encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
 
@@ -108,7 +115,8 @@ def verify_token(token: str) -> Optional[dict]:
     logger = logging.getLogger(__name__)
     
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        secret_key = get_secret_key()
+        payload = jwt.decode(token, secret_key, algorithms=[ALGORITHM])
         return payload
     except jwt.ExpiredSignatureError:
         logger.warning("Token verification failed: Token has expired")

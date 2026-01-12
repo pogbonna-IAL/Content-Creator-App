@@ -1,0 +1,1230 @@
+"""
+Content generation API routes (v1)
+Jobs-first persistence with SSE streaming support
+"""
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import Request as FastAPIRequest
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
+from typing import Optional, List, Tuple, Dict
+from datetime import datetime
+import json
+import asyncio
+import logging
+
+from .database import User, get_db, ContentJob, ContentArtifact, JobStatus
+from .auth import get_current_user
+from .services.content_service import ContentService
+from .services.plan_policy import PlanPolicy
+from .services.tts_provider import get_tts_provider
+from .services.storage_provider import get_storage_provider
+from .services.sse_store import get_sse_store
+from .schemas import PROMPT_VERSION
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/v1/content", tags=["content"])
+
+
+class GenerateRequest(BaseModel):
+    """Request model for content generation"""
+    topic: str = Field(..., description="Content topic", min_length=1, max_length=5000)
+    content_types: Optional[List[str]] = Field(
+        default=None,
+        description="Content types to generate: blog, social, audio, video",
+        max_items=4
+    )
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="Optional idempotency key to prevent duplicate jobs",
+        max_length=255
+    )
+
+
+class JobResponse(BaseModel):
+    """Response model for job information"""
+    id: int
+    topic: str
+    formats_requested: List[str]
+    status: str
+    idempotency_key: Optional[str]
+    created_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    artifacts: List[dict] = Field(default_factory=list)
+    
+    class Config:
+        from_attributes = True
+
+
+class JobListResponse(BaseModel):
+    """Response model for job list"""
+    jobs: List[JobResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.post("/generate", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+async def create_generation_job(
+    request: GenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new content generation job
+    
+    Returns the job ID which can be used to:
+    - Query job status: GET /v1/content/jobs/{id}
+    - Stream progress: GET /v1/content/jobs/{id}/stream
+    """
+    if not request.topic or not request.topic.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Topic is required"
+        )
+    
+    topic = request.topic.strip()
+    logger.info(f"Received job creation request for topic: {topic} from user {current_user.id}")
+    
+    # Initialize services
+    content_service = ContentService(db, current_user)
+    policy = PlanPolicy(db, current_user)
+    plan = policy.get_plan()
+    
+    # Determine content types
+    requested_content_types = request.content_types or []
+    
+    # Validate content type access
+    valid_content_types = []
+    for content_type in requested_content_types:
+        if not policy.check_content_type_access(content_type):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "content_type_not_available",
+                    "message": f"{content_type.capitalize()} content is not available on your current plan ({plan}).",
+                    "content_type": content_type,
+                    "plan": plan
+                }
+            )
+        
+        # Enforce monthly limit
+        try:
+            policy.enforce_monthly_limit(content_type)
+            valid_content_types.append(content_type)
+        except HTTPException:
+            raise
+    
+    # Use plan defaults if no content types specified
+    if not valid_content_types:
+        tier_config = policy.get_tier_config()
+        if tier_config:
+            valid_content_types = tier_config.get('content_types', ['blog'])
+        else:
+            valid_content_types = ['blog']
+    
+    # Enforce limits for default content types
+    for content_type in valid_content_types:
+        try:
+            policy.enforce_monthly_limit(content_type)
+        except HTTPException:
+            raise
+    
+    # Create job
+    try:
+        job = content_service.create_job(
+            topic=topic,
+            content_types=valid_content_types,
+            idempotency_key=request.idempotency_key
+        )
+    except HTTPException as e:
+        raise e
+    
+    # Start generation asynchronously (don't wait)
+    asyncio.create_task(
+        run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
+    )
+    
+    # Return job info
+    return _job_to_response(job)
+
+
+@router.get("/jobs/{job_id}", response_model=JobResponse)
+async def get_job(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get job details by ID"""
+    content_service = ContentService(db, current_user)
+    job = content_service.get_job(job_id)
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    return _job_to_response(job)
+
+
+@router.get("/jobs", response_model=JobListResponse)
+async def list_jobs(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    limit: int = Query(50, ge=1, le=100, description="Number of results"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List user's content generation jobs"""
+    content_service = ContentService(db, current_user)
+    jobs = content_service.list_jobs(status=status, limit=limit, offset=offset)
+    
+    # Get total count
+    total = db.query(ContentJob).filter(
+        ContentJob.user_id == current_user.id
+    ).count()
+    
+    return JobListResponse(
+        jobs=[_job_to_response(job) for job in jobs],
+        total=total,
+        limit=limit,
+        offset=offset
+    )
+
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job_progress(
+    job_id: int,
+    request: FastAPIRequest,
+    last_event_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Stream job progress via Server-Sent Events (SSE)
+    
+    Supports Last-Event-ID header for reconnection and event replay.
+    
+    Events:
+    - job_started: Job has started processing
+    - agent_progress: Progress update from an agent
+    - artifact_ready: An artifact has been generated
+    - complete: Job completed successfully
+    - error: Job failed
+    
+    Args:
+        job_id: Job ID to stream
+        request: FastAPI request object (for Last-Event-ID header)
+    """
+    from fastapi.responses import StreamingResponse
+    from content_creation_crew.services.sse_store import get_sse_store
+    
+    content_service = ContentService(db, current_user)
+    job = content_service.get_job(job_id)
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    # Get SSE event store
+    sse_store = get_sse_store()
+    
+    # Get Last-Event-ID from header (use query param if header not available)
+    last_event_id = request.headers.get("Last-Event-ID") or last_event_id
+    last_event_id_int = None
+    if last_event_id:
+        try:
+            last_event_id_int = int(last_event_id)
+        except ValueError:
+            pass
+    
+    async def generate_stream():
+        """Generate SSE stream for job progress"""
+        # Replay missed events if last_event_id provided
+        if last_event_id_int:
+            missed_events = sse_store.get_events_since(job_id, last_event_id_int)
+            for event in missed_events:
+                yield f"id: {event['id']}\n"
+                yield f"event: {event['type']}\n"
+                yield f"data: {json.dumps(event['data'])}\n\n"
+        
+        # Send initial job status if not already sent
+        if not last_event_id_int:
+            event_data = {'type': 'job_started', 'job_id': job_id, 'status': job.status}
+            event_id = sse_store.add_event(job_id, 'job_started', event_data)
+            yield f"id: {event_id}\n"
+            yield f"event: job_started\n"
+            yield f"data: {json.dumps(event_data)}\n\n"
+        
+        # Poll for job updates
+        last_status = job.status
+        last_artifact_count = 0
+        
+        while True:
+            # Refresh job from database
+            db.refresh(job)
+            
+            # Check for status changes
+            if job.status != last_status:
+                event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
+                event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
+                event_id = sse_store.add_event(job_id, event_type, event_data)
+                yield f"id: {event_id}\n"
+                yield f"event: {event_type}\n"
+                yield f"data: {json.dumps(event_data)}\n\n"
+                last_status = job.status
+                
+                # If completed or failed, send final event and exit
+                if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
+                    # Send artifacts if completed
+                    if job.status == JobStatus.COMPLETED.value:
+                        artifacts = db.query(ContentArtifact).filter(
+                            ContentArtifact.job_id == job_id
+                        ).all()
+                        artifact_data = {
+                            'type': 'complete',
+                            'job_id': job_id,
+                            'artifacts': [
+                                {
+                                    'type': a.type,
+                                    'content_text': a.content_text[:500] if a.content_text else None,  # Preview only
+                                    'created_at': a.created_at.isoformat() if a.created_at else None
+                                }
+                                for a in artifacts
+                            ]
+                        }
+                        event_id = sse_store.add_event(job_id, 'complete', artifact_data)
+                        yield f"id: {event_id}\n"
+                        yield f"event: complete\n"
+                        yield f"data: {json.dumps(artifact_data)}\n\n"
+                    break
+            
+            # Check for new artifacts
+            current_artifacts = db.query(ContentArtifact).filter(
+                ContentArtifact.job_id == job_id
+            ).all()
+            
+            if len(current_artifacts) > last_artifact_count:
+                # New artifacts created
+                new_artifacts = current_artifacts[last_artifact_count:]
+                for artifact in new_artifacts:
+                    event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
+                    
+                    # Include metadata for voiceover_audio artifacts
+                    if artifact.type == 'voiceover_audio' and artifact.content_json:
+                        event_data['metadata'] = artifact.content_json
+                        if artifact.content_json.get('storage_key'):
+                            storage = get_storage_provider()
+                            event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
+                    
+                    event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
+                    yield f"id: {event_id}\n"
+                    yield f"event: artifact_ready\n"
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                last_artifact_count = len(current_artifacts)
+            
+            # Wait before next poll
+            await asyncio.sleep(1)
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+def _job_to_response(job: ContentJob) -> JobResponse:
+    """Convert ContentJob to JobResponse"""
+    artifacts = []
+    if job.artifacts:
+        for artifact in job.artifacts:
+            artifact_dict = {
+                'id': artifact.id,
+                'type': artifact.type,
+                'created_at': artifact.created_at.isoformat() if artifact.created_at else None,
+                'has_content': bool(artifact.content_text)
+            }
+            
+            # Include metadata for voiceover_audio artifacts
+            if artifact.type == 'voiceover_audio' and artifact.content_json:
+                artifact_dict['metadata'] = artifact.content_json
+                # Include storage URL if available
+                if artifact.content_json.get('storage_key'):
+                    from .services.storage_provider import get_storage_provider
+                    storage = get_storage_provider()
+                    artifact_dict['url'] = storage.get_url(artifact.content_json['storage_key'])
+            
+            # Include metadata for video artifacts
+            if artifact.type in ['final_video', 'video_clip', 'storyboard_image'] and artifact.content_json:
+                artifact_dict['metadata'] = artifact.content_json
+                # Include storage URL if available
+                if artifact.content_json.get('storage_key'):
+                    storage = get_storage_provider()
+                    artifact_dict['url'] = storage.get_url(artifact.content_json['storage_key'])
+            
+            artifacts.append(artifact_dict)
+    
+    return JobResponse(
+        id=job.id,
+        topic=job.topic,
+        formats_requested=job.formats_requested,
+        status=job.status,
+        idempotency_key=job.idempotency_key,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        artifacts=artifacts
+    )
+
+
+async def run_generation_async(
+    job_id: int,
+    topic: str,
+    content_types: List[str],
+    plan: str,
+    user_id: int
+):
+    """
+    Run content generation asynchronously and persist results
+    
+    This function runs in the background and updates the job status and artifacts.
+    Includes timeout protection to prevent jobs from hanging indefinitely.
+    """
+    from content_creation_crew.crew import ContentCreationCrew
+    from content_creation_crew.services.content_service import ContentService
+    from content_creation_crew.services.plan_policy import PlanPolicy
+    from content_creation_crew.content_validator import validate_and_repair_content
+    from content_creation_crew.database import User, SessionLocal
+    from content_creation_crew.config import config
+    from content_creation_crew.services.sse_store import get_sse_store
+    
+    # Import extraction functions dynamically to avoid circular imports
+    import importlib
+    api_server_module = importlib.import_module('api_server')
+    
+    session = None
+    sse_store = get_sse_store()
+    timeout_seconds = config.CREWAI_TIMEOUT
+    
+    try:
+        # Get fresh database session
+        session = SessionLocal()
+        user = session.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            logger.error(f"User {user_id} not found for job {job_id}")
+            return
+        
+        content_service = ContentService(session, user)
+        policy = PlanPolicy(session, user)
+        
+        # Update job status to running
+        content_service.update_job_status(
+            job_id,
+            JobStatus.RUNNING.value,
+            started_at=datetime.utcnow()
+        )
+        
+        # Send SSE event for job started
+        sse_store.add_event(job_id, 'job_started', {
+            'job_id': job_id,
+            'status': JobStatus.RUNNING.value,
+            'message': 'Starting content generation...'
+        })
+        
+        # Get model name
+        model_name = policy.get_model_name()
+        logger.info(f"Job {job_id}: Starting generation with model {model_name}, timeout={timeout_seconds}s")
+        
+        # Run generation
+        crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
+        crew_obj = crew_instance._build_crew(content_types=content_types)
+        
+        # Send progress update
+        sse_store.add_event(job_id, 'agent_progress', {
+            'job_id': job_id,
+            'message': 'Initializing CrewAI agents...',
+            'step': 'initialization'
+        })
+        
+        # Run crew synchronously with timeout (we're already in async task)
+        loop = asyncio.get_event_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: crew_obj.kickoff(inputs={'topic': topic})
+                ),
+                timeout=timeout_seconds
+            )
+            logger.info(f"Job {job_id}: CrewAI execution completed successfully")
+        except asyncio.TimeoutError:
+            error_msg = f"Content generation timed out after {timeout_seconds} seconds. The generation process took longer than the configured timeout."
+            logger.error(f"Job {job_id}: {error_msg}")
+            sse_store.add_event(job_id, 'error', {
+                'job_id': job_id,
+                'message': error_msg,
+                'error_type': 'timeout'
+            })
+            raise TimeoutError(error_msg)
+        
+        # Send progress update
+        sse_store.add_event(job_id, 'agent_progress', {
+            'job_id': job_id,
+            'message': 'Extracting and validating content...',
+            'step': 'extraction'
+        })
+        
+        # Extract and validate content
+        raw_content = await api_server_module.extract_content_async(result, topic, logger)
+        
+        # Validate and create blog artifact
+        is_valid, validated_model, content, was_repaired = validate_and_repair_content(
+            'blog', raw_content, model_name, allow_repair=True
+        )
+        if not is_valid:
+            content = api_server_module.clean_content(raw_content)
+        
+        if content and len(content.strip()) > 10:
+            content_service.create_artifact(
+                job_id,
+                'blog',
+                content,
+                content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                prompt_version=PROMPT_VERSION,
+                model_used=model_name
+            )
+            # Send artifact ready event
+            sse_store.add_event(job_id, 'artifact_ready', {
+                'job_id': job_id,
+                'artifact_type': 'blog',
+                'message': 'Blog content generated'
+            })
+            logger.info(f"Job {job_id}: Blog artifact created")
+        
+        # Extract and validate other content types
+        for content_type in content_types:
+            if content_type == 'blog':
+                continue
+            
+            raw_content_func = {
+                'social': api_server_module.extract_social_media_content_async,
+                'audio': api_server_module.extract_audio_content_async,
+                'video': api_server_module.extract_video_content_async,
+            }.get(content_type)
+            
+            if raw_content_func:
+                raw_content = await raw_content_func(result, topic, logger)
+                if raw_content:
+                    is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
+                        content_type, raw_content, model_name, allow_repair=True
+                    )
+                    if not is_valid:
+                        validated_content = api_server_module.clean_content(raw_content)
+                    
+                    if validated_content and len(validated_content.strip()) > 10:
+                        content_service.create_artifact(
+                            job_id,
+                            content_type,
+                            validated_content,
+                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                            prompt_version=PROMPT_VERSION,
+                            model_used=model_name
+                        )
+                        # Send artifact ready event
+                        sse_store.add_event(job_id, 'artifact_ready', {
+                            'job_id': job_id,
+                            'artifact_type': content_type,
+                            'message': f'{content_type.capitalize()} content generated'
+                        })
+                        logger.info(f"Job {job_id}: {content_type} artifact created")
+        
+        # Update job status to completed
+        content_service.update_job_status(
+            job_id,
+            JobStatus.COMPLETED.value,
+            finished_at=datetime.utcnow()
+        )
+        
+        # Send completion event
+        sse_store.add_event(job_id, 'complete', {
+            'job_id': job_id,
+            'status': JobStatus.COMPLETED.value,
+            'message': 'Content generation completed successfully'
+        })
+        
+        # Increment usage
+        for content_type in content_types:
+            policy.increment_usage(content_type)
+        
+        logger.info(f"Job {job_id} completed successfully")
+        
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        error_msg = str(e) if str(e) else f"Content generation timed out after {timeout_seconds} seconds"
+        logger.error(f"Job {job_id} failed: {error_msg}", exc_info=True)
+        if session:
+            try:
+                # Refresh session if needed
+                session.rollback()
+                user = session.query(User).filter(User.id == user_id).first()
+                if user:
+                    content_service = ContentService(session, user)
+                    content_service.update_job_status(
+                        job_id,
+                        JobStatus.FAILED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': error_msg,
+                        'error_type': 'timeout'
+                    })
+            except Exception as update_error:
+                logger.error(f"Failed to update job status after timeout: {update_error}")
+    except Exception as e:
+        error_msg = f"Content generation failed: {str(e)}"
+        logger.error(f"Job {job_id} failed: {error_msg}", exc_info=True)
+        if session:
+            try:
+                # Refresh session if needed
+                session.rollback()
+                user = session.query(User).filter(User.id == user_id).first()
+                if user:
+                    content_service = ContentService(session, user)
+                    content_service.update_job_status(
+                        job_id,
+                        JobStatus.FAILED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': error_msg,
+                        'error_type': type(e).__name__
+                    })
+            except Exception as update_error:
+                logger.error(f"Failed to update job status: {update_error}")
+    finally:
+        if session:
+            try:
+                session.close()
+            except Exception as close_error:
+                logger.warning(f"Error closing session for job {job_id}: {close_error}")
+
+
+class VoiceoverRequest(BaseModel):
+    """Request model for voiceover generation"""
+    job_id: Optional[int] = Field(None, description="Job ID to use audio_script from")
+    narration_text: Optional[str] = Field(None, description="Narration text (if not using job_id)", max_length=10000)
+    voice_id: str = Field(default="default", description="Voice identifier")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
+    format: str = Field(default="wav", description="Output format")
+
+
+@router.post("/voiceover", status_code=status.HTTP_202_ACCEPTED)
+async def create_voiceover(
+    request: VoiceoverRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a voiceover (TTS) for a job's audio script or provided narration text
+    
+    Creates a voiceover_audio artifact linked to the job and streams progress via SSE.
+    
+    Args:
+        request: Voiceover request (job_id OR narration_text required)
+    
+    Returns:
+        Job ID and voiceover task info
+    
+    Raises:
+        HTTPException: If plan limit exceeded or feature not available
+    """
+    # Check if user can generate voiceover
+    plan_policy = PlanPolicy(db, current_user)
+    plan_policy.enforce_media_generation_limit('voiceover_audio')
+    
+    content_service = ContentService(db, current_user)
+    sse_store = get_sse_store()
+    
+    # Determine narration text source
+    narration_text = None
+    job_id = request.job_id
+    
+    if job_id:
+        # Get job and find audio_script artifact
+        job = content_service.get_job(job_id)
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found"
+            )
+        
+        # Find audio_script artifact
+        audio_script_artifact = None
+        for artifact in job.artifacts:
+            if artifact.type == 'audio':
+                audio_script_artifact = artifact
+                break
+        
+        if not audio_script_artifact or not audio_script_artifact.content_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Job does not have an audio script. Generate audio content first or provide narration_text."
+            )
+        
+        narration_text = audio_script_artifact.content_text
+        logger.info(f"Using audio script from job {job_id} for voiceover")
+    
+    elif request.narration_text:
+        narration_text = request.narration_text.strip()
+        if not narration_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="narration_text cannot be empty"
+            )
+        
+        # Create a new job for standalone voiceover
+        # This allows tracking voiceover as a separate job
+        job = content_service.create_job(
+            topic=f"Voiceover: {narration_text[:50]}...",
+            content_types=['audio'],
+            idempotency_key=None
+        )
+        job_id = job.id
+        logger.info(f"Created new job {job_id} for standalone voiceover")
+    
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either job_id or narration_text must be provided"
+        )
+    
+    # Start voiceover generation asynchronously
+    asyncio.create_task(
+        _generate_voiceover_async(
+            job_id=job_id,
+            narration_text=narration_text,
+            voice_id=request.voice_id,
+            speed=request.speed,
+            format=request.format,
+            user_id=current_user.id
+        )
+    )
+    
+    return {
+        "job_id": job_id,
+        "status": "processing",
+        "message": "Voiceover generation started"
+    }
+
+
+async def _generate_voiceover_async(
+    job_id: int,
+    narration_text: str,
+    voice_id: str,
+    speed: float,
+    format: str,
+    user_id: int
+):
+    """
+    Generate voiceover asynchronously
+    
+    Args:
+        job_id: Job ID
+        narration_text: Text to synthesize
+        voice_id: Voice identifier
+        speed: Speech speed
+        format: Output format
+        user_id: User ID for database session
+    """
+    from .database import get_db, ContentArtifact, User
+    from .services.plan_policy import PlanPolicy
+    
+    # Get database session
+    db = next(get_db())
+    sse_store = get_sse_store()
+    
+    try:
+        # Send TTS started event
+        sse_store.add_event(
+            job_id,
+            'tts_started',
+            {
+                'job_id': job_id,
+                'voice_id': voice_id,
+                'text_length': len(narration_text)
+            }
+        )
+        
+        logger.info(f"Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}")
+        
+        # Get TTS provider
+        tts_provider = get_tts_provider()
+        
+        if not tts_provider.is_available():
+            raise RuntimeError("TTS provider is not available")
+        
+        # Send progress event
+        sse_store.add_event(
+            job_id,
+            'tts_progress',
+            {
+                'job_id': job_id,
+                'message': 'Synthesizing speech...',
+                'progress': 25
+            }
+        )
+        
+        # Synthesize speech
+        audio_bytes, metadata = tts_provider.synthesize(
+            text=narration_text,
+            voice_id=voice_id,
+            speed=speed,
+            format=format
+        )
+        
+        logger.info(f"TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s")
+        
+        # Send progress event
+        sse_store.add_event(
+            job_id,
+            'tts_progress',
+            {
+                'job_id': job_id,
+                'message': 'Saving audio file...',
+                'progress': 75
+            }
+        )
+        
+        # Store audio file
+        storage = get_storage_provider()
+        storage_key = storage.generate_key('voiceovers', f'.{format}')
+        storage_url = storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
+        
+        logger.info(f"Audio file stored: {storage_key} for job {job_id}")
+        
+        # Create voiceover_audio artifact
+        user = db.query(User).filter(User.id == user_id).first()
+        content_service = ContentService(db, user)
+        
+        artifact_metadata = {
+            'voice_id': metadata.get('voice_id', voice_id),
+            'duration_sec': metadata.get('duration_sec'),
+            'format': metadata.get('format', format),
+            'sample_rate': metadata.get('sample_rate'),
+            'text_hash': metadata.get('text_hash'),
+            'storage_key': storage_key,
+            'storage_url': storage_url,
+            'provider': metadata.get('provider', 'piper')
+        }
+        
+        artifact = content_service.create_artifact(
+            job_id=job_id,
+            artifact_type='voiceover_audio',
+            content_text=narration_text[:500],  # Store first 500 chars as reference
+            content_json=artifact_metadata,
+            prompt_version=None,
+            model_used=metadata.get('provider', 'piper')
+        )
+        
+        # Increment voiceover usage counter
+        plan_policy = PlanPolicy(db, User(id=user_id))
+        plan_policy.increment_usage('voiceover_audio')
+        
+        logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
+        
+        # Send artifact ready event
+        sse_store.add_event(
+            job_id,
+            'artifact_ready',
+            {
+                'job_id': job_id,
+                'artifact_type': 'voiceover_audio',
+                'artifact_id': artifact.id,
+                'metadata': artifact_metadata
+            }
+        )
+        
+        # Send TTS completed event
+        sse_store.add_event(
+            job_id,
+            'tts_completed',
+            {
+                'job_id': job_id,
+                'artifact_id': artifact.id,
+                'duration_sec': metadata.get('duration_sec'),
+                'storage_url': storage_url
+            }
+        )
+        
+    except Exception as e:
+        error_message = f"Voiceover generation failed: {str(e)}"
+        logger.error(f"Job {job_id} voiceover failed: {error_message}", exc_info=True)
+        
+        # Send error event
+        sse_store.add_event(
+            job_id,
+            'tts_failed',
+            {
+                'job_id': job_id,
+                'message': error_message,
+                'error_type': type(e).__name__
+            }
+        )
+    finally:
+        db.close()
+
+
+class VideoRenderRequest(BaseModel):
+    """Request model for video rendering"""
+    job_id: int = Field(..., description="Job ID with video_script artifact")
+    resolution: Optional[Tuple[int, int]] = Field(
+        default=(1920, 1080),
+        description="Video resolution (width, height)"
+    )
+    fps: int = Field(default=30, ge=24, le=60, description="Frames per second")
+    background_type: str = Field(
+        default="solid",
+        description="Background type: solid, placeholder, or upload"
+    )
+    background_color: str = Field(
+        default="#000000",
+        description="Background color (hex) for solid background"
+    )
+    background_image_path: Optional[str] = Field(
+        None,
+        description="Path to uploaded background image (for upload type)"
+    )
+    include_narration: bool = Field(
+        default=True,
+        description="Include narration audio from voiceover_audio artifact if available"
+    )
+    renderer: str = Field(
+        default="baseline",
+        description="Renderer: baseline (CPU) or comfyui (GPU, requires ENABLE_AI_VIDEO=true)"
+    )
+
+
+@router.post("/video/render", status_code=status.HTTP_202_ACCEPTED)
+async def render_video(
+    request: VideoRenderRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Render video from a job's video script
+    
+    Creates final_video artifact and optionally storyboard/storyboard_image/video_clip artifacts.
+    Streams progress via SSE.
+    
+    Args:
+        request: Video render request
+    
+    Returns:
+        Job ID and render task info
+    """
+    content_service = ContentService(db, current_user)
+    sse_store = get_sse_store()
+    
+    # Get job and find video_script artifact
+    job = content_service.get_job(request.job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    # Find video_script artifact
+    video_script_artifact = None
+    for artifact in job.artifacts:
+        if artifact.type == 'video':
+            video_script_artifact = artifact
+            break
+    
+    if not video_script_artifact or not video_script_artifact.content_json:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job does not have a video script. Generate video content first."
+        )
+    
+    # Find voiceover_audio artifact if include_narration is True
+    narration_audio_path = None
+    if request.include_narration:
+        for artifact in job.artifacts:
+            if artifact.type == 'voiceover_audio' and artifact.content_json:
+                storage_key = artifact.content_json.get('storage_key')
+                if storage_key:
+                    from .services.storage_provider import get_storage_provider
+                    storage = get_storage_provider()
+                    # Get full path to audio file
+                    narration_audio_path = storage.base_path / storage_key if hasattr(storage, 'base_path') else None
+                    break
+    
+    # Start video rendering asynchronously
+    asyncio.create_task(
+        _render_video_async(
+            job_id=request.job_id,
+            video_script_json=video_script_artifact.content_json,
+            resolution=request.resolution,
+            fps=request.fps,
+            background_type=request.background_type,
+            background_color=request.background_color,
+            background_image_path=request.background_image_path,
+            narration_audio_path=str(narration_audio_path) if narration_audio_path and narration_audio_path.exists() else None,
+            include_narration=request.include_narration,
+            renderer=request.renderer,
+            user_id=current_user.id
+        )
+    )
+    
+    return {
+        "job_id": request.job_id,
+        "status": "processing",
+        "message": "Video rendering started"
+    }
+
+
+async def _render_video_async(
+    job_id: int,
+    video_script_json: Dict[str, Any],
+    resolution: Tuple[int, int],
+    fps: int,
+    background_type: str,
+    background_color: str,
+    background_image_path: Optional[str],
+    narration_audio_path: Optional[str],
+    include_narration: bool,
+    renderer: str,
+    user_id: int
+):
+    """
+    Render video asynchronously
+    
+    Args:
+        job_id: Job ID
+        video_script_json: Video script JSON
+        resolution: Video resolution
+        fps: Frames per second
+        background_type: Background type
+        background_color: Background color
+        background_image_path: Optional background image path
+        narration_audio_path: Optional narration audio file path
+        include_narration: Whether to include narration
+        renderer: Renderer name
+        user_id: User ID for database session
+    """
+    from .database import get_db, User
+    from .services.video_provider import get_video_provider
+    from typing import Tuple
+    
+    # Get database session
+    db = next(get_db())
+    sse_store = get_sse_store()
+    
+    try:
+        # Send video render started event
+        sse_store.add_event(
+            job_id,
+            'video_render_started',
+            {
+                'job_id': job_id,
+                'renderer': renderer,
+                'resolution': resolution,
+                'fps': fps,
+                'scenes_count': len(video_script_json.get('scenes', []))
+            }
+        )
+        
+        logger.info(f"Starting video rendering for job {job_id}, renderer: {renderer}")
+        
+        # Get video provider
+        video_provider = get_video_provider(renderer)
+        
+        if not video_provider.is_available():
+            raise RuntimeError(f"Video provider '{renderer}' is not available")
+        
+        # Prepare render options
+        render_options = {
+            "resolution": resolution,
+            "fps": fps,
+            "background_type": background_type,
+            "background_color": background_color,
+            "background_image_path": background_image_path,
+            "include_narration": include_narration,
+            "narration_audio_path": narration_audio_path
+        }
+        
+        # Render video
+        scenes = video_script_json.get('scenes', [])
+        for idx, scene in enumerate(scenes):
+            sse_store.add_event(
+                job_id,
+                'scene_started',
+                {
+                    'job_id': job_id,
+                    'scene_index': idx,
+                    'scene_title': scene.get('title', f'Scene {idx + 1}')
+                }
+            )
+        
+        result = video_provider.render(video_script_json, render_options)
+        
+        # Process scene completion events
+        for idx, scene in enumerate(scenes):
+            sse_store.add_event(
+                job_id,
+                'scene_completed',
+                {
+                    'job_id': job_id,
+                    'scene_index': idx,
+                    'scene_title': scene.get('title', f'Scene {idx + 1}')
+                }
+            )
+        
+        # Store assets
+        user = db.query(User).filter(User.id == user_id).first()
+        content_service = ContentService(db, user)
+        storage = get_storage_provider()
+        
+        # Store storyboard images if any
+        for asset in result.get('assets', []):
+            if asset['type'] == 'storyboard_image':
+                # Read image file
+                with open(asset['file_path'], 'rb') as f:
+                    image_bytes = f.read()
+                
+                # Store image
+                storage_key = storage.generate_key('storyboard_images', '.png')
+                storage.put(storage_key, image_bytes, content_type='image/png')
+                
+                # Create artifact
+                content_service.create_artifact(
+                    job_id=job_id,
+                    artifact_type='storyboard_image',
+                    content_text=None,
+                    content_json={
+                        'storage_key': storage_key,
+                        'storage_url': storage.get_url(storage_key),
+                        'scene_index': asset['metadata'].get('scene_index'),
+                        **asset['metadata']
+                    }
+                )
+                
+                sse_store.add_event(
+                    job_id,
+                    'artifact_ready',
+                    {
+                        'job_id': job_id,
+                        'artifact_type': 'storyboard_image',
+                        'scene_index': asset['metadata'].get('scene_index')
+                    }
+                )
+            
+            elif asset['type'] == 'video_clip':
+                # Read clip file
+                with open(asset['file_path'], 'rb') as f:
+                    clip_bytes = f.read()
+                
+                # Store clip
+                storage_key = storage.generate_key('video_clips', '.mp4')
+                storage.put(storage_key, clip_bytes, content_type='video/mp4')
+                
+                # Create artifact
+                content_service.create_artifact(
+                    job_id=job_id,
+                    artifact_type='video_clip',
+                    content_text=None,
+                    content_json={
+                        'storage_key': storage_key,
+                        'storage_url': storage.get_url(storage_key),
+                        **asset['metadata']
+                    }
+                )
+                
+                sse_store.add_event(
+                    job_id,
+                    'artifact_ready',
+                    {
+                        'job_id': job_id,
+                        'artifact_type': 'video_clip',
+                        'scene_index': asset['metadata'].get('scene_index')
+                    }
+                )
+        
+        # Store final video
+        video_bytes = result['video_file']
+        storage_key = storage.generate_key('videos', '.mp4')
+        storage_url = storage.put(storage_key, video_bytes, content_type='video/mp4')
+        
+        metadata = result['metadata']
+        artifact_metadata = {
+            'storage_key': storage_key,
+            'storage_url': storage_url,
+            **metadata
+        }
+        
+        artifact = content_service.create_artifact(
+            job_id=job_id,
+            artifact_type='final_video',
+            content_text=None,
+            content_json=artifact_metadata,
+            model_used=metadata.get('renderer', 'baseline')
+        )
+        
+        # Increment video render usage counter
+        plan_policy = PlanPolicy(db, User(id=user_id))
+        plan_policy.increment_usage('final_video')
+        
+        logger.info(f"Created final_video artifact {artifact.id} for job {job_id}")
+        
+        # Send artifact ready event
+        sse_store.add_event(
+            job_id,
+            'artifact_ready',
+            {
+                'job_id': job_id,
+                'artifact_type': 'final_video',
+                'artifact_id': artifact.id,
+                'metadata': artifact_metadata
+            }
+        )
+        
+        # Send video render completed event
+        sse_store.add_event(
+            job_id,
+            'video_render_completed',
+            {
+                'job_id': job_id,
+                'artifact_id': artifact.id,
+                'duration_sec': metadata.get('duration_sec'),
+                'resolution': metadata.get('resolution'),
+                'storage_url': storage_url
+            }
+        )
+        
+    except Exception as e:
+        error_message = f"Video rendering failed: {str(e)}"
+        logger.error(f"Job {job_id} video rendering failed: {error_message}", exc_info=True)
+        
+        # Send error event
+        sse_store.add_event(
+            job_id,
+            'video_render_failed',
+            {
+                'job_id': job_id,
+                'message': error_message,
+                'error_type': type(e).__name__
+            }
+        )
+    finally:
+        db.close()
+

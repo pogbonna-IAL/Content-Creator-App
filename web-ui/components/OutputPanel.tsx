@@ -19,10 +19,10 @@ export default function OutputPanel({ output, isLoading, error, status, progress
     }
   }, [output])
   return (
-    <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gradient mb-2">Generated Content</h2>
-        <p className="text-gray-400 text-sm">
+    <div className="glass-effect neon-border rounded-2xl p-4 sm:p-6 h-full flex flex-col">
+      <div className="mb-4 sm:mb-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-gradient mb-2">Generated Content</h2>
+        <p className="text-gray-400 text-xs sm:text-sm">
           Your AI-generated content will appear here
         </p>
         {output && (
@@ -32,16 +32,16 @@ export default function OutputPanel({ output, isLoading, error, status, progress
         )}
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto touch-pan-y overscroll-contain">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center h-full space-y-4">
+          <div className="flex flex-col items-center justify-center h-full space-y-4 py-4">
             <div className="relative">
-              <div className="w-16 h-16 border-4 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin"></div>
-              <div className="absolute inset-0 w-16 h-16 border-4 border-transparent border-r-neon-purple rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }}></div>
+              <div className="w-12 h-12 sm:w-16 sm:h-16 border-4 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin"></div>
+              <div className="absolute inset-0 w-12 h-12 sm:w-16 sm:h-16 border-4 border-transparent border-r-neon-purple rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }}></div>
             </div>
-            <p className="text-neon-cyan animate-pulse">{status || 'Creating your content...'}</p>
+            <p className="text-neon-cyan animate-pulse text-sm sm:text-base text-center px-4">{status || 'Creating your content...'}</p>
             {progress !== undefined && progress > 0 && (
-              <div className="w-full max-w-xs">
+              <div className="w-full max-w-xs px-4">
                 <div className="w-full bg-dark-card rounded-full h-2 mb-2">
                   <div 
                     className="bg-gradient-to-r from-neon-cyan to-neon-purple h-2 rounded-full transition-all duration-300"
@@ -82,8 +82,8 @@ export default function OutputPanel({ output, isLoading, error, status, progress
           </div>
         ) : output && output.trim() ? (
           <div className="prose prose-invert max-w-none">
-            <div className="bg-dark-card rounded-lg p-6 border border-dark-border mb-4 max-h-[600px] overflow-y-auto">
-              <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
+            <div className="bg-dark-card rounded-lg p-4 sm:p-6 border border-dark-border mb-4 max-h-[600px] overflow-y-auto touch-pan-y overscroll-contain">
+              <div className="text-sm sm:text-base text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
                 {output}
               </div>
               {output.length > 0 && (
@@ -92,9 +92,9 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                 </div>
               )}
             </div>
-            <div className="mt-4 flex flex-wrap gap-4">
+            <div className="mt-4 flex flex-wrap gap-3 sm:gap-4">
               <button
-                onClick={async () => {
+                onClick={async (event) => {
                   try {
                     await navigator.clipboard.writeText(output)
                     // Show feedback
@@ -108,8 +108,9 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                     console.error('Failed to copy:', err)
                   }
                 }}
-                className="px-4 py-2 bg-neon-purple/20 border border-neon-purple/50 rounded-lg 
-                         text-neon-purple hover:bg-neon-purple/30 transition-colors text-sm"
+                className="px-4 py-2.5 sm:py-2 bg-neon-purple/20 border border-neon-purple/50 rounded-lg 
+                         text-neon-purple hover:bg-neon-purple/30 active:scale-95 transition-all text-sm
+                         touch-manipulation min-h-[44px] flex-1 sm:flex-none"
               >
                 Copy to Clipboard
               </button>
@@ -125,8 +126,9 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                   document.body.removeChild(a)
                   URL.revokeObjectURL(url)
                 }}
-                className="px-4 py-2 bg-neon-cyan/20 border border-neon-cyan/50 rounded-lg 
-                         text-neon-cyan hover:bg-neon-cyan/30 transition-colors text-sm"
+                className="px-4 py-2.5 sm:py-2 bg-neon-cyan/20 border border-neon-cyan/50 rounded-lg 
+                         text-neon-cyan hover:bg-neon-cyan/30 active:scale-95 transition-all text-sm
+                         touch-manipulation min-h-[44px] flex-1 sm:flex-none"
               >
                 Download as MD
               </button>

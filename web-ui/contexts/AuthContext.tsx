@@ -14,19 +14,19 @@ interface User {
 
 interface AuthContextType {
   user: User | null
-  token: string | null
+  token: string | null  // Deprecated: kept for backward compatibility, always null now
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
   signup: (email: string, password: string, fullName?: string) => Promise<void>
-  logout: () => void
-  setAuthToken: (token: string, user: User) => void
+  logout: () => Promise<void>
+  setAuthToken: (token: string, user: User) => void  // Deprecated: cookies set by backend
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const TOKEN_COOKIE = 'auth_token'
-const USER_COOKIE = 'auth_user'
+// Import validated API URL from env module
+import { API_URL } from '@/lib/env'
+const USER_COOKIE = 'auth_user'  // Non-httpOnly cookie for user display info
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
@@ -34,35 +34,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Load auth state from cookies on mount
-    const savedToken = Cookies.get(TOKEN_COOKIE)
+    // Load auth state on mount
+    // auth_token is httpOnly, so we can't read it from JavaScript
+    // Instead, verify auth status via /api/auth/me (cookies sent automatically)
     const savedUser = Cookies.get(USER_COOKIE)
-
-    if (savedToken && savedUser) {
+    
+    if (savedUser) {
       try {
-        setToken(savedToken)
+        // Load user info from non-httpOnly cookie for immediate display
         setUser(JSON.parse(savedUser))
-        // Verify token is still valid
-        verifyToken(savedToken)
       } catch (error) {
-        console.error('Error loading auth state:', error)
-        logout()
+        console.error('Error loading user info:', error)
       }
     }
-    setIsLoading(false)
+    
+    // Verify auth status with backend (cookies sent automatically)
+    verifyAuthStatus()
   }, [])
 
-  const verifyToken = async (tokenToVerify: string) => {
+  const verifyAuthStatus = async () => {
     try {
+      // Cookies (including httpOnly auth_token) are sent automatically
       const response = await fetch(`${API_URL}/api/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${tokenToVerify}`,
-        },
+        method: 'GET',
+        credentials: 'include',  // Include cookies
       })
 
       if (!response.ok) {
         // Extract error message if available
-        let errorMessage = 'Token invalid'
+        let errorMessage = 'Authentication failed'
         try {
           const error = await response.json()
           errorMessage = error.detail || error.message || errorMessage
@@ -72,21 +72,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         
         if (response.status === 401) {
-          console.warn('Token verification failed - token expired or invalid:', errorMessage)
+          console.warn('Auth verification failed - not authenticated:', errorMessage)
         } else {
-          console.error('Token verification failed:', errorMessage)
+          console.error('Auth verification failed:', errorMessage)
         }
-        logout()
+        // Clear local state
+        setUser(null)
+        setToken(null)
+        Cookies.remove(USER_COOKIE)
+        setIsLoading(false)
         return
       }
 
       const userData = await response.json()
       setUser(userData)
+      // Update user cookie (non-httpOnly) for display
       Cookies.set(USER_COOKIE, JSON.stringify(userData), { expires: 7 })
+      setIsLoading(false)
     } catch (error) {
-      console.error('Token verification failed:', error)
+      console.error('Auth verification failed:', error)
       // Network error or other issue - clear auth state
-      logout()
+      setUser(null)
+      setToken(null)
+      Cookies.remove(USER_COOKIE)
+      setIsLoading(false)
     }
   }
 
@@ -100,7 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         method: 'POST',
         body: formData,
         mode: 'cors',
-        credentials: 'omit',
+        credentials: 'include',  // Include cookies to receive httpOnly auth_token
       }).catch((fetchError) => {
         console.error('Login fetch error:', fetchError)
         if (fetchError instanceof TypeError && fetchError.message.includes('fetch')) {
@@ -118,7 +127,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json()
-      setAuthToken(data.access_token, data.user)
+      // Backend sets httpOnly cookie automatically
+      // Just update local user state
+      setUser(data.user)
+      setToken(null)  // Token is in httpOnly cookie, not accessible from JS
+      Cookies.set(USER_COOKIE, JSON.stringify(data.user), { expires: 7 })
     } catch (error) {
       console.error('Login error:', error)
       if (error instanceof Error && error.message.includes('Failed to fetch')) {
@@ -143,9 +156,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ email, password, full_name: fullName }),
-        // Add mode and credentials for CORS
         mode: 'cors',
-        credentials: 'omit', // Don't send cookies for signup
+        credentials: 'include',  // Include cookies to receive httpOnly auth_token
       }).catch((fetchError) => {
         // Handle network errors
         console.error('Fetch error:', fetchError)
@@ -175,7 +187,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const data = await response.json()
       console.log('Signup success:', { hasToken: !!data.access_token, hasUser: !!data.user })
-      setAuthToken(data.access_token, data.user)
+      // Backend sets httpOnly cookie automatically
+      // Just update local user state
+      setUser(data.user)
+      setToken(null)  // Token is in httpOnly cookie, not accessible from JS
+      Cookies.set(USER_COOKIE, JSON.stringify(data.user), { expires: 7 })
     } catch (error) {
       console.error('Signup error:', error)
       // Provide more helpful error messages
@@ -193,28 +209,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const logout = () => {
-    setUser(null)
-    setToken(null)
-    Cookies.remove(TOKEN_COOKIE)
-    Cookies.remove(USER_COOKIE)
-    
-    // Clear saved email and password if "Remember me" was not checked
-    if (typeof window !== 'undefined') {
-      const rememberMe = localStorage.getItem('remember_me')
-      if (rememberMe !== 'true') {
-        localStorage.removeItem('saved_email')
-        localStorage.removeItem('saved_password')
-        localStorage.removeItem('remember_me')
+  const logout = async () => {
+    try {
+      // Call backend logout endpoint to clear httpOnly cookies
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',  // Include cookies
+      }).catch(() => {
+        // Ignore errors - cookies will be cleared client-side anyway
+      })
+    } catch (error) {
+      console.error('Logout error:', error)
+    } finally {
+      // Clear local state
+      setUser(null)
+      setToken(null)
+      Cookies.remove(USER_COOKIE)
+      
+      // Clear saved email and password if "Remember me" was not checked
+      if (typeof window !== 'undefined') {
+        const rememberMe = localStorage.getItem('remember_me')
+        if (rememberMe !== 'true') {
+          localStorage.removeItem('saved_email')
+          localStorage.removeItem('saved_password')
+          localStorage.removeItem('remember_me')
+        }
+        // If "Remember me" was checked, keep the email and password for next login
       }
-      // If "Remember me" was checked, keep the email and password for next login
     }
   }
 
   const setAuthToken = (newToken: string, newUser: User) => {
-    setToken(newToken)
+    // Deprecated: Backend sets httpOnly cookies automatically
+    // This function kept for backward compatibility (OAuth callback)
     setUser(newUser)
-    Cookies.set(TOKEN_COOKIE, newToken, { expires: 7 })
+    setToken(null)  // Token is in httpOnly cookie, not accessible from JS
     Cookies.set(USER_COOKIE, JSON.stringify(newUser), { expires: 7 })
   }
 

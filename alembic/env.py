@@ -30,7 +30,17 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Import all models so Alembic can detect them
-from content_creation_crew.database import User, Session  # noqa: F401
+from content_creation_crew.db.models import (  # noqa: F401
+    User,
+    Session,
+    Organization,
+    Membership,
+    Subscription,
+    UsageCounter,
+    ContentJob,
+    ContentArtifact,
+    BillingEvent,
+)
 
 
 def run_migrations_offline() -> None:

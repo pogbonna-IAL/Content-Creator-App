@@ -20,8 +20,19 @@ editing_task:
   description: >
     Edit the blog post about {topic} from context. Fix grammar, improve clarity and flow. Make it publication-ready.
     Output the complete edited blog post.
+    
+    IMPORTANT: You MUST output ONLY valid JSON in this exact format:
+    {
+      "title": "Blog Post Title",
+      "introduction": "Introduction paragraph (minimum 100 characters)",
+      "sections": ["Section 1 content (minimum 100 characters)", "Section 2 content", "Section 3 content"],
+      "conclusion": "Conclusion paragraph (minimum 50 characters)"
+    }
+    
+    Do not include any markdown, explanations, or text outside the JSON object. Output ONLY the JSON.
   expected_output: >
-    Polished blog post: Grammar fixed, improved clarity/flow, professional formatting. Ready to publish.
+    Polished blog post in JSON format: {"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}
+    Grammar fixed, improved clarity/flow, professional formatting. Ready to publish.
   agent: editor
   context:
     - writing_task
@@ -30,8 +41,19 @@ social_media_task:
   description: >
     Create a social media post about {topic} from the blog post in context. Include: engaging hook, key message, CTA, 3-5 hashtags.
     Format: LinkedIn post (200-300 words) + Twitter version (under 280 chars). Use emojis appropriately. Generate content now.
+    
+    IMPORTANT: You MUST output ONLY valid JSON in this exact format:
+    {
+      "linkedin_post": "LinkedIn post content (200-300 words)",
+      "twitter_post": "Twitter/X post (under 280 characters)",
+      "hashtags": ["tag1", "tag2", "tag3", "tag4"],
+      "cta": "Call-to-action text"
+    }
+    
+    Do not include any markdown, explanations, or text outside the JSON object. Output ONLY the JSON.
   expected_output: >
-    Social media package: LinkedIn post (200-300 words), Twitter version (under 280 chars), 3-5 hashtags, CTA. Ready to post.
+    Social media package in JSON format: {"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}
+    LinkedIn post (200-300 words), Twitter version (under 280 chars), 3-5 hashtags, CTA. Ready to post.
   agent: social_media_specialist
   context:
     - editing_task
@@ -41,8 +63,19 @@ audio_content_task:
   description: >
     Create an audio script about {topic} from the blog post in context. Transform into conversational script for podcasts/audio.
     Include: intro hook (30-60 sec), main sections with transitions, conclusion with CTA. Natural pacing. Generate now.
+    
+    IMPORTANT: You MUST output ONLY valid JSON in this exact format:
+    {
+      "intro_hook": "Intro hook content (30-60 seconds, minimum 100 characters)",
+      "main_sections": ["Section 1 with transitions (minimum 80 characters)", "Section 2", "Section 3"],
+      "conclusion": "Conclusion with CTA (minimum 50 characters)",
+      "pacing_notes": "Optional pacing and tone notes"
+    }
+    
+    Do not include any markdown, explanations, or text outside the JSON object. Output ONLY the JSON.
   expected_output: >
-    Audio script: Intro hook (30-60 sec), main sections with transitions, conversational tone, conclusion with CTA. Ready for narration.
+    Audio script in JSON format: {"intro_hook": "...", "main_sections": [...], "conclusion": "...", "pacing_notes": "..."}
+    Intro hook (30-60 sec), main sections with transitions, conversational tone, conclusion with CTA. Ready for narration.
   agent: audio_content_specialist
   context:
     - editing_task
@@ -52,8 +85,28 @@ video_content_task:
   description: >
     Create a video script about {topic} from the blog post in context. Transform into YouTube/educational video script.
     Include: hook (15-30 sec), visual cues, on-screen text suggestions, scene descriptions, CTA moments, conclusion. Generate now.
+    
+    IMPORTANT: You MUST output ONLY valid JSON in this exact format:
+    {
+      "hook": "Hook content (15-30 seconds, minimum 50 characters)",
+      "scenes": [
+        {
+          "content": "Scene 1 content (minimum 50 characters)",
+          "visual_cue": "Visual description",
+          "on_screen_text": "Text to display"
+        },
+        {
+          "content": "Scene 2 content",
+          "visual_cue": "Visual description"
+        }
+      ],
+      "conclusion": "Conclusion with CTA (minimum 50 characters)"
+    }
+    
+    Do not include any markdown, explanations, or text outside the JSON object. Output ONLY the JSON.
   expected_output: >
-    Video script: Hook (15-30 sec), main sections with visual cues, on-screen text, scene descriptions, pacing markers, CTA, conclusion. Ready for production.
+    Video script in JSON format: {"hook": "...", "scenes": [...], "conclusion": "..."}
+    Hook (15-30 sec), main sections with visual cues, on-screen text, scene descriptions, pacing markers, CTA, conclusion. Ready for production.
   agent: video_content_specialist
   context:
     - editing_task

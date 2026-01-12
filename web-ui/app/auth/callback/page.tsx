@@ -3,6 +3,7 @@
 import { useEffect, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
+import { API_URL } from '@/lib/env'
 
 function AuthCallbackContent() {
   const router = useRouter()
@@ -15,14 +16,21 @@ function AuthCallbackContent() {
     const provider = searchParams.get('provider')
 
     if (token) {
-      // Get user info from token
-      fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+      // Backend sets httpOnly cookie automatically via OAuth callback
+      // Verify auth status (cookies sent automatically)
+      fetch(`${API_URL}/api/auth/me`, {
+        method: 'GET',
+        credentials: 'include',  // Include cookies
       })
-        .then((res) => res.json())
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error('Authentication failed')
+          }
+          return res.json()
+        })
         .then((user) => {
+          // setAuthToken is deprecated but kept for compatibility
+          // Backend already set httpOnly cookie
           setAuthToken(token, user)
           router.push('/')
         })
@@ -31,7 +39,24 @@ function AuthCallbackContent() {
           setError('Failed to complete authentication')
         })
     } else {
-      setError('No token received from OAuth provider')
+      // No token in URL - check if cookies are already set (direct visit)
+      fetch(`${API_URL}/api/auth/me`, {
+        method: 'GET',
+        credentials: 'include',
+      })
+        .then((res) => {
+          if (res.ok) {
+            return res.json()
+          }
+          throw new Error('Not authenticated')
+        })
+        .then((user) => {
+          setAuthToken('', user)  // Token in cookie
+          router.push('/')
+        })
+        .catch(() => {
+          setError('No token received from OAuth provider')
+        })
     }
   }, [searchParams, setAuthToken, router])
 

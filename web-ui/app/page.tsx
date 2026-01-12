@@ -382,10 +382,14 @@ export default function Home() {
   return (
     <main className="min-h-screen flex flex-col">
       <Navbar selectedFeature={selectedFeature} onFeatureSelect={setSelectedFeature} />
-      <div className="flex-1 container mx-auto px-4 py-8 max-w-7xl">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <InputPanel onGenerate={handleGenerate} isLoading={isGenerating} />
-          {renderOutputPanel()}
+      <div className="flex-1 container mx-auto px-4 py-4 sm:py-6 md:py-8 max-w-7xl">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 md:gap-8 mb-4 sm:mb-6 md:mb-8">
+          <div className="order-1 lg:order-none">
+            <InputPanel onGenerate={handleGenerate} isLoading={isGenerating} />
+          </div>
+          <div className="order-2 lg:order-none">
+            {renderOutputPanel()}
+          </div>
         </div>
       </div>
       <Footer />

@@ -18,15 +18,15 @@ export default function InputPanel({ onGenerate, isLoading }: InputPanelProps) {
   }
 
   return (
-    <div className="glass-effect neon-border rounded-2xl p-6 h-full">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gradient mb-2">Create Content</h2>
-        <p className="text-gray-400 text-sm">
+    <div className="glass-effect neon-border rounded-2xl p-4 sm:p-6 h-full">
+      <div className="mb-4 sm:mb-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-gradient mb-2">Create Content</h2>
+        <p className="text-gray-400 text-xs sm:text-sm">
           Enter a topic and let our AI crew create comprehensive content for you
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
         <div>
           <label htmlFor="topic" className="block text-sm font-medium text-gray-300 mb-2">
             Topic
@@ -38,7 +38,8 @@ export default function InputPanel({ onGenerate, isLoading }: InputPanelProps) {
             placeholder="e.g., The benefits of renewable energy, Latest trends in AI, etc."
             className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg 
                      text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan 
-                     focus:ring-2 focus:ring-neon-cyan/20 transition-all resize-none"
+                     focus:ring-2 focus:ring-neon-cyan/20 transition-all resize-none
+                     text-base sm:text-sm touch-manipulation"
             rows={4}
             disabled={isLoading}
             required
@@ -48,10 +49,11 @@ export default function InputPanel({ onGenerate, isLoading }: InputPanelProps) {
         <button
           type="submit"
           disabled={isLoading || !topic.trim()}
-          className="w-full neon-button px-6 py-3 rounded-lg font-semibold
+          className="w-full neon-button px-6 py-3 sm:py-3 rounded-lg font-semibold
                    bg-gradient-to-r from-neon-cyan/20 to-neon-purple/20
                    text-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed
-                   flex items-center justify-center space-x-2"
+                   flex items-center justify-center space-x-2
+                   touch-manipulation min-h-[44px] active:scale-95 transition-transform"
         >
           {isLoading ? (
             <>

@@ -11,13 +11,21 @@ tiers:
     # price_yearly: 0
     features:
       - blog_content
+      - social_media_content
+      - audio_content
+      - video_content
     limits:
-      blog: 5  # generations per month
-      social: 0
-      audio: 0
-      video: 0
+      blog: 10  # generations per month
+      social: 10
+      audio: 5
+      video: 5
+      voiceover_audio: 3  # TTS voiceover generations per month
+      final_video: 2  # Video rendering generations per month
     content_types:
       - blog
+      - social
+      - audio
+      - video
     model: "ollama/llama3.2:1b"
     max_parallel_tasks: 1
     priority_processing: false
@@ -32,14 +40,20 @@ tiers:
     features:
       - blog_content
       - social_media_content
+      - audio_content
+      - video_content
     limits:
-      blog: 50
+      blog: 50  # generations per month
       social: 50
-      audio: 0
-      video: 0
+      audio: 10
+      video: 10
+      voiceover_audio: 10  # TTS voiceover generations per month
+      final_video: 5  # Video rendering generations per month
     content_types:
       - blog
       - social
+      - audio
+      - video
     model: "ollama/llama3.2:3b"
     max_parallel_tasks: 2
     priority_processing: false
@@ -63,6 +77,8 @@ tiers:
       social: -1
       audio: -1
       video: -1
+      voiceover_audio: -1  # Unlimited TTS voiceover generations
+      final_video: -1  # Unlimited video rendering generations
     content_types:
       - blog
       - social
@@ -96,6 +112,8 @@ tiers:
       social: -1
       audio: -1
       video: -1
+      voiceover_audio: -1  # Unlimited TTS voiceover generations
+      final_video: -1  # Unlimited video rendering generations
     content_types:
       - blog
       - social

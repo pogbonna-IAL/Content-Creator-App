@@ -119,18 +119,32 @@ if os.path.exists(docker_src_path) and docker_src_path not in sys.path:
 # The package __init__.py contains important patches that must run before other imports
 import content_creation_crew  # noqa: F401
 
+# Import config and logging setup FIRST (before other imports that may use them)
+from content_creation_crew.config import config
+from content_creation_crew.logging_config import setup_logging, RequestIDMiddleware
+
+# Set up structured logging with environment and request ID
+setup_logging(env=config.ENV, log_level=config.LOG_LEVEL)
+import logging
+logger = logging.getLogger(__name__)
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from content_creation_crew.crew import ContentCreationCrew
 from content_creation_crew.auth_routes import router as auth_router
 from content_creation_crew.oauth_routes import router as oauth_router
 from content_creation_crew.subscription_routes import router as subscription_router
+from content_creation_crew.billing_routes import router as billing_router
 from content_creation_crew.auth import get_current_user
-from content_creation_crew.database import init_db, User, get_db, Session
+from content_creation_crew.database import init_db, User, get_db, Session, engine, ContentArtifact
 from content_creation_crew.services.subscription_service import SubscriptionService
+from content_creation_crew.services.plan_policy import PlanPolicy
 from content_creation_crew.services.content_cache import get_cache
+from sqlalchemy import text
 import asyncio
 import json
 from typing import AsyncGenerator
@@ -138,38 +152,105 @@ from typing import AsyncGenerator
 # Initialize database with error handling
 try:
     init_db()
+    logger.info("Database initialized successfully")
 except Exception as e:
-    import logging
-    logger = logging.getLogger(__name__)
     logger.error(f"Database initialization failed: {e}", exc_info=True)
     # Continue anyway - app might work for read-only operations
     # Database will be initialized on first request if needed
 
-app = FastAPI(title="Content Creation Crew API")
+# Disable debug mode in staging/prod
+debug_mode = config.ENV == "dev"
+app = FastAPI(
+    title="Content Creation Crew API",
+    debug=debug_mode,
+    docs_url="/docs" if debug_mode else None,
+    redoc_url="/redoc" if debug_mode else None,
+)
 
-# Enable CORS for Next.js frontend
-# Allow both localhost and Docker network origins
-cors_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://frontend:3000",  # Docker network
+# Add request ID middleware for structured logging (must be first)
+app.add_middleware(RequestIDMiddleware)
+
+# Add request size limit middleware
+try:
+    from content_creation_crew.middleware.security import RequestSizeLimitMiddleware
+    app.add_middleware(RequestSizeLimitMiddleware, max_size=10 * 1024 * 1024)  # 10MB
+    logger.info("Request size limit middleware enabled (10MB)")
+except Exception as e:
+    logger.warning(f"Failed to enable request size limit middleware: {e}")
+
+# Add rate limiting middleware (Redis-backed with in-memory fallback)
+try:
+    from content_creation_crew.middleware.rate_limit import RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware)
+    logger.info("Rate limiting middleware enabled")
+except Exception as e:
+    logger.warning(f"Failed to enable rate limiting middleware: {e}")
+
+# Enable CORS for Next.js frontend using config with strict settings
+# Restrict methods and headers based on environment
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+allowed_headers = [
+    "Content-Type",
+    "Authorization",
+    "X-Request-ID",
+    "Accept",
+    "Origin",
+    "Referer",
 ]
-# Add environment variable override if set
-if os.getenv("CORS_ORIGINS"):
-    cors_origins.extend(os.getenv("CORS_ORIGINS").split(","))
+
+# In production, be more restrictive
+if config.ENV in ["staging", "prod"]:
+    # Remove PUT and PATCH if not needed
+    allowed_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+    # Only allow essential headers
+    allowed_headers = [
+        "Content-Type",
+        "Authorization",
+        "X-Request-ID",
+        "Accept",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=config.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=allowed_methods,
+    allow_headers=allowed_headers,
+    expose_headers=["X-Request-ID"],  # Expose request ID to clients
 )
 
 # Include authentication routes
 app.include_router(auth_router)
 app.include_router(oauth_router)
 app.include_router(subscription_router)
+app.include_router(billing_router)
+
+# Include v1 content routes
+from content_creation_crew.content_routes import router as content_router
+app.include_router(content_router)
+
+# Add static file serving for storage (voiceovers, etc.)
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import os
+
+# Serve storage files
+storage_path = Path(os.getenv("STORAGE_PATH", "./storage"))
+if storage_path.exists():
+    app.mount("/v1/storage", StaticFiles(directory=str(storage_path)), name="storage")
+    logger.info(f"Storage files served from {storage_path}")
+else:
+    logger.warning(f"Storage path {storage_path} does not exist, file serving disabled")
+
+# Add exception handlers with request ID support
+from content_creation_crew.exceptions import (
+    http_exception_handler,
+    validation_exception_handler,
+    general_exception_handler
+)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
 
 
 class TopicRequest(BaseModel):
@@ -190,13 +271,90 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint for Railway and monitoring"""
+    """
+    Health check endpoint that verifies database and cache connectivity
+    Returns 200 if healthy, 503 if unhealthy
+    """
+    health_status = {
+        "status": "healthy",
+        "service": "content-creation-crew",
+        "environment": config.ENV,
+        "checks": {}
+    }
+    all_healthy = True
+    
+    # Check database connection
     try:
-        # Simple health check - just verify the server is running
-        return {"status": "healthy", "service": "content-creation-crew"}
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        health_status["checks"]["database"] = "healthy"
     except Exception as e:
-        # If there's any error, return unhealthy status
-        return {"status": "unhealthy", "error": str(e)}, 503
+        logger.error(f"Database health check failed: {e}")
+        health_status["checks"]["database"] = f"unhealthy: {str(e)}"
+        all_healthy = False
+    
+    # Check cache backend (Redis or in-memory)
+    try:
+        cache = get_cache()
+        stats = cache.get_stats()
+        cache_type = stats.get('backend', 'in-memory')
+        health_status["checks"]["cache"] = {
+            "status": "healthy",
+            "type": cache_type,
+            "entries": stats.get("total_entries", 0)
+        }
+        
+        # Check Redis connection if using Redis
+        if cache_type == 'redis':
+            try:
+                from content_creation_crew.services.redis_cache import get_redis_client
+                redis_client = get_redis_client()
+                if redis_client:
+                    redis_client.ping()
+                    health_status["checks"]["redis"] = "healthy"
+                else:
+                    health_status["checks"]["redis"] = "unavailable"
+            except Exception as redis_error:
+                health_status["checks"]["redis"] = f"unhealthy: {str(redis_error)}"
+    except Exception as e:
+        logger.error(f"Cache health check failed: {e}")
+        health_status["checks"]["cache"] = f"unhealthy: {str(e)}"
+        all_healthy = False
+    
+    # Check Ollama connection (optional - don't fail if unavailable)
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
+            if response.status_code == 200:
+                health_status["checks"]["ollama"] = "healthy"
+            else:
+                health_status["checks"]["ollama"] = f"unhealthy: status {response.status_code}"
+    except Exception as e:
+        logger.warning(f"Ollama health check failed (non-critical): {e}")
+        health_status["checks"]["ollama"] = f"unavailable: {str(e)}"
+    
+    if not all_healthy:
+        return JSONResponse(
+            content=health_status,
+            status_code=503
+        )
+    
+    return health_status
+
+
+@app.get("/meta")
+async def meta():
+    """
+    Metadata endpoint for build version and deployment information
+    """
+    return {
+        "service": "content-creation-crew",
+        "version": config.BUILD_VERSION,
+        "commit": config.BUILD_COMMIT,
+        "build_time": config.BUILD_TIME,
+        "environment": config.ENV,
+    }
 
 
 async def run_crew_async(topic: str, tier: str = 'free', content_types: list = None, use_cache: bool = True) -> AsyncGenerator[str, None]:
@@ -222,32 +380,11 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
             pass
     
     try:
-        # Check cache first (if enabled)
-        if use_cache:
-            cache = get_cache()
-            cached_content = cache.get(topic, content_types)
-            if cached_content:
-                logger.info(f"Cache hit for topic: {topic}")
-                # Stream cached content immediately
-                status_msg = json.dumps({'type': 'status', 'message': 'Retrieved from cache'})
-                yield f"data: {status_msg}\n\n"
-                flush_buffers()
-                
-                # Stream cached content
-                completion_data = {
-                    'type': 'complete',
-                    'content': cached_content.get('content', ''),
-                    'social_media_content': cached_content.get('social_media_content', ''),
-                    'audio_content': cached_content.get('audio_content', ''),
-                    'video_content': cached_content.get('video_content', ''),
-                    'topic': topic,
-                    'generated_at': cached_content.get('generated_at', datetime.now().isoformat()),
-                    'cached': True
-                }
-                completion_json = json.dumps(completion_data, ensure_ascii=False)
-                yield f"data: {completion_json}\n\n"
-                flush_buffers()
-                return
+        # Get model name and prompt version for cache key
+        from content_creation_crew.schemas import PROMPT_VERSION
+        # Model name will be set when crew_instance is created below
+        model_name = None  # Will be set after crew_instance creation
+        
         
         # Send initial status
         status_msg = json.dumps({'type': 'status', 'message': 'Initializing crew...'})
@@ -258,18 +395,15 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         # Check if Ollama is accessible before starting
         try:
             import httpx
-            # Get Ollama URL from environment variable
-            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{ollama_url}/api/tags")
+                response = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
                 if response.status_code != 200:
                     raise Exception("Ollama is not responding correctly")
-            logger.info(f"Ollama connection verified at {ollama_url}")
+            logger.info(f"Ollama connection verified at {config.OLLAMA_BASE_URL}")
         except Exception as ollama_error:
-            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             error_msg = json.dumps({
                 'type': 'error',
-                'message': f'Ollama is not accessible at {ollama_url}. Please ensure Ollama is running. Error: {str(ollama_error)}',
+                'message': f'Ollama is not accessible at {config.OLLAMA_BASE_URL}. Please ensure Ollama is running. Error: {str(ollama_error)}',
                 'error_type': 'OllamaConnectionError'
             })
             yield f"data: {error_msg}\n\n"
@@ -280,6 +414,8 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         # Initialize crew with tier-appropriate configuration
         crew_instance = ContentCreationCrew(tier=tier, content_types=content_types)
         crew_obj = crew_instance._build_crew(content_types=content_types)
+        # Store model name for later use in validation and caching
+        model_name = crew_instance._get_model_for_tier(tier)
         status_msg = json.dumps({'type': 'status', 'message': f'Crew initialized with {tier} tier. Starting research...'})
         yield f"data: {status_msg}\n\n"
         flush_buffers()
@@ -302,12 +438,24 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         async def run_executor():
             nonlocal executor_done, result, executor_error
             try:
-                logger.info(f"Starting crew kickoff for topic: {topic}")
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: crew_obj.kickoff(inputs={'topic': topic})
+                # Get timeout from config (default 5 minutes)
+                from content_creation_crew.config import config
+                timeout_seconds = config.CREWAI_TIMEOUT
+                
+                logger.info(f"Starting crew kickoff for topic: {topic} (timeout: {timeout_seconds}s)")
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: crew_obj.kickoff(inputs={'topic': topic})
+                    ),
+                    timeout=timeout_seconds
                 )
                 logger.info("Crew kickoff completed successfully")
+                executor_done = True
+            except asyncio.TimeoutError:
+                error_msg = f"Content generation timed out after {timeout_seconds} seconds"
+                logger.error(f"Crew execution timed out: {error_msg}")
+                executor_error = TimeoutError(error_msg)
                 executor_done = True
             except KeyboardInterrupt:
                 logger.warning("Crew execution interrupted by user")
@@ -352,29 +500,67 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         flush_buffers()
         logger.info(f"Crew execution completed. Result type: {type(result)}")
         
-        # Extract content asynchronously
-        content = await extract_content_async(result, topic, logger)
+        # Get prompt version for validation and caching (model_name already set above)
+        from content_creation_crew.schemas import PROMPT_VERSION
         
-        # If extraction failed, try one more time with longer wait
-        if not content or len(content.strip()) < 10:
-            logger.warning("First extraction attempt failed, waiting longer and retrying...")
-            await asyncio.sleep(2)
-            content = await extract_content_async(result, topic, logger)
+        # Extract content asynchronously with validation
+        raw_content = await extract_content_async(result, topic, logger)
         
-        # Clean up the content
-        content = clean_content(content)
+        # Validate and repair blog content
+        from content_creation_crew.content_validator import validate_and_repair_content
+        is_valid, validated_model, content, was_repaired = validate_and_repair_content(
+            'blog', raw_content, model_name, allow_repair=True
+        )
+        if not is_valid:
+            logger.warning("Blog content validation failed, using fallback extraction")
+            content = clean_content(raw_content)
+        else:
+            logger.info(f"Blog content validated successfully (repaired: {was_repaired})")
         
-        # Extract social media content
-        social_media_content = await extract_social_media_content_async(result, topic, logger)
-        social_media_content = clean_content(social_media_content) if social_media_content else ""
+        # Extract and validate social media content
+        raw_social = await extract_social_media_content_async(result, topic, logger)
+        if raw_social:
+            is_valid, validated_model, social_media_content, was_repaired = validate_and_repair_content(
+                'social', raw_social, model_name, allow_repair=True
+            )
+            if not is_valid:
+                logger.warning("Social media content validation failed, using fallback extraction")
+                social_media_content = clean_content(raw_social) if raw_social else ""
+            else:
+                logger.info(f"Social media content validated successfully (repaired: {was_repaired})")
+                social_media_content = social_media_content if social_media_content else ""
+        else:
+            social_media_content = ""
         
-        # Extract audio content
-        audio_content = await extract_audio_content_async(result, topic, logger)
-        audio_content = clean_content(audio_content) if audio_content else ""
+        # Extract and validate audio content
+        raw_audio = await extract_audio_content_async(result, topic, logger)
+        if raw_audio:
+            is_valid, validated_model, audio_content, was_repaired = validate_and_repair_content(
+                'audio', raw_audio, model_name, allow_repair=True
+            )
+            if not is_valid:
+                logger.warning("Audio content validation failed, using fallback extraction")
+                audio_content = clean_content(raw_audio) if raw_audio else ""
+            else:
+                logger.info(f"Audio content validated successfully (repaired: {was_repaired})")
+                audio_content = audio_content if audio_content else ""
+        else:
+            audio_content = ""
         
-        # Extract video content
-        video_content = await extract_video_content_async(result, topic, logger)
-        video_content = clean_content(video_content) if video_content else ""
+        # Extract and validate video content
+        raw_video = await extract_video_content_async(result, topic, logger)
+        if raw_video:
+            is_valid, validated_model, video_content, was_repaired = validate_and_repair_content(
+                'video', raw_video, model_name, allow_repair=True
+            )
+            if not is_valid:
+                logger.warning("Video content validation failed, using fallback extraction")
+                video_content = clean_content(raw_video) if raw_video else ""
+            else:
+                logger.info(f"Video content validated successfully (repaired: {was_repaired})")
+                video_content = video_content if video_content else ""
+        else:
+            video_content = ""
         
         if not content or len(content.strip()) < 10:
             # Last resort: try to get content from result directly
@@ -449,8 +635,8 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
                 'video_content': video_content,
                 'generated_at': datetime.now().isoformat()
             }
-            cache.set(topic, cache_data)
-            logger.info(f"Cached content for topic: {topic}")
+            cache.set(topic, cache_data, prompt_version=PROMPT_VERSION, model=model_name)
+            logger.info(f"Cached content for topic: {topic} (prompt_version: {PROMPT_VERSION}, model: {model_name})")
         
         # Send completion message with full content (CRITICAL - this ensures full content is delivered)
         # Ensure JSON encoding doesn't truncate large content
@@ -466,7 +652,9 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
             'social_media_length': len(social_media_content) if social_media_content else 0,
             'audio_length': len(audio_content) if audio_content else 0,
             'video_length': len(video_content) if video_content else 0,
-            'cached': False
+            'cached': False,
+            'prompt_version': PROMPT_VERSION,
+            'model': model_name
         }
         
         # Use ensure_ascii=False to preserve all characters and ensure no truncation
@@ -502,8 +690,7 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         if "terminated" in error_message.lower() or error_type == "Terminated":
             error_message = "Content generation was terminated. This may be due to a timeout or connection issue. Please check if Ollama is running and try again."
         elif "connection" in error_message.lower() or "connect" in error_message.lower():
-            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            error_message = f"Connection error: {error_message}. Please ensure Ollama is running at {ollama_url}"
+            error_message = f"Connection error: {error_message}. Please ensure Ollama is running at {config.OLLAMA_BASE_URL}"
         elif "timeout" in error_message.lower():
             error_message = f"Request timeout: {error_message}. The content generation took too long. Please try with a simpler topic or check server logs."
         
@@ -975,17 +1162,18 @@ async def generate_content(
     Generate content for a given topic using the Content Creation Crew
     Returns a streaming response with progress updates
     
+    Backward compatibility: This endpoint internally creates a ContentJob
+    and streams its progress. For new integrations, use POST /v1/content/generate
+    and GET /v1/content/jobs/{id}/stream instead.
+    
     Tier-based access control:
     - Free tier: Blog content only, limited generations
     - Basic tier: Blog + Social media, more generations
     - Pro tier: All content types, unlimited generations
     - Enterprise: All features + priority processing
     """
-    import logging
     from content_creation_crew.streaming_utils import FlushingAsyncGenerator
-    
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    from content_creation_crew.services.content_service import ContentService
     
     if not request.topic or not request.topic.strip():
         raise HTTPException(status_code=400, detail="Topic is required")
@@ -993,82 +1181,163 @@ async def generate_content(
     topic = request.topic.strip()
     logger.info(f"Received streaming request for topic: {topic} from user {current_user.id}")
     
-    # Initialize subscription service
-    subscription_service = SubscriptionService(db)
+    # Initialize PlanPolicy for tier enforcement
+    policy = PlanPolicy(db, current_user)
+    plan = policy.get_plan()
+    logger.info(f"User {current_user.id} is on {plan} plan")
     
-    # Get user's tier
-    user_tier = subscription_service.get_user_tier(current_user.id)
-    logger.info(f"User {current_user.id} is on {user_tier} tier")
-    
-    # Determine content types based on tier and request
+    # Determine content types based on plan and request
     requested_content_types = request.content_types or []
     
     # Validate content type access for each requested type
     valid_content_types = []
     for content_type in requested_content_types:
-        if subscription_service.check_content_type_access(current_user.id, content_type):
-            # Check usage limit
-            has_remaining, remaining = subscription_service.check_usage_limit(current_user.id, content_type)
-            if has_remaining:
-                valid_content_types.append(content_type)
-            else:
-                logger.warning(f"User {current_user.id} has reached limit for {content_type}")
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"You have reached your {content_type} generation limit."
-                )
-        else:
-            logger.warning(f"User {current_user.id} does not have access to {content_type} on {user_tier} tier")
+        # Check if plan supports content type
+        if not policy.check_content_type_access(content_type):
+            logger.warning(f"User {current_user.id} does not have access to {content_type} on {plan} plan")
             raise HTTPException(
                 status_code=403,
-                detail=f"{content_type.capitalize()} content is not available on your current plan ({user_tier})."
+                detail={
+                    "error": "content_type_not_available",
+                    "message": f"{content_type.capitalize()} content is not available on your current plan ({plan}).",
+                    "content_type": content_type,
+                    "plan": plan
+                }
             )
+        
+        # Enforce monthly limit (raises HTTPException if exceeded)
+        try:
+            policy.enforce_monthly_limit(content_type)
+            valid_content_types.append(content_type)
+        except HTTPException:
+            raise  # Re-raise HTTPException from enforce_monthly_limit
     
-    # If no content types specified, use tier defaults
+    # If no content types specified, use plan defaults
     if not valid_content_types:
-        tier_config = subscription_service.get_tier_config(user_tier)
+        tier_config = policy.get_tier_config()
         if tier_config:
             valid_content_types = tier_config.get('content_types', ['blog'])
         else:
             valid_content_types = ['blog']  # Default to blog only
     
-    # Check usage for default content types if none specified
+    # Enforce limits for default content types
     for content_type in valid_content_types:
-        has_remaining, remaining = subscription_service.check_usage_limit(current_user.id, content_type)
-        if not has_remaining:
-            raise HTTPException(
-                status_code=403,
-                detail=f"You have reached your {content_type} generation limit."
-            )
-    
-    # Create a wrapper to track usage after successful generation
-    async def track_usage_wrapper():
-        """Wrapper to track usage after successful generation"""
         try:
-            async for chunk in run_crew_async(topic, tier=user_tier, content_types=valid_content_types):
-                yield chunk
-                # Check if this is the completion message
-                if chunk.startswith("data: ") and '"type":"complete"' in chunk:
-                    # Parse the completion message to verify it succeeded
-                    try:
-                        import re
-                        json_match = re.search(r'data: ({.*})', chunk)
-                        if json_match:
-                            completion_data = json.loads(json_match.group(1))
-                            if completion_data.get('type') == 'complete' and completion_data.get('content'):
-                                # Generation succeeded - record usage for each content type
-                                for content_type in valid_content_types:
-                                    subscription_service.record_usage(current_user.id, content_type)
-                                logger.info(f"Recorded usage for user {current_user.id}: {valid_content_types}")
-                    except Exception as e:
-                        logger.error(f"Error tracking usage: {e}")
-        except Exception as e:
-            logger.error(f"Error in usage tracking wrapper: {e}")
-            raise
+            policy.enforce_monthly_limit(content_type)
+        except HTTPException:
+            raise  # Re-raise HTTPException from enforce_monthly_limit
     
-    # Wrap the generator with flushing capability for better real-time streaming
+    # Create job internally for persistence (backward compatibility)
+    content_service = ContentService(db, current_user)
+    try:
+        job = content_service.create_job(
+            topic=topic,
+            content_types=valid_content_types
+        )
+        logger.info(f"Created job {job.id} for backward-compatible /api/generate endpoint")
+    except HTTPException as e:
+        # If job already exists (idempotency), get it
+        if e.status_code == 409:
+            # Extract job_id from error detail if available
+            job_id = e.detail.get('job_id') if isinstance(e.detail, dict) else None
+            if job_id:
+                job = content_service.get_job(job_id)
+                if job and job.status == 'completed':
+                    # Job already completed, stream from artifacts
+                    logger.info(f"Job {job_id} already completed, streaming from artifacts")
+                    # Fall through to streaming logic below
+                else:
+                    raise e
+            else:
+                raise e
+        else:
+            raise e
+    
+    # Start generation asynchronously (don't wait)
+    from content_creation_crew.content_routes import run_generation_async
+    asyncio.create_task(
+        run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
+    )
+    
+    # Stream job progress (backward compatible format)
+    async def stream_job_progress():
+        """Stream job progress in backward-compatible format"""
+        # Send initial status
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Job created, starting generation...', 'job_id': job.id})}\n\n"
+        
+        # Poll for job updates and artifacts
+        last_status = job.status
+        artifacts_received = set()
+        
+        while True:
+            # Refresh job from database
+            db.refresh(job)
+            
+            # Check for status changes
+            if job.status != last_status:
+                if job.status == 'completed':
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generation completed'})}\n\n"
+                elif job.status == 'failed':
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Generation failed'})}\n\n"
+                    break
+                last_status = job.status
+            
+            # Check for new artifacts
+            artifacts = db.query(ContentArtifact).filter(
+                ContentArtifact.job_id == job.id
+            ).all()
+            
+            for artifact in artifacts:
+                if artifact.id not in artifacts_received:
+                    artifacts_received.add(artifact.id)
+                    # Send artifact in backward-compatible format
+                    if artifact.type == 'blog':
+                        yield f"data: {json.dumps({'type': 'content', 'chunk': artifact.content_text[:100] if artifact.content_text else ''})}\n\n"
+                    elif artifact.type == 'social':
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Social media content ready'})}\n\n"
+                    elif artifact.type == 'audio':
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Audio content ready'})}\n\n"
+                    elif artifact.type == 'video':
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Video content ready'})}\n\n"
+            
+            # If completed, send final completion message
+            if job.status == 'completed':
+                # Get all artifacts
+                all_artifacts = db.query(ContentArtifact).filter(
+                    ContentArtifact.job_id == job.id
+                ).all()
+                
+                completion_data = {
+                    'type': 'complete',
+                    'content': '',
+                    'social_media_content': '',
+                    'audio_content': '',
+                    'video_content': '',
+                    'topic': topic,
+                    'generated_at': job.finished_at.isoformat() if job.finished_at else datetime.now().isoformat(),
+                    'job_id': job.id
+                }
+                
+                for artifact in all_artifacts:
+                    if artifact.content_text:
+                        if artifact.type == 'blog':
+                            completion_data['content'] = artifact.content_text
+                        elif artifact.type == 'social':
+                            completion_data['social_media_content'] = artifact.content_text
+                        elif artifact.type == 'audio':
+                            completion_data['audio_content'] = artifact.content_text
+                        elif artifact.type == 'video':
+                            completion_data['video_content'] = artifact.content_text
+                
+                yield f"data: {json.dumps(completion_data)}\n\n"
+                break
+            
+            # Wait before next poll
+            await asyncio.sleep(0.5)
+    
+    # Wrap the generator with flushing capability
     streaming_generator = FlushingAsyncGenerator(
-        track_usage_wrapper(),
+        stream_job_progress(),
         flush_interval=5
     )
     
@@ -1087,24 +1356,20 @@ async def generate_content(
 if __name__ == "__main__":
     import uvicorn
     import sys
-    import logging
     
-    # Set up basic logging for startup
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    logger = logging.getLogger(__name__)
-    
-    # Log startup information for debugging
+    # Log startup information
     logger.info("=" * 50)
     logger.info("Content Creation Crew API - Starting Up")
     logger.info("=" * 50)
+    logger.info(f"Environment: {config.ENV}")
     logger.info(f"Python version: {sys.version}")
     logger.info(f"Working directory: {os.getcwd()}")
     logger.info(f"PYTHONPATH: {os.getenv('PYTHONPATH', 'NOT SET')}")
-    logger.info(f"PORT: {os.getenv('PORT', 'NOT SET (using default 8000)')}")
-    logger.info(f"DATABASE_URL: {'SET' if os.getenv('DATABASE_URL') else 'NOT SET (using SQLite)'}")
+    logger.info(f"PORT: {config.PORT}")
+    logger.info(f"DATABASE_URL: {'SET (PostgreSQL)' if config.DATABASE_URL.startswith('postgresql') else 'SET (SQLite)' if config.DATABASE_URL.startswith('sqlite') else 'NOT SET'}")
+    logger.info(f"OLLAMA_BASE_URL: {config.OLLAMA_BASE_URL}")
+    logger.info(f"Build Version: {config.BUILD_VERSION}")
+    logger.info(f"Build Commit: {config.BUILD_COMMIT}")
     
     # Configure Python to use unbuffered output for better streaming
     if hasattr(sys.stdout, 'reconfigure'):
@@ -1145,16 +1410,9 @@ if __name__ == "__main__":
         logger.error(f"✗ Failed to import content_creation_crew: {e}", exc_info=True)
         sys.exit(1)
     
-    # Get port from environment variable (Railway provides PORT)
-    # Default to 8000 for local development
-    try:
-        port = int(os.getenv("PORT", 8000))
-    except ValueError:
-        logger.warning(f"Invalid PORT value: {os.getenv('PORT')}, using default 8000")
-        port = 8000
-    
-    logger.info(f"Starting Content Creation Crew API server on port {port}")
-    logger.info(f"Health check endpoint: http://0.0.0.0:{port}/health")
+    logger.info(f"Starting Content Creation Crew API server on port {config.PORT}")
+    logger.info(f"Health check endpoint: http://0.0.0.0:{config.PORT}/health")
+    logger.info(f"Meta endpoint: http://0.0.0.0:{config.PORT}/meta")
     logger.info("=" * 50)
     
     # Configure uvicorn to disable buffering for streaming
@@ -1162,8 +1420,8 @@ if __name__ == "__main__":
         uvicorn.run(
             app,
             host="0.0.0.0",  # Listen on all interfaces (required for Railway)
-            port=port,
-            log_config=None,  # Use default logging
+            port=config.PORT,
+            log_config=None,  # Use structured logging from setup_logging
             access_log=True,
             loop="asyncio",
         )

@@ -1,12 +1,12 @@
 """
 Authentication API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from datetime import timedelta
+from datetime import timedelta, datetime
 from .database import get_db, User, init_db
 from .auth import (
     verify_password,
@@ -15,6 +15,7 @@ from .auth import (
     get_current_user,
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
+from .config import config
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -96,8 +97,9 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
         )
         logger.info(f"Access token created for user ID: {new_user.id}")
         
-        return {
-            "access_token": access_token,
+        # Prepare response data
+        response_data = {
+            "access_token": access_token,  # Keep for backward compatibility
             "token_type": "bearer",
             "user": {
                 "id": new_user.id,
@@ -108,6 +110,36 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
                 "provider": new_user.provider
             }
         }
+        
+        # Create response with httpOnly cookie
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(content=response_data)
+        
+        # Set httpOnly cookie for token (secure in production)
+        cookie_max_age = int(access_token_expires.total_seconds())
+        response.set_cookie(
+            key="auth_token",
+            value=access_token,
+            max_age=cookie_max_age,
+            httponly=True,
+            secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
+            samesite="lax",  # CSRF protection
+            path="/"
+        )
+        
+        # Set user info cookie (not sensitive, can be readable)
+        import json
+        response.set_cookie(
+            key="auth_user",
+            value=json.dumps(response_data["user"]),
+            max_age=cookie_max_age,
+            httponly=False,  # Can be read by frontend for display
+            secure=config.ENV in ["staging", "prod"],
+            samesite="lax",
+            path="/"
+        )
+        
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -159,8 +191,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
     
-    return {
-        "access_token": access_token,
+    # Prepare response data
+    response_data = {
+        "access_token": access_token,  # Keep for backward compatibility
         "token_type": "bearer",
         "user": {
             "id": user.id,
@@ -171,6 +204,36 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             "provider": user.provider
         }
     }
+    
+    # Create response with httpOnly cookie
+    from fastapi.responses import JSONResponse
+    response = JSONResponse(content=response_data)
+    
+    # Set httpOnly cookie for token (secure in production)
+    cookie_max_age = int(access_token_expires.total_seconds())
+    response.set_cookie(
+        key="auth_token",
+        value=access_token,
+        max_age=cookie_max_age,
+        httponly=True,
+        secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
+        samesite="lax",  # CSRF protection
+        path="/"
+    )
+    
+    # Set user info cookie (not sensitive, can be readable)
+    import json
+    response.set_cookie(
+        key="auth_user",
+        value=json.dumps(response_data["user"]),
+        max_age=cookie_max_age,
+        httponly=False,  # Can be read by frontend for display
+        secure=config.ENV in ["staging", "prod"],
+        samesite="lax",
+        path="/"
+    )
+    
+    return response
 
 
 @router.get("/me", response_model=UserResponse)
@@ -188,8 +251,58 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
 
 @router.post("/logout")
 async def logout(current_user: User = Depends(get_current_user)):
-    """Logout user (client should discard token)"""
-    # In a stateless JWT system, logout is handled client-side
-    # But we can add token blacklisting here if needed
-    return {"message": "Logged out successfully"}
+    """Logout user and clear httpOnly cookie"""
+    from fastapi.responses import JSONResponse
+    
+    # Create response
+    response = JSONResponse(content={"message": "Logged out successfully"})
+    
+    # Clear httpOnly cookie
+    response.delete_cookie(
+        key="auth_token",
+        path="/",
+        samesite="lax",
+        httponly=True
+    )
+    response.delete_cookie(
+        key="auth_user",
+        path="/",
+        samesite="lax"
+    )
+    
+    return response
+
+
+@router.get("/csrf-token")
+async def get_csrf_token(current_user: User = Depends(get_current_user)):
+    """
+    Generate CSRF token for authenticated users
+    
+    Returns a CSRF token that should be included in X-CSRF-Token header
+    for state-changing operations (e.g., billing actions).
+    """
+    import uuid
+    import hashlib
+    import hmac
+    from datetime import datetime, timedelta
+    
+    # Generate CSRF token based on user ID and timestamp
+    # In production, you might want to store this in Redis with expiration
+    timestamp = int(datetime.utcnow().timestamp())
+    user_id_str = str(current_user.id)
+    
+    # Create token: HMAC(user_id + timestamp, secret_key)
+    message = f"{user_id_str}:{timestamp}".encode()
+    token = hmac.new(
+        config.SECRET_KEY.encode(),
+        message,
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Return token and expiration info
+    return {
+        "csrf_token": token,
+        "expires_in": 3600,  # 1 hour
+        "header_name": "X-CSRF-Token"
+    }
 

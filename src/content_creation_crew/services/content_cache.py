@@ -21,28 +21,38 @@ class ContentCache:
         self.cache: Dict[str, Dict] = {}
         self.default_ttl = default_ttl
     
-    def get_cache_key(self, topic: str, content_types: list = None) -> str:
+    def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None) -> str:
         """
-        Generate cache key from topic and content types
+        Generate cache key from topic, content types, prompt version, and model
         
         Args:
             topic: Content topic
             content_types: List of content types requested
+            prompt_version: Prompt version (e.g., "1.0.0")
+            model: LLM model name (e.g., "ollama/llama3.2:1b")
             
         Returns:
-            MD5 hash of normalized topic and content types
+            MD5 hash of normalized topic, content types, prompt version, and model
         """
+        from ..schemas import PROMPT_VERSION
+        
         # Normalize topic (lowercase, strip whitespace)
         normalized_topic = topic.lower().strip()
         
         # Sort content types for consistent hashing
         normalized_types = sorted(content_types or ['blog'])
         
-        # Create cache key from topic and content types
-        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}"
+        # Use provided prompt_version or default
+        prompt_version = prompt_version or PROMPT_VERSION
+        
+        # Use provided model or empty string
+        model = model or ""
+        
+        # Create cache key from topic, content types, prompt version, and model
+        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}:{prompt_version}:{model}"
         return hashlib.md5(cache_string.encode()).hexdigest()
     
-    def get(self, topic: str, content_types: list = None) -> Optional[Dict]:
+    def get(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None) -> Optional[Dict]:
         """
         Get cached content for topic and content types
         
@@ -54,7 +64,7 @@ class ContentCache:
             Cached content dict with 'content', 'social_media_content', etc.
             or None if not found or expired
         """
-        key = self.get_cache_key(topic, content_types)
+        key = self.get_cache_key(topic, content_types, prompt_version, model)
         
         if key not in self.cache:
             return None
@@ -78,7 +88,7 @@ class ContentCache:
             'cached': True
         }
     
-    def set(self, topic: str, content_data: Dict, ttl: int = None):
+    def set(self, topic: str, content_data: Dict, ttl: int = None, prompt_version: str = None, model: str = None):
         """
         Cache content for topic
         
@@ -98,7 +108,7 @@ class ContentCache:
         if not content_types:
             content_types = ['blog']
         
-        key = self.get_cache_key(topic, content_types)
+        key = self.get_cache_key(topic, content_types, prompt_version, model)
         
         # Calculate expiration time
         ttl = ttl or self.default_ttl
@@ -116,7 +126,7 @@ class ContentCache:
             'ttl': ttl
         }
     
-    def clear(self, topic: str = None, content_types: list = None):
+    def clear(self, topic: str = None, content_types: list = None, prompt_version: str = None, model: str = None):
         """
         Clear cache entry for specific topic/content types
         
@@ -127,7 +137,7 @@ class ContentCache:
         if topic is None:
             self.cache.clear()
         else:
-            key = self.get_cache_key(topic, content_types)
+            key = self.get_cache_key(topic, content_types, prompt_version, model)
             if key in self.cache:
                 del self.cache[key]
     
@@ -155,9 +165,25 @@ _cache_instance: Optional[ContentCache] = None
 
 
 def get_cache() -> ContentCache:
-    """Get global cache instance"""
+    """
+    Get global cache instance
+    
+    Returns Redis-backed cache if Redis is available, otherwise in-memory cache
+    """
     global _cache_instance
     if _cache_instance is None:
-        _cache_instance = ContentCache()
+        # Try Redis first, fall back to in-memory
+        try:
+            from .redis_cache import RedisContentCache
+            redis_cache = RedisContentCache()
+            if redis_cache.use_redis:
+                _cache_instance = redis_cache
+            else:
+                _cache_instance = ContentCache()
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to initialize Redis cache: {e}, using in-memory cache")
+            _cache_instance = ContentCache()
     return _cache_instance
 
