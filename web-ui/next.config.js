@@ -63,6 +63,40 @@ const withPWA = require('next-pwa')({
   },
 })
 
+/**
+ * Validate required environment variables at build time
+ * This runs before the build starts
+ */
+function validateBuildEnv() {
+  const env = process.env.NODE_ENV || 'development'
+  const isProd = env === 'production'
+  
+  // Check required environment variables
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL
+  
+  if (isProd && !apiUrl) {
+    console.error('❌ Build failed: NEXT_PUBLIC_API_URL is required in production')
+    console.error('   Set it as an environment variable:')
+    console.error('   NEXT_PUBLIC_API_URL=https://api.yourdomain.com npm run build')
+    process.exit(1)
+  }
+  
+  if (isProd && apiUrl && !apiUrl.startsWith('https://')) {
+    console.error('❌ Build failed: NEXT_PUBLIC_API_URL must use HTTPS in production')
+    console.error(`   Current value: ${apiUrl}`)
+    process.exit(1)
+  }
+  
+  if (isProd && apiUrl && (apiUrl.includes('localhost') || apiUrl.includes('127.0.0.1'))) {
+    console.error('❌ Build failed: NEXT_PUBLIC_API_URL cannot point to localhost in production')
+    console.error(`   Current value: ${apiUrl}`)
+    process.exit(1)
+  }
+}
+
+// Validate environment before build
+validateBuildEnv()
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,

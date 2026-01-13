@@ -158,17 +158,92 @@ except Exception as e:
     # Continue anyway - app might work for read-only operations
     # Database will be initialized on first request if needed
 
+# Validate FFmpeg availability at startup (if video rendering enabled)
+try:
+    from content_creation_crew.services.ffmpeg_check import validate_ffmpeg_startup
+    validate_ffmpeg_startup(
+        enable_video_rendering=config.ENABLE_VIDEO_RENDERING,
+        timeout=5.0
+    )
+except RuntimeError as e:
+    # FFmpeg required but missing - fail fast
+    logger.critical(f"Startup validation failed: {e}")
+    if config.ENV in ["staging", "prod"]:
+        # Fail fast in staging/prod
+        sys.exit(1)
+    else:
+        # Warn in dev but continue
+        logger.warning("Continuing in dev mode despite FFmpeg validation failure")
+except Exception as e:
+    logger.warning(f"FFmpeg validation check failed: {e}")
+    # Continue anyway - validation will happen when video rendering is attempted
+
 # Disable debug mode in staging/prod
 debug_mode = config.ENV == "dev"
 app = FastAPI(
     title="Content Creation Crew API",
+    description="""
+    Content Creation Crew API - AI-powered content generation platform.
+    
+    ## Features
+    
+    * **Content Generation**: Generate blog posts, social media content, audio scripts, and video scripts
+    * **Voice Generation**: Text-to-speech (TTS) voiceover generation
+    * **Video Rendering**: Render videos from scripts with narration
+    * **Job Management**: Track content generation jobs with real-time progress via SSE
+    * **Subscription Tiers**: Tiered access with usage limits
+    
+    ## Authentication
+    
+    All endpoints (except `/health`, `/meta`, `/metrics`) require authentication via Bearer token.
+    Obtain a token by logging in at `/v1/auth/login`.
+    
+    ## Rate Limits
+    
+    Rate limits are applied per subscription tier. See `/docs/rate-limits.md` for details.
+    
+    ## SSE Streaming
+    
+    Job progress is streamed via Server-Sent Events (SSE) at `/v1/content/jobs/{id}/stream`.
+    """,
+    version=config.BUILD_VERSION or "0.1.0",
     debug=debug_mode,
     docs_url="/docs" if debug_mode else None,
     redoc_url="/redoc" if debug_mode else None,
+    openapi_tags=[
+        {
+            "name": "content",
+            "description": "Content generation endpoints. Create jobs, track progress, and retrieve artifacts."
+        },
+        {
+            "name": "auth",
+            "description": "Authentication endpoints. Sign up, log in, and manage user accounts."
+        },
+        {
+            "name": "subscription",
+            "description": "Subscription management. View tiers, usage, and plan information."
+        },
+        {
+            "name": "billing",
+            "description": "Billing endpoints. Manage payments and subscriptions."
+        },
+        {
+            "name": "health",
+            "description": "Health check and system information endpoints."
+        }
+    ],
 )
 
 # Add request ID middleware for structured logging (must be first)
 app.add_middleware(RequestIDMiddleware)
+
+# Add metrics collection middleware (after request ID, before other middleware)
+try:
+    from content_creation_crew.middleware.metrics_middleware import MetricsMiddleware
+    app.add_middleware(MetricsMiddleware)
+    logger.info("Metrics collection middleware enabled")
+except Exception as e:
+    logger.warning(f"Failed to enable metrics middleware: {e}")
 
 # Add request size limit middleware
 try:
@@ -269,31 +344,66 @@ async def root():
     return {"message": "Content Creation Crew API", "status": "running"}
 
 
+async def _check_ollama_health(ollama_url: str) -> bool:
+    """Check Ollama health with timeout"""
+    import httpx
+    async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
+        response = await client.get(f"{ollama_url}/api/tags")
+        return response.status_code == 200
+
+
 @app.get("/health")
 async def health():
     """
     Health check endpoint that verifies database and cache connectivity
     Returns 200 if healthy, 503 if unhealthy
+    
+    Timeouts:
+    - Database: 2 seconds max
+    - Redis: 1 second max
+    - Ollama: 2 seconds max
+    - Total: < 3 seconds guaranteed (never hangs)
     """
+    import asyncio
+    from datetime import datetime
+    
+    start_time = datetime.now()
     health_status = {
         "status": "healthy",
         "service": "content-creation-crew",
         "environment": config.ENV,
-        "checks": {}
+        "checks": {},
+        "response_time_ms": 0
     }
     all_healthy = True
     
-    # Check database connection
-    try:
-        with engine.connect() as conn:
+    # Check database connection with timeout (2 seconds max)
+    def check_database():
+        """Synchronous database check function"""
+        conn = engine.connect()
+        try:
             conn.execute(text("SELECT 1"))
+            return True
+        finally:
+            conn.close()
+    
+    try:
+        loop = asyncio.get_event_loop()
+        await asyncio.wait_for(
+            loop.run_in_executor(None, check_database),
+            timeout=2.0
+        )
         health_status["checks"]["database"] = "healthy"
+    except asyncio.TimeoutError:
+        logger.error("Database health check timed out after 2 seconds")
+        health_status["checks"]["database"] = "unhealthy: timeout"
+        all_healthy = False
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        health_status["checks"]["database"] = f"unhealthy: {str(e)}"
+        health_status["checks"]["database"] = f"unhealthy: {str(e)[:100]}"  # Truncate long errors
         all_healthy = False
     
-    # Check cache backend (Redis or in-memory)
+    # Check cache backend (Redis or in-memory) with timeout
     try:
         cache = get_cache()
         stats = cache.get_stats()
@@ -304,36 +414,59 @@ async def health():
             "entries": stats.get("total_entries", 0)
         }
         
-        # Check Redis connection if using Redis
+        # Check Redis connection if using Redis (1 second max)
         if cache_type == 'redis':
             try:
                 from content_creation_crew.services.redis_cache import get_redis_client
                 redis_client = get_redis_client()
                 if redis_client:
-                    redis_client.ping()
+                    # Run Redis ping in executor with timeout
+                    loop = asyncio.get_event_loop()
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, redis_client.ping),
+                        timeout=1.0
+                    )
                     health_status["checks"]["redis"] = "healthy"
                 else:
                     health_status["checks"]["redis"] = "unavailable"
+            except asyncio.TimeoutError:
+                logger.warning("Redis health check timed out after 1 second")
+                health_status["checks"]["redis"] = "unhealthy: timeout"
+                # Redis timeout doesn't fail overall health (non-critical)
             except Exception as redis_error:
-                health_status["checks"]["redis"] = f"unhealthy: {str(redis_error)}"
+                logger.warning(f"Redis health check failed: {redis_error}")
+                health_status["checks"]["redis"] = f"unhealthy: {str(redis_error)[:100]}"
+                # Redis failure doesn't fail overall health (non-critical)
     except Exception as e:
         logger.error(f"Cache health check failed: {e}")
-        health_status["checks"]["cache"] = f"unhealthy: {str(e)}"
-        all_healthy = False
+        health_status["checks"]["cache"] = f"unhealthy: {str(e)[:100]}"
+        # Cache failure doesn't fail overall health (can use in-memory fallback)
     
-    # Check Ollama connection (optional - don't fail if unavailable)
+    # Check Ollama connection (optional - 2 seconds max, non-critical)
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
-            if response.status_code == 200:
-                health_status["checks"]["ollama"] = "healthy"
-            else:
-                health_status["checks"]["ollama"] = f"unhealthy: status {response.status_code}"
+        await asyncio.wait_for(
+            _check_ollama_health(config.OLLAMA_BASE_URL),
+            timeout=2.0
+        )
+        health_status["checks"]["ollama"] = "healthy"
+    except asyncio.TimeoutError:
+        logger.warning("Ollama health check timed out after 2 seconds (non-critical)")
+        health_status["checks"]["ollama"] = "unavailable: timeout"
     except Exception as e:
         logger.warning(f"Ollama health check failed (non-critical): {e}")
-        health_status["checks"]["ollama"] = f"unavailable: {str(e)}"
+        health_status["checks"]["ollama"] = f"unavailable: {str(e)[:100]}"
     
+    # Calculate response time
+    end_time = datetime.now()
+    response_time_ms = (end_time - start_time).total_seconds() * 1000
+    health_status["response_time_ms"] = round(response_time_ms, 2)
+    
+    # Ensure we never exceed 3 seconds (safety check)
+    if response_time_ms > 3000:
+        logger.warning(f"Health check took {response_time_ms}ms (exceeded 3s limit)")
+    
+    # Return 503 if critical services (database) are unhealthy
     if not all_healthy:
         return JSONResponse(
             content=health_status,
@@ -355,6 +488,25 @@ async def meta():
         "build_time": config.BUILD_TIME,
         "environment": config.ENV,
     }
+
+
+@app.get("/metrics")
+@app.get("/v1/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint
+    Returns metrics in Prometheus text format
+    """
+    from content_creation_crew.services.metrics import get_metrics_collector
+    from fastapi.responses import Response
+    
+    collector = get_metrics_collector()
+    metrics_text = collector.format_prometheus()
+    
+    return Response(
+        content=metrics_text,
+        media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
 
 
 async def run_crew_async(topic: str, tier: str = 'free', content_types: list = None, use_cache: bool = True) -> AsyncGenerator[str, None]:

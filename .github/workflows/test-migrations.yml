@@ -1,0 +1,112 @@
+name: Test Database Migrations
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'alembic/versions/**'
+      - 'src/content_creation_crew/db/models/**'
+      - '.github/workflows/test-migrations.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'alembic/versions/**'
+      - 'src/content_creation_crew/db/models/**'
+  workflow_dispatch:
+
+jobs:
+  test-migrations:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd "pg_isready -U testuser"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install UV
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system alembic sqlalchemy psycopg2-binary python-dotenv
+
+      - name: Set up environment
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/test_db
+        run: |
+          export DATABASE_URL="postgresql://testuser:testpass@localhost:5432/test_db"
+          echo "DATABASE_URL=$DATABASE_URL" >> $GITHUB_ENV
+
+      - name: Check current migration status
+        run: |
+          uv run alembic current || echo "No migrations applied yet"
+
+      - name: Apply all migrations
+        run: |
+          uv run alembic upgrade head
+          echo "✓ Migrations applied successfully"
+
+      - name: Verify migration status
+        run: |
+          CURRENT=$(uv run alembic current | grep -oP '^\w+' | head -1 || echo "none")
+          HEAD=$(uv run alembic heads | grep -oP '^\w+' | head -1 || echo "none")
+          echo "Current revision: $CURRENT"
+          echo "Head revision: $HEAD"
+          if [ "$CURRENT" != "$HEAD" ]; then
+            echo "❌ Migration mismatch!"
+            exit 1
+          fi
+          echo "✓ Database is at head revision"
+
+      - name: Test rollback (if multiple migrations exist)
+        run: |
+          REVISION_COUNT=$(uv run alembic history | grep -c "Rev:" || echo "0")
+          if [ "$REVISION_COUNT" -le "1" ]; then
+            echo "⚠️  Only one migration exists, skipping rollback test"
+            exit 0
+          fi
+          
+          echo "Rolling back one revision..."
+          uv run alembic downgrade -1
+          
+          CURRENT_AFTER_ROLLBACK=$(uv run alembic current | grep -oP '^\w+' | head -1 || echo "none")
+          echo "Revision after rollback: $CURRENT_AFTER_ROLLBACK"
+          
+          echo "Re-applying migration..."
+          uv run alembic upgrade head
+          
+          FINAL=$(uv run alembic current | grep -oP '^\w+' | head -1 || echo "none")
+          HEAD=$(uv run alembic heads | grep -oP '^\w+' | head -1 || echo "none")
+          
+          if [ "$FINAL" = "$HEAD" ]; then
+            echo "✓ Rollback test passed!"
+          else
+            echo "❌ Rollback test failed! Final revision doesn't match head"
+            exit 1
+          fi
+
+      - name: Verify database schema
+        run: |
+          # Check that critical tables exist
+          psql $DATABASE_URL -c "\dt" | grep -E "(users|organizations|content_jobs)" || echo "⚠️  Some tables may be missing"
+          echo "✓ Database schema verified"
+

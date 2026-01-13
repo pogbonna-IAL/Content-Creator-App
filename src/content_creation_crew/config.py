@@ -24,9 +24,12 @@ class Config:
     ENV: str = os.getenv("ENV", "dev").lower()
     
     # Required for all environments
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "")  # Must be PostgreSQL - no default
+    # SECRET_KEY: No default - must be set via environment variable
+    # This ensures deployments fail fast if secret is not configured
+    SECRET_KEY: str = os.getenv("SECRET_KEY") or ""
+    DATABASE_URL: str = os.getenv("DATABASE_URL") or ""  # Must be PostgreSQL - no default
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    MODEL_NAMES: Optional[str] = os.getenv("MODEL_NAMES")  # Comma-separated list of Ollama models to download
     
     # Optional but recommended
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
@@ -83,6 +86,19 @@ class Config:
     # CrewAI execution timeout (in seconds, default 5 minutes)
     CREWAI_TIMEOUT: int = int(os.getenv("CREWAI_TIMEOUT", "300"))
     
+    # Video rendering feature flag
+    ENABLE_VIDEO_RENDERING: bool = os.getenv("ENABLE_VIDEO_RENDERING", "false").lower() in ("true", "1", "yes")
+    
+    # Rate limiting configuration
+    RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))  # Default: 60 requests per minute
+    RATE_LIMIT_GENERATE_RPM: int = int(os.getenv("RATE_LIMIT_GENERATE_RPM", "10"))  # Default: 10 generation requests per minute
+    RATE_LIMIT_SSE_CONNECTIONS: int = int(os.getenv("RATE_LIMIT_SSE_CONNECTIONS", "5"))  # Default: 5 SSE connections per user
+    
+    # Content moderation configuration
+    ENABLE_CONTENT_MODERATION: bool = os.getenv("ENABLE_CONTENT_MODERATION", "true").lower() in ("true", "1", "yes")
+    ENABLE_CONTENT_MODERATION_CLASSIFIER: bool = os.getenv("ENABLE_CONTENT_MODERATION_CLASSIFIER", "false").lower() in ("true", "1", "yes")
+    MODERATION_DISALLOWED_KEYWORDS: Optional[str] = os.getenv("MODERATION_DISALLOWED_KEYWORDS", None)  # Comma-separated keywords
+    
     def __init__(self):
         """Initialize configuration and validate required variables"""
         self._load_cors_origins()
@@ -113,13 +129,23 @@ class Config:
         if self.ENV not in ["dev", "staging", "prod"]:
             errors.append(f"Invalid ENV value: {self.ENV}. Must be 'dev', 'staging', or 'prod'")
         
-        # SECRET_KEY is required for all environments
+        # SECRET_KEY is required for all environments - fail fast if missing
         if not self.SECRET_KEY:
-            errors.append("SECRET_KEY is required but not set")
+            errors.append(
+                "SECRET_KEY is required but not set. "
+                "Set it via environment variable or .env file. "
+                "Generate a secure key with: openssl rand -hex 32"
+            )
         elif len(self.SECRET_KEY) < 32:
-            errors.append(f"SECRET_KEY must be at least 32 characters (current: {len(self.SECRET_KEY)})")
-        elif self.ENV != "dev" and self.SECRET_KEY == "your-secret-key-change-in-production-min-32-chars":
-            errors.append("SECRET_KEY must be changed from default value in non-dev environments")
+            errors.append(
+                f"SECRET_KEY must be at least 32 characters (current: {len(self.SECRET_KEY)}). "
+                "Generate a secure key with: openssl rand -hex 32"
+            )
+        elif self.SECRET_KEY == "your-secret-key-change-in-production-min-32-chars":
+            errors.append(
+                "SECRET_KEY must be changed from default value. "
+                "Generate a secure key with: openssl rand -hex 32"
+            )
         
         # Database URL validation - PostgreSQL required for all environments
         if not self.DATABASE_URL:

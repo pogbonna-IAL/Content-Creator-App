@@ -10,6 +10,7 @@
 .env.test
 .env.staging
 *.env
+!/.env.example
 .envrc
 
 # Secret keys and credentials

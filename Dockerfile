@@ -50,9 +50,11 @@ FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-# Install runtime dependencies only (curl for health checks)
+# Install runtime dependencies (curl for health checks, ffmpeg for video rendering)
+# FFmpeg is included for video rendering support (can be disabled via ENABLE_VIDEO_RENDERING=false)
 RUN apt-get update && apt-get install -y \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set PYTHONPATH
@@ -92,9 +94,9 @@ ENV PORT=8000
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+# Health check with timeout (3 seconds max)
+HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
+    CMD curl -f --max-time 3 http://localhost:${PORT:-8000}/health || exit 1
 
 # Run the application
 CMD ["python", "api_server.py"]

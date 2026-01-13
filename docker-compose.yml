@@ -14,8 +14,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-contentcrew}"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 2s
+      retries: 3
+      start_period: 10s
     networks:
       - content-crew-network
     restart: unless-stopped
@@ -32,8 +33,9 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 1s
+      retries: 3
+      start_period: 5s
     networks:
       - content-crew-network
     restart: unless-stopped
@@ -44,6 +46,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: content-crew-api
+    # Load environment variables from .env file
+    # Create .env from .env.example: cp .env.example .env
+    env_file:
+      - .env
     environment:
       # Environment
       ENV: ${ENV:-dev}
@@ -55,7 +61,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       
       # Security
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production-min-32-chars}
+      # SECRET_KEY is REQUIRED - no default fallback for security
+      # Set it in .env file or via environment variable
+      # Generate with: openssl rand -hex 32
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY environment variable is required. Set it in .env file or pass via environment. Generate with: openssl rand -hex 32}
       
       # OAuth (optional - set in .env)
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -97,11 +106,11 @@ services:
         condition: service_healthy
     # Note: Ollama dependency removed - use external Ollama or enable via profile
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "curl", "-f", "--max-time", "3", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 3s
       retries: 3
-      start_period: 40s
+      start_period: 30s
     networks:
       - content-crew-network
     restart: unless-stopped
@@ -114,6 +123,9 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: content-crew-web
+    # Load environment variables from .env file (for NEXT_PUBLIC_* vars)
+    env_file:
+      - .env
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
@@ -148,10 +160,19 @@ services:
     restart: unless-stopped
     profiles:
       - ollama
-    # Note: After starting, you need to pull models manually:
-    # docker exec content-crew-ollama ollama pull llama3.2:1b
-    # docker exec content-crew-ollama ollama pull llama3.2:3b
-    # docker exec content-crew-ollama ollama pull llama3.1:8b
+    # Model Download:
+    # After starting Ollama, download required models:
+    #   Option 1 (Recommended): make models-pull
+    #   Option 2: docker compose exec ollama ollama pull llama3.2:1b
+    #   Option 3: Use infra/scripts/pull-models.sh or pull-models.py
+    #
+    # Required models (per tier):
+    #   - Free: llama3.2:1b (~1.3 GB)
+    #   - Basic: llama3.2:3b (~2.0 GB)
+    #   - Pro: llama3.1:8b (~4.7 GB)
+    #   - Enterprise: llama3.1:70b (~40 GB)
+    #
+    # See docs/models.md for complete model management guide
 
 volumes:
   postgres_data:

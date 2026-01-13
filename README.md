@@ -98,16 +98,35 @@ All Python dependencies are managed via `pyproject.toml` and will be installed a
    ```
 
 3. **Set up environment variables**
+   
+   **IMPORTANT**: SECRET_KEY is required and has no default. You must set it explicitly.
+   
    ```bash
-   cp .env.example .env  # If you have an example file
+   # Copy the example file
+   cp .env.example .env
+   
+   # Generate a secure SECRET_KEY (minimum 32 characters)
+   # On Linux/Mac:
+   openssl rand -hex 32
+   
+   # On Windows PowerShell:
+   -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
    ```
    
-   Create a `.env` file with:
+   Edit `.env` and set at minimum:
    ```env
-   SECRET_KEY=your-secret-key-min-32-characters-long
-   OLLAMA_BASE_URL=http://localhost:11434
+   # REQUIRED - Generate a secure key (see above)
+   SECRET_KEY=<your-generated-secret-key-min-32-characters>
+   
+   # REQUIRED - PostgreSQL connection string
    DATABASE_URL=postgresql://user:password@localhost:5432/content_crew
+   
+   # REQUIRED - Ollama service URL
+   OLLAMA_BASE_URL=http://localhost:11434
    ```
+   
+   **Note**: For Docker Compose, the `.env` file is automatically loaded. 
+   Docker Compose will fail to start if SECRET_KEY is not set.
 
 4. **Install frontend dependencies**
    ```bash

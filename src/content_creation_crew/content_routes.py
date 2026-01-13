@@ -20,6 +20,7 @@ from .services.tts_provider import get_tts_provider
 from .services.storage_provider import get_storage_provider
 from .services.sse_store import get_sse_store
 from .schemas import PROMPT_VERSION
+from .config import config
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,54 @@ class JobListResponse(BaseModel):
     offset: int
 
 
-@router.post("/generate", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/generate",
+    response_model=JobResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create content generation job",
+    description="""
+    Create a new content generation job for the specified topic and content types.
+    
+    The job will be created in `pending` status and processing will begin asynchronously.
+    Use the returned job ID to:
+    - Query job status: `GET /v1/content/jobs/{id}`
+    - Stream progress: `GET /v1/content/jobs/{id}/stream`
+    - List artifacts: `GET /v1/content/jobs/{id}/artifacts`
+    
+    **Content Types:**
+    - `blog`: Blog post content
+    - `social`: Social media posts
+    - `audio`: Audio script/narration
+    - `video`: Video script
+    
+    **Idempotency:**
+    Provide an `idempotency_key` to prevent duplicate jobs for the same request.
+    """,
+    tags=["content"],
+    responses={
+        201: {
+            "description": "Job created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 123,
+                        "topic": "Introduction to AI",
+                        "formats_requested": ["blog", "social"],
+                        "status": "pending",
+                        "idempotency_key": "abc123",
+                        "created_at": "2026-01-13T10:30:00Z",
+                        "started_at": None,
+                        "finished_at": None,
+                        "artifacts": []
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid request"},
+        403: {"description": "Plan limit exceeded or content type not available"},
+        429: {"description": "Rate limit exceeded"}
+    }
+)
 async def create_generation_job(
     request: GenerateRequest,
     current_user: User = Depends(get_current_user),
@@ -91,6 +139,35 @@ async def create_generation_job(
     content_service = ContentService(db, current_user)
     policy = PlanPolicy(db, current_user)
     plan = policy.get_plan()
+    
+    # Moderate input (before generation)
+    if config.ENABLE_CONTENT_MODERATION:
+        from .services.moderation_service import get_moderation_service
+        moderation_service = get_moderation_service()
+        moderation_result = moderation_service.moderate_input(
+            topic,
+            context={"user_id": current_user.id, "plan": plan}
+        )
+        
+        if not moderation_result.passed:
+            from .exceptions import ErrorResponse
+            from .logging_config import get_request_id
+            
+            error_response = ErrorResponse.create(
+                message=f"Content moderation failed: {moderation_result.reason_code.value if moderation_result.reason_code else 'unknown'}",
+                code="CONTENT_BLOCKED",
+                status_code=status.HTTP_403_FORBIDDEN,
+                request_id=get_request_id(),
+                details={
+                    "reason_code": moderation_result.reason_code.value if moderation_result.reason_code else None,
+                    **moderation_result.details
+                }
+            )
+            
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response
+            )
     
     # Determine content types
     requested_content_types = request.content_types or []
@@ -141,6 +218,13 @@ async def create_generation_job(
     except HTTPException as e:
         raise e
     
+    # Track job creation metric
+    try:
+        from .services.metrics import increment_counter
+        increment_counter("jobs_total", labels={"content_types": ",".join(valid_content_types), "plan": plan})
+    except ImportError:
+        pass
+    
     # Start generation asynchronously (don't wait)
     asyncio.create_task(
         run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
@@ -150,7 +234,13 @@ async def create_generation_job(
     return _job_to_response(job)
 
 
-@router.get("/jobs/{job_id}", response_model=JobResponse)
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobResponse,
+    summary="Get job details",
+    description="Retrieve details of a specific content generation job including status and artifacts.",
+    tags=["content"]
+)
 async def get_job(
     job_id: int,
     current_user: User = Depends(get_current_user),
@@ -169,7 +259,13 @@ async def get_job(
     return _job_to_response(job)
 
 
-@router.get("/jobs", response_model=JobListResponse)
+@router.get(
+    "/jobs",
+    response_model=JobListResponse,
+    summary="List jobs",
+    description="List all content generation jobs for the authenticated user. Supports filtering by status and pagination.",
+    tags=["content"]
+)
 async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100, description="Number of results"),
@@ -194,7 +290,30 @@ async def list_jobs(
     )
 
 
-@router.get("/jobs/{job_id}/stream")
+@router.get(
+    "/jobs/{job_id}/stream",
+    summary="Stream job progress (SSE)",
+    description="""
+    Stream job progress via Server-Sent Events (SSE).
+    
+    **Event Types:**
+    - `job_started`: Job has started processing
+    - `agent_progress`: Progress update from an agent
+    - `artifact_ready`: An artifact has been generated
+    - `tts_started`: TTS generation started
+    - `tts_progress`: TTS generation progress
+    - `tts_completed`: TTS generation completed
+    - `video_render_started`: Video rendering started
+    - `scene_started`: Scene rendering started
+    - `scene_completed`: Scene rendering completed
+    - `complete`: Job completed successfully
+    - `error`: Job failed
+    
+    **Reconnection:**
+    Supports `Last-Event-ID` header for reconnection and event replay.
+    """,
+    tags=["content"]
+)
 async def stream_job_progress(
     job_id: int,
     request: FastAPIRequest,
@@ -494,21 +613,64 @@ async def run_generation_async(
             content = api_server_module.clean_content(raw_content)
         
         if content and len(content.strip()) > 10:
-            content_service.create_artifact(
-                job_id,
-                'blog',
-                content,
-                content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                prompt_version=PROMPT_VERSION,
-                model_used=model_name
-            )
-            # Send artifact ready event
-            sse_store.add_event(job_id, 'artifact_ready', {
-                'job_id': job_id,
-                'artifact_type': 'blog',
-                'message': 'Blog content generated'
-            })
-            logger.info(f"Job {job_id}: Blog artifact created")
+            # Moderate output before saving artifact
+            if config.ENABLE_CONTENT_MODERATION:
+                from .services.moderation_service import get_moderation_service
+                moderation_service = get_moderation_service()
+                moderation_result = moderation_service.moderate_output(
+                    content,
+                    'blog',
+                    context={"job_id": job_id, "user_id": user_id}
+                )
+                
+                if not moderation_result.passed:
+                    # Send moderation blocked event
+                    sse_store.add_event(job_id, 'moderation_blocked', {
+                        'job_id': job_id,
+                        'artifact_type': 'blog',
+                        'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
+                        'details': moderation_result.details
+                    })
+                    logger.warning(f"Job {job_id}: Blog content blocked by moderation: {moderation_result.reason_code}")
+                    # Skip creating artifact for blocked content
+                else:
+                    # Send moderation passed event
+                    sse_store.add_event(job_id, 'moderation_passed', {
+                        'job_id': job_id,
+                        'artifact_type': 'blog'
+                    })
+                    content_service.create_artifact(
+                        job_id,
+                        'blog',
+                        content,
+                        content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                        prompt_version=PROMPT_VERSION,
+                        model_used=model_name
+                    )
+                    # Send artifact ready event
+                    sse_store.add_event(job_id, 'artifact_ready', {
+                        'job_id': job_id,
+                        'artifact_type': 'blog',
+                        'message': 'Blog content generated'
+                    })
+                    logger.info(f"Job {job_id}: Blog artifact created")
+            else:
+                # Moderation disabled, create artifact directly
+                content_service.create_artifact(
+                    job_id,
+                    'blog',
+                    content,
+                    content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                    prompt_version=PROMPT_VERSION,
+                    model_used=model_name
+                )
+                # Send artifact ready event
+                sse_store.add_event(job_id, 'artifact_ready', {
+                    'job_id': job_id,
+                    'artifact_type': 'blog',
+                    'message': 'Blog content generated'
+                })
+                logger.info(f"Job {job_id}: Blog artifact created")
         
         # Extract and validate other content types
         for content_type in content_types:
@@ -531,21 +693,64 @@ async def run_generation_async(
                         validated_content = api_server_module.clean_content(raw_content)
                     
                     if validated_content and len(validated_content.strip()) > 10:
-                        content_service.create_artifact(
-                            job_id,
-                            content_type,
-                            validated_content,
-                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                            prompt_version=PROMPT_VERSION,
-                            model_used=model_name
-                        )
-                        # Send artifact ready event
-                        sse_store.add_event(job_id, 'artifact_ready', {
-                            'job_id': job_id,
-                            'artifact_type': content_type,
-                            'message': f'{content_type.capitalize()} content generated'
-                        })
-                        logger.info(f"Job {job_id}: {content_type} artifact created")
+                        # Moderate output before saving artifact
+                        if config.ENABLE_CONTENT_MODERATION:
+                            from .services.moderation_service import get_moderation_service
+                            moderation_service = get_moderation_service()
+                            moderation_result = moderation_service.moderate_output(
+                                validated_content,
+                                content_type,
+                                context={"job_id": job_id, "user_id": user_id}
+                            )
+                            
+                            if not moderation_result.passed:
+                                # Send moderation blocked event
+                                sse_store.add_event(job_id, 'moderation_blocked', {
+                                    'job_id': job_id,
+                                    'artifact_type': content_type,
+                                    'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
+                                    'details': moderation_result.details
+                                })
+                                logger.warning(f"Job {job_id}: {content_type} content blocked by moderation: {moderation_result.reason_code}")
+                                # Skip creating artifact for blocked content
+                            else:
+                                # Send moderation passed event
+                                sse_store.add_event(job_id, 'moderation_passed', {
+                                    'job_id': job_id,
+                                    'artifact_type': content_type
+                                })
+                                content_service.create_artifact(
+                                    job_id,
+                                    content_type,
+                                    validated_content,
+                                    content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                                    prompt_version=PROMPT_VERSION,
+                                    model_used=model_name
+                                )
+                                # Send artifact ready event
+                                sse_store.add_event(job_id, 'artifact_ready', {
+                                    'job_id': job_id,
+                                    'artifact_type': content_type,
+                                    'message': f'{content_type.capitalize()} content generated'
+                                })
+                                logger.info(f"Job {job_id}: {content_type} artifact created")
+                        else:
+                            # Moderation disabled, create artifact directly
+                            content_service.create_artifact(
+                                job_id,
+                                content_type,
+                                validated_content,
+                                content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                                prompt_version=PROMPT_VERSION,
+                                model_used=model_name
+                            )
+                            # Send artifact ready event
+                            sse_store.add_event(job_id, 'artifact_ready', {
+                                'job_id': job_id,
+                                'artifact_type': content_type,
+                                'message': f'{content_type.capitalize()} content generated'
+                            })
+                            logger.info(f"Job {job_id}: {content_type} artifact created")
         
         # Update job status to completed
         content_service.update_job_status(
@@ -567,6 +772,13 @@ async def run_generation_async(
         
         logger.info(f"Job {job_id} completed successfully")
         
+        # Track job success metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("jobs_total", labels={"status": "completed", "plan": plan})
+        except ImportError:
+            pass
+        
     except (TimeoutError, asyncio.TimeoutError) as e:
         error_msg = str(e) if str(e) else f"Content generation timed out after {timeout_seconds} seconds"
         logger.error(f"Job {job_id} failed: {error_msg}", exc_info=True)
@@ -587,6 +799,13 @@ async def run_generation_async(
                         'message': error_msg,
                         'error_type': 'timeout'
                     })
+                    
+                    # Track job failure metric
+                    try:
+                        from .services.metrics import increment_counter
+                        increment_counter("job_failures_total", labels={"error_type": "timeout", "plan": plan})
+                    except ImportError:
+                        pass
             except Exception as update_error:
                 logger.error(f"Failed to update job status after timeout: {update_error}")
     except Exception as e:
@@ -609,6 +828,13 @@ async def run_generation_async(
                         'message': error_msg,
                         'error_type': type(e).__name__
                     })
+                    
+                    # Track job failure metric
+                    try:
+                        from .services.metrics import increment_counter
+                        increment_counter("job_failures_total", labels={"error_type": type(e).__name__, "plan": plan})
+                    except ImportError:
+                        pass
             except Exception as update_error:
                 logger.error(f"Failed to update job status: {update_error}")
     finally:
@@ -628,7 +854,28 @@ class VoiceoverRequest(BaseModel):
     format: str = Field(default="wav", description="Output format")
 
 
-@router.post("/voiceover", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/voiceover",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Generate voiceover (TTS)",
+    description="""
+    Create a voiceover (TTS) for a job's audio script or provided narration text.
+    
+    Creates a `voiceover_audio` artifact linked to the job and streams progress via SSE.
+    
+    **Input Options:**
+    - `job_id`: Use audio script from existing job
+    - `narration_text`: Provide narration text directly
+    
+    **Progress Events:**
+    - `tts_started`: TTS generation started
+    - `tts_progress`: Progress updates
+    - `artifact_ready`: Voiceover audio ready
+    - `tts_completed`: TTS generation completed
+    - `tts_failed`: TTS generation failed
+    """,
+    tags=["content"]
+)
 async def create_voiceover(
     request: VoiceoverRequest,
     current_user: User = Depends(get_current_user),
@@ -691,6 +938,35 @@ async def create_voiceover(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="narration_text cannot be empty"
             )
+        
+        # Moderate input (before generation)
+        if config.ENABLE_CONTENT_MODERATION:
+            from .services.moderation_service import get_moderation_service
+            moderation_service = get_moderation_service()
+            moderation_result = moderation_service.moderate_input(
+                narration_text,
+                context={"user_id": current_user.id, "type": "voiceover"}
+            )
+            
+            if not moderation_result.passed:
+                from .exceptions import ErrorResponse
+                from .logging_config import get_request_id
+                
+                error_response = ErrorResponse.create(
+                    message=f"Content moderation failed: {moderation_result.reason_code.value if moderation_result.reason_code else 'unknown'}",
+                    code="CONTENT_BLOCKED",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    request_id=get_request_id(),
+                    details={
+                        "reason_code": moderation_result.reason_code.value if moderation_result.reason_code else None,
+                        **moderation_result.details
+                    }
+                )
+                
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=error_response
+                )
         
         # Create a new job for standalone voiceover
         # This allows tracking voiceover as a separate job
@@ -812,6 +1088,34 @@ async def _generate_voiceover_async(
         
         logger.info(f"Audio file stored: {storage_key} for job {job_id}")
         
+        # Moderate output before saving artifact
+        if config.ENABLE_CONTENT_MODERATION:
+            from .services.moderation_service import get_moderation_service
+            moderation_service = get_moderation_service()
+            moderation_result = moderation_service.moderate_output(
+                narration_text,
+                'voiceover_audio',
+                context={"job_id": job_id, "user_id": user_id}
+            )
+            
+            if not moderation_result.passed:
+                # Send moderation blocked event
+                sse_store.add_event(job_id, 'moderation_blocked', {
+                    'job_id': job_id,
+                    'artifact_type': 'voiceover_audio',
+                    'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
+                    'details': moderation_result.details
+                })
+                logger.warning(f"Job {job_id}: Voiceover content blocked by moderation: {moderation_result.reason_code}")
+                # Skip creating artifact for blocked content
+                raise RuntimeError(f"Content blocked by moderation: {moderation_result.reason_code}")
+            else:
+                # Send moderation passed event
+                sse_store.add_event(job_id, 'moderation_passed', {
+                    'job_id': job_id,
+                    'artifact_type': 'voiceover_audio'
+                })
+        
         # Create voiceover_audio artifact
         user = db.query(User).filter(User.id == user_id).first()
         content_service = ContentService(db, user)
@@ -839,6 +1143,13 @@ async def _generate_voiceover_async(
         # Increment voiceover usage counter
         plan_policy = PlanPolicy(db, User(id=user_id))
         plan_policy.increment_usage('voiceover_audio')
+        
+        # Track TTS job success metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("tts_jobs_total", labels={"status": "success", "voice_id": voice_id})
+        except ImportError:
+            pass
         
         logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
         
@@ -869,6 +1180,13 @@ async def _generate_voiceover_async(
     except Exception as e:
         error_message = f"Voiceover generation failed: {str(e)}"
         logger.error(f"Job {job_id} voiceover failed: {error_message}", exc_info=True)
+        
+        # Track TTS job failure metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("tts_jobs_total", labels={"status": "failure", "voice_id": voice_id})
+        except ImportError:
+            pass
         
         # Send error event
         sse_store.add_event(
@@ -914,7 +1232,30 @@ class VideoRenderRequest(BaseModel):
     )
 
 
-@router.post("/video/render", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/video/render",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Render video",
+    description="""
+    Render video from a job's video script.
+    
+    Creates `final_video` artifact and optionally `storyboard_image`/`video_clip` artifacts.
+    Streams progress via SSE.
+    
+    **Requirements:**
+    - Job must have a `video` artifact (video script)
+    - Optional: `voiceover_audio` artifact for narration
+    
+    **Progress Events:**
+    - `video_render_started`: Video rendering started
+    - `scene_started`: Scene rendering started
+    - `scene_completed`: Scene rendering completed
+    - `artifact_ready`: Artifact ready (storyboard_image, video_clip, final_video)
+    - `video_render_completed`: Video rendering completed
+    - `video_render_failed`: Video rendering failed
+    """,
+    tags=["content"]
+)
 async def render_video(
     request: VideoRenderRequest,
     current_user: User = Depends(get_current_user),
@@ -1184,6 +1525,13 @@ async def _render_video_async(
         plan_policy = PlanPolicy(db, User(id=user_id))
         plan_policy.increment_usage('final_video')
         
+        # Track video render success metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("video_renders_total", labels={"status": "success", "renderer": renderer})
+        except ImportError:
+            pass
+        
         logger.info(f"Created final_video artifact {artifact.id} for job {job_id}")
         
         # Send artifact ready event
@@ -1214,6 +1562,13 @@ async def _render_video_async(
     except Exception as e:
         error_message = f"Video rendering failed: {str(e)}"
         logger.error(f"Job {job_id} video rendering failed: {error_message}", exc_info=True)
+        
+        # Track video render failure metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("video_renders_total", labels={"status": "failure", "renderer": renderer})
+        except ImportError:
+            pass
         
         # Send error event
         sse_store.add_event(

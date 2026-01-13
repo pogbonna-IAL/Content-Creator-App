@@ -378,12 +378,13 @@ Client → Next.js /api/generate → FastAPI /api/generate → Ollama
 
 **⚠️ CRITICAL ISSUES:**
 
-1. **Docker Compose Defaults** (`docker-compose.yml:35`):
+1. **Docker Compose Secrets** (`docker-compose.yml`):
    ```yaml
-   SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production-min-32-chars}
+   SECRET_KEY: ${SECRET_KEY:?SECRET_KEY environment variable is required...}
    ```
-   - Default value is a placeholder, not secure
-   - **MUST CHANGE**: Use strong random key in production
+   - ✅ **FIXED**: No default fallback - requires explicit SECRET_KEY
+   - ✅ **SECURE**: Docker Compose will fail to start if SECRET_KEY is not set
+   - **REQUIRED**: Set SECRET_KEY in `.env` file (copy from `.env.example`)
 
 2. **PostgreSQL Default Password** (`docker-compose.yml:10`):
    ```yaml

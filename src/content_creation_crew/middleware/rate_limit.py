@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..services.redis_cache import get_redis_client
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.memory_buckets: dict = {}
         
         # Rate limits per tier (requests per minute)
+        # Can be overridden by RATE_LIMIT_RPM env var (applies to all tiers)
+        base_rpm = config.RATE_LIMIT_RPM
         self.tier_limits = {
-            'free': 10,      # 10 requests per minute
-            'basic': 30,     # 30 requests per minute
-            'pro': 100,      # 100 requests per minute
-            'enterprise': 500  # 500 requests per minute
+            'free': max(10, base_rpm // 6),      # Default: 10 requests per minute (or base_rpm/6)
+            'basic': max(30, base_rpm // 2),     # Default: 30 requests per minute (or base_rpm/2)
+            'pro': max(100, base_rpm),           # Default: 100 requests per minute (or base_rpm)
+            'enterprise': max(500, base_rpm * 5)  # Default: 500 requests per minute (or base_rpm*5)
         }
+        
+        # Generation-specific rate limit (for /v1/content/generate endpoint)
+        self.generate_rpm = config.RATE_LIMIT_GENERATE_RPM
+        
+        # SSE connection limit per user
+        self.sse_connection_limit = config.RATE_LIMIT_SSE_CONNECTIONS
         
         # Token bucket configuration
         self.bucket_size_multiplier = 2  # Bucket can hold 2x the rate limit
@@ -208,13 +217,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """
         Process request and apply rate limiting
         """
-        # Skip rate limiting for health checks and static files
-        if request.url.path in ['/health', '/meta', '/']:
+        # Skip rate limiting for health checks, metrics, and static files
+        if request.url.path in ['/health', '/meta', '/', '/metrics', '/v1/metrics']:
             return await call_next(request)
+        
+        # Check for SSE connection limit (for /v1/content/jobs/{id}/stream)
+        if '/stream' in request.url.path:
+            # SSE connection limit check would go here
+            # For now, we'll use the same rate limiting as regular requests
+            pass
         
         # Get user identifier (user_id or org_id)
         identifier = None
         limit = self.tier_limits['free']  # Default to free tier limit
+        
+        # Check if this is a generation endpoint (use stricter limit)
+        is_generation_endpoint = request.url.path in [
+            '/v1/content/generate',
+            '/api/generate',
+            '/api/generate/stream'
+        ]
         
         # Try to get user from request state (set by auth middleware)
         # Note: Auth middleware may not have run yet, so we check after response
@@ -227,21 +249,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             user = request.state.user
             identifier = f"user:{user.id}"
             
-            # Get user's tier/plan for rate limit
-            try:
-                from ..database import get_db
-                from ..services.plan_policy import PlanPolicy
-                db_gen = get_db()
-                db = next(db_gen)
+            # Get user's tier/plan for rate limit (unless generation endpoint)
+            if not is_generation_endpoint:
                 try:
-                    policy = PlanPolicy(db, user)
-                    plan = policy.get_plan()
-                    limit = self.tier_limits.get(plan, self.tier_limits['free'])
-                finally:
-                    db.close()
-            except Exception as e:
-                logger.debug(f"Failed to get user plan for rate limiting: {e}, using free tier limit")
-                limit = self.tier_limits['free']
+                    from ..database import get_db
+                    from ..services.plan_policy import PlanPolicy
+                    db_gen = get_db()
+                    db = next(db_gen)
+                    try:
+                        policy = PlanPolicy(db, user)
+                        plan = policy.get_plan()
+                        limit = self.tier_limits.get(plan, self.tier_limits['free'])
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.debug(f"Failed to get user plan for rate limiting: {e}, using free tier limit")
+                    limit = self.tier_limits['free']
+        
+        # Generation endpoints always use generation-specific limit (regardless of tier)
+        if is_generation_endpoint:
+            limit = self.generate_rpm
         
         # Fallback to IP-based rate limiting if no user
         if not identifier:
@@ -255,14 +282,44 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response = await call_next(request) if allowed else None
         
         if not allowed:
+            # Track rate limit metric
+            try:
+                from ..services.metrics import increment_counter
+                increment_counter("rate_limited_total", labels={"route": request.url.path, "method": request.method})
+            except ImportError:
+                pass
+            
+            # Use ErrorResponse format with RATE_LIMITED error code
+            from ..exceptions import ErrorResponse
+            from ..logging_config import get_request_id
+            
+            request_id = get_request_id()
+            
+            # Determine if legacy format needed (for /api endpoints)
+            use_legacy_format = request.url.path.startswith("/api/") and not request.url.path.startswith("/api/v1/")
+            
+            error_response = ErrorResponse.create(
+                message=f"Rate limit exceeded. Limit: {limit} requests per minute.",
+                code="RATE_LIMITED",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                request_id=request_id,
+                details={
+                    "limit": limit,
+                    "reset_after_seconds": reset_after,
+                    "retry_after": reset_after
+                },
+                use_legacy_format=use_legacy_format
+            )
+            
+            # For legacy format, add fields at top level
+            if use_legacy_format:
+                error_response["limit"] = limit
+                error_response["reset_after_seconds"] = reset_after
+                error_response["retry_after"] = reset_after
+            
             response = JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                content={
-                    "error": "rate_limit_exceeded",
-                    "message": f"Rate limit exceeded. Limit: {limit} requests per minute.",
-                    "limit": limit,
-                    "reset_after_seconds": reset_after
-                },
+                content=error_response,
                 headers={
                     "X-RateLimit-Limit": str(limit),
                     "X-RateLimit-Remaining": str(remaining),

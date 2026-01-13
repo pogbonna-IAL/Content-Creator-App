@@ -64,9 +64,17 @@ class ContentCache:
             Cached content dict with 'content', 'social_media_content', etc.
             or None if not found or expired
         """
+        # Track metrics
+        try:
+            from .metrics import increment_counter
+        except ImportError:
+            increment_counter = None
+        
         key = self.get_cache_key(topic, content_types, prompt_version, model)
         
         if key not in self.cache:
+            if increment_counter:
+                increment_counter("cache_misses_total")
             return None
         
         cached_item = self.cache[key]
@@ -75,7 +83,13 @@ class ContentCache:
         if time.time() > cached_item['expires_at']:
             # Remove expired entry
             del self.cache[key]
+            if increment_counter:
+                increment_counter("cache_misses_total")
             return None
+        
+        # Cache hit
+        if increment_counter:
+            increment_counter("cache_hits_total")
         
         # Return cached content (without expiration metadata)
         return {
