@@ -1,0 +1,10 @@
+# Backup Directory
+# This directory stores database and storage backups
+# 
+# Structure:
+#   backups/
+#   ├── database/    - PostgreSQL dumps (*.sql.gz)
+#   └── storage/     - Artifact backups (*.tar.gz)
+#
+# Retention: 30 days (automated cleanup via make backup-cleanup)
+

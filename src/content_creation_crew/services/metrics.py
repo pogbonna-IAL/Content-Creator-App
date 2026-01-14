@@ -194,3 +194,191 @@ class RequestTimer:
             duration = time.time() - self.start_time
             record_histogram(self.metric_name, duration, self.labels)
 
+
+# ============================================================================
+# Expensive Operations Metrics Helpers (M7)
+# ============================================================================
+
+class LLMMetrics:
+    """Metrics for LLM/Ollama operations"""
+    
+    @staticmethod
+    def record_call(model: str, duration: float, success: bool = True):
+        """
+        Record LLM call metrics
+        
+        Args:
+            model: Model name (e.g., "llama3.2:1b")
+            duration: Call duration in seconds
+            success: Whether call succeeded
+        """
+        labels = {"model": model}
+        
+        # Increment counter
+        increment_counter("llm_calls_total", 1.0, labels)
+        
+        if not success:
+            increment_counter("llm_failures_total", 1.0, labels)
+        
+        # Record timing
+        record_histogram("llm_call_seconds", duration, labels)
+    
+    @staticmethod
+    def timer(model: str):
+        """
+        Context manager for timing LLM calls
+        
+        Usage:
+            with LLMMetrics.timer("llama3.2:1b"):
+                result = ollama.generate(...)
+        """
+        return RequestTimer("llm_call_seconds", {"model": model})
+
+
+class StorageMetrics:
+    """Metrics for storage operations"""
+    
+    @staticmethod
+    def record_put(artifact_type: str, bytes_written: int, success: bool = True):
+        """
+        Record storage PUT operation
+        
+        Args:
+            artifact_type: Type of artifact (e.g., "voiceover", "video", "blog")
+            bytes_written: Number of bytes written
+            success: Whether operation succeeded
+        """
+        labels = {"artifact_type": artifact_type}
+        
+        increment_counter("storage_put_total", 1.0, labels)
+        increment_counter("storage_bytes_written_total", float(bytes_written), labels)
+        
+        if not success:
+            increment_counter("storage_failures_total", 1.0, {**labels, "operation": "put"})
+    
+    @staticmethod
+    def record_get(artifact_type: str, bytes_read: int = 0, success: bool = True):
+        """
+        Record storage GET operation
+        
+        Args:
+            artifact_type: Type of artifact
+            bytes_read: Number of bytes read
+            success: Whether operation succeeded
+        """
+        labels = {"artifact_type": artifact_type}
+        
+        increment_counter("storage_get_total", 1.0, labels)
+        
+        if bytes_read > 0:
+            increment_counter("storage_bytes_read_total", float(bytes_read), labels)
+        
+        if not success:
+            increment_counter("storage_failures_total", 1.0, {**labels, "operation": "get"})
+    
+    @staticmethod
+    def record_delete(artifact_type: str, success: bool = True):
+        """
+        Record storage DELETE operation
+        
+        Args:
+            artifact_type: Type of artifact
+            success: Whether operation succeeded
+        """
+        labels = {"artifact_type": artifact_type}
+        
+        increment_counter("storage_delete_total", 1.0, labels)
+        
+        if not success:
+            increment_counter("storage_failures_total", 1.0, {**labels, "operation": "delete"})
+
+
+class VideoMetrics:
+    """Metrics for video rendering operations"""
+    
+    @staticmethod
+    def record_render(renderer: str, duration: float, success: bool = True):
+        """
+        Record video render operation
+        
+        Args:
+            renderer: Renderer name (e.g., "remotion", "ffmpeg")
+            duration: Render duration in seconds
+            success: Whether render succeeded
+        """
+        labels = {"renderer": renderer}
+        
+        increment_counter("video_renders_total", 1.0, labels)
+        
+        if not success:
+            increment_counter("video_render_failures_total", 1.0, labels)
+        
+        record_histogram("video_render_seconds", duration, labels)
+    
+    @staticmethod
+    def timer(renderer: str):
+        """Context manager for timing video renders"""
+        return RequestTimer("video_render_seconds", {"renderer": renderer})
+
+
+class TTSMetrics:
+    """Metrics for Text-to-Speech operations"""
+    
+    @staticmethod
+    def record_synthesis(provider: str, duration: float, success: bool = True):
+        """
+        Record TTS synthesis operation
+        
+        Args:
+            provider: TTS provider (e.g., "elevenlabs", "gtts", "piper")
+            duration: Synthesis duration in seconds
+            success: Whether synthesis succeeded
+        """
+        labels = {"provider": provider}
+        
+        increment_counter("tts_jobs_total", 1.0, labels)
+        
+        if not success:
+            increment_counter("tts_failures_total", 1.0, labels)
+        
+        record_histogram("tts_seconds", duration, labels)
+    
+    @staticmethod
+    def timer(provider: str):
+        """Context manager for timing TTS operations"""
+        return RequestTimer("tts_seconds", {"provider": provider})
+
+
+class RetentionMetrics:
+    """Metrics for data retention cleanup operations"""
+    
+    @staticmethod
+    def record_delete(plan: str, items_deleted: int, bytes_freed: int):
+        """
+        Record retention cleanup operation
+        
+        Args:
+            plan: Subscription plan (e.g., "free", "pro", "enterprise")
+            items_deleted: Number of items deleted
+            bytes_freed: Number of bytes freed
+        """
+        labels = {"plan": plan}
+        
+        increment_counter("retention_deletes_total", float(items_deleted), labels)
+        increment_counter("retention_bytes_freed_total", float(bytes_freed), labels)
+    
+    @staticmethod
+    def record_cleanup_run(duration: float, total_items: int, total_bytes: int):
+        """
+        Record overall retention cleanup job run
+        
+        Args:
+            duration: Job duration in seconds
+            total_items: Total items cleaned up
+            total_bytes: Total bytes freed
+        """
+        increment_counter("retention_cleanup_runs_total", 1.0)
+        increment_counter("retention_cleanup_items_total", float(total_items))
+        increment_counter("retention_cleanup_bytes_total", float(total_bytes))
+        record_histogram("retention_cleanup_seconds", duration)
+

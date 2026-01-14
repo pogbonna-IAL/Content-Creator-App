@@ -42,6 +42,54 @@ class BillingGateway(ABC):
     def parse_webhook_event(self, payload: Dict) -> Dict[str, Any]:
         """Parse webhook event into standardized format"""
         pass
+    
+    @abstractmethod
+    def charge_customer(
+        self,
+        customer_id: str,
+        amount: int,
+        currency: str,
+        description: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Charge a customer (for dunning retries)
+        
+        Args:
+            customer_id: Customer ID
+            amount: Amount in cents
+            currency: Currency code
+            description: Charge description
+            metadata: Additional metadata
+        
+        Returns:
+            Dict with success status and charge details
+        """
+        pass
+    
+    @abstractmethod
+    def create_refund(
+        self,
+        charge_id: str,
+        amount: int,
+        currency: str,
+        reason: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a refund
+        
+        Args:
+            charge_id: Original charge/payment ID
+            amount: Amount to refund in cents
+            currency: Currency code
+            reason: Refund reason
+            metadata: Additional metadata
+        
+        Returns:
+            Dict with success status and refund details
+        """
+        pass
 
 
 class BankTransferGateway(BillingGateway):
@@ -94,6 +142,37 @@ class BankTransferGateway(BillingGateway):
     def parse_webhook_event(self, payload: Dict) -> Dict[str, Any]:
         """Bank transfer doesn't use webhooks"""
         return {}
+    
+    def charge_customer(
+        self,
+        customer_id: str,
+        amount: int,
+        currency: str,
+        description: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Bank transfer doesn't support automatic charging"""
+        return {
+            "success": False,
+            "error": "Bank transfer does not support automatic charging",
+            "requires_manual_processing": True
+        }
+    
+    def create_refund(
+        self,
+        charge_id: str,
+        amount: int,
+        currency: str,
+        reason: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Bank transfer refunds are processed manually"""
+        return {
+            "success": True,
+            "refund_id": f"bank_refund_{int(datetime.utcnow().timestamp())}",
+            "requires_manual_processing": True,
+            "instructions": "Please process refund manually via bank transfer"
+        }
     
     def _get_payment_instructions(self, plan_id: str, metadata: Optional[Dict] = None) -> Dict[str, str]:
         """Get payment instructions for bank transfer"""
@@ -223,6 +302,109 @@ class StripeGateway(BillingGateway):
             "current_period_end": datetime.fromtimestamp(data.get("current_period_end", 0)) if data.get("current_period_end") else None,
             "raw_data": data
         }
+    
+    def charge_customer(
+        self,
+        customer_id: str,
+        amount: int,
+        currency: str,
+        description: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Charge a Stripe customer"""
+        try:
+            # Create a payment intent
+            payment_intent = self.stripe.PaymentIntent.create(
+                amount=amount,
+                currency=currency.lower(),
+                customer=customer_id,
+                description=description,
+                metadata=metadata or {},
+                confirm=True,  # Attempt to confirm immediately
+                off_session=True,  # Customer not present (for retries)
+                payment_method=self._get_default_payment_method(customer_id)
+            )
+            
+            if payment_intent.status == "succeeded":
+                return {
+                    "success": True,
+                    "payment_intent_id": payment_intent.id,
+                    "charge_id": payment_intent.charges.data[0].id if payment_intent.charges.data else None,
+                    "amount": amount,
+                    "currency": currency
+                }
+            else:
+                return {
+                    "success": False,
+                    "failure_reason": payment_intent.status,
+                    "payment_intent_id": payment_intent.id
+                }
+        
+        except self.stripe.error.CardError as e:
+            # Card was declined
+            return {
+                "success": False,
+                "failure_reason": e.error.code,
+                "error": str(e)
+            }
+        except Exception as e:
+            logger.error(f"Stripe charge failed: {e}")
+            return {
+                "success": False,
+                "failure_reason": "processing_error",
+                "error": str(e)
+            }
+    
+    def create_refund(
+        self,
+        charge_id: str,
+        amount: int,
+        currency: str,
+        reason: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Create a Stripe refund"""
+        try:
+            # Map refund reasons
+            reason_mapping = {
+                "customer_request": "requested_by_customer",
+                "duplicate": "duplicate",
+                "fraud": "fraudulent",
+                "other": "requested_by_customer"
+            }
+            
+            stripe_reason = reason_mapping.get(reason, "requested_by_customer")
+            
+            refund = self.stripe.Refund.create(
+                charge=charge_id,
+                amount=amount,
+                reason=stripe_reason,
+                metadata=metadata or {}
+            )
+            
+            return {
+                "success": True,
+                "refund_id": refund.id,
+                "amount": refund.amount,
+                "currency": refund.currency,
+                "status": refund.status
+            }
+        
+        except Exception as e:
+            logger.error(f"Stripe refund failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _get_default_payment_method(self, customer_id: str) -> Optional[str]:
+        """Get customer's default payment method"""
+        try:
+            customer = self.stripe.Customer.retrieve(customer_id)
+            return customer.invoice_settings.default_payment_method or customer.default_source
+        except Exception as e:
+            logger.error(f"Failed to get default payment method: {e}")
+            return None
 
 
 class PaystackGateway(BillingGateway):
@@ -377,6 +559,93 @@ class PaystackGateway(BillingGateway):
             "current_period_end": datetime.fromisoformat(data.get("next_payment_date", "").replace("Z", "+00:00")) if data.get("next_payment_date") else None,
             "raw_data": data
         }
+    
+    def charge_customer(
+        self,
+        customer_id: str,
+        amount: int,
+        currency: str,
+        description: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Charge a Paystack customer"""
+        try:
+            result = self._make_request(
+                "POST",
+                "/transaction/charge_authorization",
+                {
+                    "authorization_code": customer_id,  # Note: Paystack uses authorization_code
+                    "email": metadata.get("email") if metadata else None,
+                    "amount": amount,  # Paystack uses kobo (cents)
+                    "currency": currency.upper(),
+                    "metadata": metadata or {}
+                }
+            )
+            
+            data = result.get("data", {})
+            
+            if data.get("status") == "success":
+                return {
+                    "success": True,
+                    "payment_intent_id": str(data.get("reference", "")),
+                    "charge_id": str(data.get("id", "")),
+                    "amount": amount,
+                    "currency": currency
+                }
+            else:
+                return {
+                    "success": False,
+                    "failure_reason": data.get("gateway_response", "unknown"),
+                    "error": data.get("message", "Payment failed")
+                }
+        
+        except Exception as e:
+            logger.error(f"Paystack charge failed: {e}")
+            return {
+                "success": False,
+                "failure_reason": "processing_error",
+                "error": str(e)
+            }
+    
+    def create_refund(
+        self,
+        charge_id: str,
+        amount: int,
+        currency: str,
+        reason: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Create a Paystack refund"""
+        try:
+            result = self._make_request(
+                "POST",
+                "/refund",
+                {
+                    "transaction": charge_id,
+                    "amount": amount,
+                    "currency": currency.upper(),
+                    "customer_note": reason,
+                    "merchant_note": f"Refund: {reason}",
+                    "metadata": metadata or {}
+                }
+            )
+            
+            data = result.get("data", {})
+            
+            return {
+                "success": True,
+                "refund_id": str(data.get("id", "")),
+                "amount": amount,
+                "currency": currency,
+                "status": data.get("status", "pending")
+            }
+        
+        except Exception as e:
+            logger.error(f"Paystack refund failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
 
 def get_billing_gateway(provider: str, config) -> BillingGateway:

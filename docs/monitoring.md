@@ -2,619 +2,575 @@
 
 ## Overview
 
-Content Creation Crew exposes Prometheus-compatible metrics for production monitoring. This document describes available metrics, scrape configuration, and alert recommendations.
+This document describes the Prometheus metrics available for monitoring expensive operations, performance bottlenecks, and cost drivers.
 
-## Table of Contents
-
-1. [Metrics Endpoint](#metrics-endpoint)
-2. [Available Metrics](#available-metrics)
-3. [Prometheus Scrape Configuration](#prometheus-scrape-configuration)
-4. [Grafana Dashboard Examples](#grafana-dashboard-examples)
-5. [Alert Recommendations](#alert-recommendations)
-6. [Request ID Correlation](#request-id-correlation)
+All metrics are exposed at the `/metrics` endpoint in Prometheus text format.
 
 ---
 
 ## Metrics Endpoint
 
-### Endpoint
+**GET** `/metrics`
 
-**URL:** `GET /metrics` or `GET /v1/metrics`
-
-**Format:** Prometheus text format (text/plain)
+Returns all collected metrics in Prometheus text format.
 
 **Example:**
 ```bash
 curl http://localhost:8000/metrics
 ```
 
-**Response:**
+---
+
+## LLM/Ollama Metrics
+
+Track LLM API calls, costs, and performance.
+
+### Counters
+
+**`llm_calls_total{model}`**
+- Total number of LLM API calls
+- Labels:
+  - `model`: Model name (e.g., "llama3.2:1b", "mistral:7b")
+- Usage: Track API call volume per model
+
+**`llm_failures_total{model}`**
+- Total number of failed LLM API calls
+- Labels:
+  - `model`: Model name
+- Usage: Monitor error rates
+
+### Histograms
+
+**`llm_call_seconds{model}`**
+- Duration of LLM API calls in seconds
+- Labels:
+  - `model`: Model name
+- Metrics:
+  - `llm_call_seconds_count`: Total number of calls
+  - `llm_call_seconds_sum`: Total duration of all calls
+  - `llm_call_seconds{quantile="0.5"}`: p50 (median)
+  - `llm_call_seconds{quantile="0.95"}`: p95
+  - `llm_call_seconds{quantile="0.99"}`: p99
+- Usage: Track latency, identify slow models
+
+### Example Queries
+
+```promql
+# Average LLM call duration per model
+rate(llm_call_seconds_sum[5m]) / rate(llm_call_seconds_count[5m])
+
+# LLM error rate
+rate(llm_failures_total[5m]) / rate(llm_calls_total[5m])
+
+# p95 latency by model
+llm_call_seconds{quantile="0.95"}
 ```
-# HELP requests_total Total number of HTTP requests
-# TYPE requests_total counter
-requests_total{method="GET",route="/v1/content/jobs",status="200"} 42
-requests_total{method="POST",route="/v1/content/generate",status="201"} 15
-requests_total{method="POST",route="/v1/content/generate",status="500"} 2
 
-# HELP request_duration_seconds Request duration in seconds
-# TYPE request_duration_seconds summary
-request_duration_seconds_count{method="GET",route="/v1/content/jobs"} 42
-request_duration_seconds_sum{method="GET",route="/v1/content/jobs"} 12.5
-request_duration_seconds{method="GET",route="/v1/content/jobs",quantile="0.5"} 0.25
-request_duration_seconds{method="GET",route="/v1/content/jobs",quantile="0.95"} 0.5
-request_duration_seconds{method="GET",route="/v1/content/jobs",quantile="0.99"} 1.2
+### Alert Examples
 
-# HELP jobs_total Total number of content generation jobs
-# TYPE jobs_total counter
-jobs_total{content_types="blog",plan="free"} 100
-jobs_total{content_types="blog,social",plan="pro"} 50
+```yaml
+- alert: HighLLMErrorRate
+  expr: rate(llm_failures_total[5m]) / rate(llm_calls_total[5m]) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High LLM error rate: {{ $value | humanizePercentage }}"
 
-# HELP job_failures_total Total number of failed jobs
-# TYPE job_failures_total counter
-job_failures_total{error_type="timeout",plan="free"} 5
-job_failures_total{error_type="ValidationError",plan="pro"} 2
-
-# HELP cache_hits_total Total number of cache hits
-# TYPE cache_hits_total counter
-cache_hits_total 150
-
-# HELP cache_misses_total Total number of cache misses
-# TYPE cache_misses_total counter
-cache_misses_total 50
-
-# HELP rate_limited_total Total number of rate-limited requests
-# TYPE rate_limited_total counter
-rate_limited_total{method="POST",route="/v1/content/generate"} 10
-
-# HELP tts_jobs_total Total number of TTS (voiceover) jobs
-# TYPE tts_jobs_total counter
-tts_jobs_total{status="success",voice_id="default"} 25
-tts_jobs_total{status="failure",voice_id="default"} 2
-
-# HELP video_renders_total Total number of video render jobs
-# TYPE video_renders_total counter
-video_renders_total{status="success",renderer="baseline"} 10
-video_renders_total{status="failure",renderer="baseline"} 1
+- alert: SlowLLMCalls
+  expr: llm_call_seconds{quantile="0.95"} > 60
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow LLM calls: p95 = {{ $value }}s"
 ```
 
 ---
 
-## Available Metrics
+## Storage Metrics
 
-### Request Metrics
+Track storage operations, bandwidth, and costs.
 
-#### `requests_total`
-**Type:** Counter  
-**Labels:**
-- `route` - Normalized route path (e.g., `/v1/content/jobs/{id}`)
-- `method` - HTTP method (GET, POST, etc.)
-- `status` - HTTP status code (200, 201, 400, 500, etc.)
+### Counters
 
-**Description:** Total number of HTTP requests received
+**`storage_put_total{artifact_type}`**
+- Total number of PUT operations
+- Labels:
+  - `artifact_type`: Type of artifact ("voiceover", "video_clip", "storyboard_image", "blog")
+- Usage: Track storage write volume
 
-**Example Query:**
+**`storage_get_total{artifact_type}`**
+- Total number of GET operations
+- Labels:
+  - `artifact_type`: Type of artifact
+- Usage: Track storage read volume
+
+**`storage_delete_total{artifact_type}`**
+- Total number of DELETE operations
+- Labels:
+  - `artifact_type`: Type of artifact
+- Usage: Track cleanup operations
+
+**`storage_bytes_written_total{artifact_type}`**
+- Total bytes written
+- Labels:
+  - `artifact_type`: Type of artifact
+- Usage: Track storage costs, bandwidth
+
+**`storage_bytes_read_total{artifact_type}`**
+- Total bytes read
+- Labels:
+  - `artifact_type`: Type of artifact
+- Usage: Track bandwidth costs
+
+**`storage_failures_total{artifact_type, operation}`**
+- Total number of failed storage operations
+- Labels:
+  - `artifact_type`: Type of artifact
+  - `operation`: Operation type ("put", "get", "delete")
+- Usage: Monitor storage reliability
+
+### Example Queries
+
 ```promql
-# Total requests per route
-sum(requests_total) by (route)
+# Storage write rate (bytes/sec)
+rate(storage_bytes_written_total[5m])
 
-# Requests per status code
-sum(requests_total) by (status)
+# Storage read rate (bytes/sec)
+rate(storage_bytes_read_total[5m])
 
-# Error rate (5xx)
-sum(requests_total{status=~"5.."}) / sum(requests_total)
+# Storage failure rate
+rate(storage_failures_total[5m]) / (
+  rate(storage_put_total[5m]) + 
+  rate(storage_get_total[5m]) + 
+  rate(storage_delete_total[5m])
+)
+
+# Total storage used (cumulative bytes written minus deleted)
+storage_bytes_written_total - storage_bytes_deleted_total
 ```
 
-#### `request_duration_seconds`
-**Type:** Summary (histogram-like)  
-**Labels:**
-- `route` - Normalized route path
-- `method` - HTTP method
+### Alert Examples
 
-**Description:** Request duration in seconds (p50, p95, p99 quantiles)
+```yaml
+- alert: HighStorageFailureRate
+  expr: rate(storage_failures_total[5m]) > 10
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "High storage failure rate: {{ $value }} failures/sec"
 
-**Example Query:**
-```promql
-# 95th percentile latency
-histogram_quantile(0.95, request_duration_seconds{route="/v1/content/generate"})
-
-# Average request duration
-rate(request_duration_seconds_sum[5m]) / rate(request_duration_seconds_count[5m])
-```
-
-#### `errors_total`
-**Type:** Counter  
-**Labels:**
-- `route` - Normalized route path
-- `status` - HTTP status code
-
-**Description:** Total number of server errors (5xx)
-
-**Example Query:**
-```promql
-# Error rate per route
-rate(errors_total[5m])
-```
-
-### Job Metrics
-
-#### `jobs_total`
-**Type:** Counter  
-**Labels:**
-- `content_types` - Comma-separated content types (e.g., "blog", "blog,social")
-- `plan` - User subscription plan (free, basic, pro, enterprise)
-
-**Description:** Total number of content generation jobs created
-
-**Example Query:**
-```promql
-# Jobs per plan
-sum(jobs_total) by (plan)
-
-# Jobs per content type
-sum(jobs_total) by (content_types)
-```
-
-#### `job_failures_total`
-**Type:** Counter  
-**Labels:**
-- `error_type` - Error type (timeout, ValidationError, etc.)
-- `plan` - User subscription plan
-
-**Description:** Total number of failed jobs
-
-**Example Query:**
-```promql
-# Failure rate
-rate(job_failures_total[5m]) / rate(jobs_total[5m])
-
-# Failures by error type
-sum(job_failures_total) by (error_type)
-```
-
-### Cache Metrics
-
-#### `cache_hits_total`
-**Type:** Counter  
-**Description:** Total number of cache hits
-
-**Example Query:**
-```promql
-# Cache hit rate
-rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m]))
-```
-
-#### `cache_misses_total`
-**Type:** Counter  
-**Description:** Total number of cache misses
-
-**Example Query:**
-```promql
-# Cache miss rate
-rate(cache_misses_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m]))
-```
-
-### Rate Limiting Metrics
-
-#### `rate_limited_total`
-**Type:** Counter  
-**Labels:**
-- `route` - Normalized route path
-- `method` - HTTP method
-
-**Description:** Total number of rate-limited requests
-
-**Example Query:**
-```promql
-# Rate limit hits per route
-sum(rate_limited_total) by (route)
-
-# Rate limit rate
-rate(rate_limited_total[5m])
-```
-
-### Media Generation Metrics
-
-#### `tts_jobs_total`
-**Type:** Counter  
-**Labels:**
-- `status` - Job status (success, failure)
-- `voice_id` - Voice identifier (default, etc.)
-
-**Description:** Total number of TTS (voiceover) jobs
-
-**Example Query:**
-```promql
-# TTS success rate
-sum(tts_jobs_total{status="success"}) / sum(tts_jobs_total)
-
-# TTS jobs per voice
-sum(tts_jobs_total) by (voice_id)
-```
-
-#### `video_renders_total`
-**Type:** Counter  
-**Labels:**
-- `status` - Job status (success, failure)
-- `renderer` - Renderer name (baseline, comfyui)
-
-**Description:** Total number of video render jobs
-
-**Example Query:**
-```promql
-# Video render success rate
-sum(video_renders_total{status="success"}) / sum(video_renders_total)
-
-# Video renders per renderer
-sum(video_renders_total) by (renderer)
+- alert: HighStorageBandwidth
+  expr: rate(storage_bytes_written_total[5m]) > 100000000  # 100MB/s
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High storage bandwidth: {{ $value | humanize }}B/s"
 ```
 
 ---
 
-## Prometheus Scrape Configuration
+## Video Rendering Metrics
 
-### Basic Configuration
+Track video rendering operations and performance (when enabled).
 
-**File:** `prometheus.yml`
+### Counters
+
+**`video_renders_total{renderer}`**
+- Total number of video render operations
+- Labels:
+  - `renderer`: Renderer name ("remotion", "ffmpeg", "manual")
+- Usage: Track video generation volume
+
+**`video_render_failures_total{renderer}`**
+- Total number of failed renders
+- Labels:
+  - `renderer`: Renderer name
+- Usage: Monitor render reliability
+
+### Histograms
+
+**`video_render_seconds{renderer}`**
+- Duration of video render operations in seconds
+- Labels:
+  - `renderer`: Renderer name
+- Metrics:
+  - `video_render_seconds_count`: Total renders
+  - `video_render_seconds_sum`: Total duration
+  - `video_render_seconds{quantile="0.5"}`: p50
+  - `video_render_seconds{quantile="0.95"}`: p95
+  - `video_render_seconds{quantile="0.99"}`: p99
+- Usage: Track render performance
+
+### Example Queries
+
+```promql
+# Average render duration
+rate(video_render_seconds_sum[5m]) / rate(video_render_seconds_count[5m])
+
+# Render success rate
+rate(video_renders_total[5m]) / (rate(video_renders_total[5m]) + rate(video_render_failures_total[5m]))
+
+# p95 render time
+video_render_seconds{quantile="0.95"}
+```
+
+### Alert Examples
 
 ```yaml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+- alert: HighVideoRenderFailureRate
+  expr: rate(video_render_failures_total[5m]) / rate(video_renders_total[5m]) > 0.2
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High video render failure rate: {{ $value | humanizePercentage }}"
 
-scrape_configs:
-  - job_name: 'content-crew-api'
-    scrape_interval: 15s
-    metrics_path: '/metrics'
-    static_configs:
-      - targets: ['localhost:8000']
-        labels:
-          environment: 'production'
-          service: 'api'
-```
-
-### Docker Compose Configuration
-
-**File:** `docker-compose.yml` (add Prometheus service)
-
-```yaml
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: content-crew-prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    ports:
-      - "9090:9090"
-    networks:
-      - content-crew-network
-    depends_on:
-      - api
-
-volumes:
-  prometheus_data:
-```
-
-### Kubernetes Configuration
-
-**File:** `prometheus-config.yaml`
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s
-    
-    scrape_configs:
-      - job_name: 'content-crew-api'
-        kubernetes_sd_configs:
-          - role: pod
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_pod_label_app]
-            action: keep
-            regex: content-crew-api
-          - source_labels: [__meta_kubernetes_pod_ip]
-            action: replace
-            target_label: __address__
-            replacement: ${1}:8000
-        metrics_path: '/metrics'
-```
-
-### Scrape Interval Recommendations
-
-| Environment | Scrape Interval | Rationale |
-|-------------|----------------|-----------|
-| **Production** | 15-30 seconds | Balance between freshness and load |
-| **Staging** | 30-60 seconds | Less critical, reduce load |
-| **Development** | 60 seconds | Minimal impact on development |
-
----
-
-## Grafana Dashboard Examples
-
-### Request Rate Dashboard
-
-**Panel 1: Request Rate**
-```promql
-sum(rate(requests_total[5m])) by (route)
-```
-
-**Panel 2: Error Rate**
-```promql
-sum(rate(errors_total[5m])) / sum(rate(requests_total[5m])) * 100
-```
-
-**Panel 3: P95 Latency**
-```promql
-histogram_quantile(0.95, request_duration_seconds{route="/v1/content/generate"})
-```
-
-### Job Metrics Dashboard
-
-**Panel 1: Jobs Created**
-```promql
-sum(rate(jobs_total[5m])) by (plan)
-```
-
-**Panel 2: Job Failure Rate**
-```promql
-sum(rate(job_failures_total[5m])) / sum(rate(jobs_total[5m])) * 100
-```
-
-**Panel 3: Jobs by Content Type**
-```promql
-sum(jobs_total) by (content_types)
-```
-
-### Cache Performance Dashboard
-
-**Panel 1: Cache Hit Rate**
-```promql
-sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))) * 100
-```
-
-**Panel 2: Cache Operations**
-```promql
-sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))
-```
-
-### Media Generation Dashboard
-
-**Panel 1: TTS Success Rate**
-```promql
-sum(tts_jobs_total{status="success"}) / sum(tts_jobs_total) * 100
-```
-
-**Panel 2: Video Render Success Rate**
-```promql
-sum(video_renders_total{status="success"}) / sum(video_renders_total) * 100
-```
-
-**Panel 3: Media Jobs Per Hour**
-```promql
-sum(rate(tts_jobs_total[1h])) + sum(rate(video_renders_total[1h]))
+- alert: SlowVideoRenders
+  expr: video_render_seconds{quantile="0.95"} > 300
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow video renders: p95 = {{ $value }}s"
 ```
 
 ---
 
-## Alert Recommendations
+## TTS (Text-to-Speech) Metrics
 
-### Critical Alerts
+Track TTS operations and costs.
 
-#### High Error Rate
-**Alert:** `HighErrorRate`  
-**Condition:** Error rate > 5% for 5 minutes  
-**Severity:** Critical
+### Counters
 
-```yaml
-groups:
-  - name: content_crew_alerts
-    interval: 30s
-    rules:
-      - alert: HighErrorRate
-        expr: |
-          sum(rate(errors_total[5m])) / sum(rate(requests_total[5m])) > 0.05
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High error rate detected"
-          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+**`tts_jobs_total{provider}`**
+- Total number of TTS synthesis operations
+- Labels:
+  - `provider`: TTS provider ("elevenlabs", "gtts", "piper")
+- Usage: Track TTS usage
+
+**`tts_failures_total{provider}`**
+- Total number of failed TTS operations
+- Labels:
+  - `provider`: TTS provider
+- Usage: Monitor TTS reliability
+
+### Histograms
+
+**`tts_seconds{provider}`**
+- Duration of TTS synthesis in seconds
+- Labels:
+  - `provider`: TTS provider
+- Metrics:
+  - `tts_seconds_count`: Total operations
+  - `tts_seconds_sum`: Total duration
+  - `tts_seconds{quantile="0.5"}`: p50
+  - `tts_seconds{quantile="0.95"}`: p95
+  - `tts_seconds{quantile="0.99"}`: p99
+- Usage: Track TTS performance
+
+### Example Queries
+
+```promql
+# TTS requests per second
+rate(tts_jobs_total[5m])
+
+# Average TTS duration
+rate(tts_seconds_sum[5m]) / rate(tts_seconds_count[5m])
+
+# TTS error rate by provider
+rate(tts_failures_total[5m]) / rate(tts_jobs_total[5m])
 ```
 
-#### High Latency
-**Alert:** `HighLatency`  
-**Condition:** P95 latency > 5 seconds for 5 minutes  
-**Severity:** Warning
+### Alert Examples
 
 ```yaml
-      - alert: HighLatency
-        expr: |
-          histogram_quantile(0.95, request_duration_seconds{route="/v1/content/generate"}) > 5
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High latency detected"
-          description: "P95 latency is {{ $value }}s (threshold: 5s)"
-```
+- alert: HighTTSErrorRate
+  expr: rate(tts_failures_total[5m]) / rate(tts_jobs_total[5m]) > 0.15
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High TTS error rate for {{ $labels.provider }}: {{ $value | humanizePercentage }}"
 
-#### High Job Failure Rate
-**Alert:** `HighJobFailureRate`  
-**Condition:** Job failure rate > 10% for 10 minutes  
-**Severity:** Critical
-
-```yaml
-      - alert: HighJobFailureRate
-        expr: |
-          sum(rate(job_failures_total[10m])) / sum(rate(jobs_total[10m])) > 0.10
-        for: 10m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High job failure rate"
-          description: "Job failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"
-```
-
-### Warning Alerts
-
-#### Low Cache Hit Rate
-**Alert:** `LowCacheHitRate`  
-**Condition:** Cache hit rate < 50% for 15 minutes  
-**Severity:** Warning
-
-```yaml
-      - alert: LowCacheHitRate
-        expr: |
-          sum(rate(cache_hits_total[15m])) / (sum(rate(cache_hits_total[15m])) + sum(rate(cache_misses_total[15m]))) < 0.50
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Low cache hit rate"
-          description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 50%)"
-```
-
-#### High Rate Limit Hits
-**Alert:** `HighRateLimitHits`  
-**Condition:** Rate limit hits > 100 per minute for 5 minutes  
-**Severity:** Warning
-
-```yaml
-      - alert: HighRateLimitHits
-        expr: |
-          sum(rate(rate_limited_total[5m])) > 100/60
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High rate limit hits"
-          description: "Rate limit hits: {{ $value | humanize }} per second"
-```
-
-#### TTS Failure Rate
-**Alert:** `TTSFailureRate`  
-**Condition:** TTS failure rate > 5% for 10 minutes  
-**Severity:** Warning
-
-```yaml
-      - alert: TTSFailureRate
-        expr: |
-          sum(tts_jobs_total{status="failure"}) / sum(tts_jobs_total) > 0.05
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High TTS failure rate"
-          description: "TTS failure rate is {{ $value | humanizePercentage }}"
-```
-
-#### Video Render Failure Rate
-**Alert:** `VideoRenderFailureRate`  
-**Condition:** Video render failure rate > 5% for 10 minutes  
-**Severity:** Warning
-
-```yaml
-      - alert: VideoRenderFailureRate
-        expr: |
-          sum(video_renders_total{status="failure"}) / sum(video_renders_total) > 0.05
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High video render failure rate"
-          description: "Video render failure rate is {{ $value | humanizePercentage }}"
+- alert: SlowTTSSynthesis
+  expr: tts_seconds{quantile="0.95"} > 30
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow TTS synthesis: p95 = {{ $value }}s"
 ```
 
 ---
 
-## Request ID Correlation
+## Retention/Cleanup Metrics
 
-### Request ID Header
+Track data retention cleanup operations.
 
-Every API response includes a `X-Request-ID` header for request correlation:
+### Counters
 
-```bash
-curl -v http://localhost:8000/v1/content/jobs
-# Response headers:
-# X-Request-ID: 550e8400-e29b-41d4-a716-446655440000
+**`retention_deletes_total{plan}`**
+- Total number of items deleted by retention policy
+- Labels:
+  - `plan`: Subscription plan ("free", "pro", "enterprise", "gdpr")
+- Usage: Track cleanup operations
+
+**`retention_bytes_freed_total{plan}`**
+- Total bytes freed by retention cleanup
+- Labels:
+  - `plan`: Subscription plan
+- Usage: Track storage recovery
+
+**`retention_cleanup_runs_total`**
+- Total number of cleanup job runs
+- Usage: Monitor job execution
+
+**`retention_cleanup_items_total`**
+- Total items cleaned across all runs
+- Usage: Track overall cleanup volume
+
+**`retention_cleanup_bytes_total`**
+- Total bytes freed across all runs
+- Usage: Track overall storage recovery
+
+### Histograms
+
+**`retention_cleanup_seconds`**
+- Duration of cleanup job runs in seconds
+- Usage: Monitor job performance
+
+### Example Queries
+
+```promql
+# Cleanup rate (items/day)
+rate(retention_deletes_total[24h]) * 86400
+
+# Storage freed per day
+rate(retention_bytes_freed_total[24h]) * 86400
+
+# Average cleanup duration
+retention_cleanup_seconds_sum / retention_cleanup_seconds_count
 ```
 
-### Request ID in Error Responses
+### Alert Examples
 
-Error responses include `request_id` in the JSON payload:
+```yaml
+- alert: RetentionCleanupFailed
+  expr: rate(retention_cleanup_runs_total[24h]) == 0
+  for: 25h
+  labels:
+    severity: warning
+  annotations:
+    summary: "Retention cleanup job hasn't run in 24+ hours"
+
+- alert: LowStorageRecovery
+  expr: rate(retention_bytes_freed_total[24h]) < 1000000000  # < 1GB/day
+  for: 1d
+  labels:
+    severity: info
+  annotations:
+    summary: "Low storage recovery: {{ $value | humanize }}B/day"
+```
+
+---
+
+## Cost Analysis
+
+Use these metrics to analyze operational costs:
+
+### LLM Costs
+
+```promql
+# Estimate LLM costs (assuming $0.10 per 1M tokens, ~750 tokens/call)
+llm_calls_total * 750 * 0.0000001
+```
+
+### Storage Costs
+
+```promql
+# S3 storage costs (assuming $0.023/GB/month)
+(storage_bytes_written_total - storage_bytes_deleted_total) / 1073741824 * 0.023
+
+# S3 bandwidth costs (assuming $0.09/GB egress)
+storage_bytes_read_total / 1073741824 * 0.09
+```
+
+### TTS Costs
+
+```promql
+# TTS costs (provider-specific, example for ElevenLabs)
+tts_jobs_total{provider="elevenlabs"} * 0.30  # $0.30 per 1000 characters
+```
+
+---
+
+## Grafana Dashboard
+
+### Recommended Panels
+
+**1. LLM Performance**
+- Graph: `llm_calls_total` by model
+- Graph: `llm_call_seconds{quantile="0.95"}` by model
+- Stat: Error rate
+
+**2. Storage Usage**
+- Graph: `storage_bytes_written_total` rate
+- Graph: `storage_bytes_read_total` rate
+- Stat: Total storage used
+- Stat: Failure rate
+
+**3. Content Generation**
+- Graph: `tts_jobs_total` rate
+- Graph: `video_renders_total` rate
+- Stat: Success rates
+
+**4. Costs**
+- Stat: Estimated LLM costs/day
+- Stat: Storage costs/month
+- Stat: Bandwidth costs/day
+
+**5. Retention**
+- Graph: `retention_bytes_freed_total` rate
+- Graph: `retention_deletes_total` by plan
+- Stat: Last cleanup run
+
+### Dashboard JSON
+
+Example Grafana dashboard configuration:
 
 ```json
 {
-  "detail": "Job not found",
-  "status_code": 404,
-  "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  "dashboard": {
+    "title": "Content Creation Crew - Operations",
+    "panels": [
+      {
+        "title": "LLM Calls/sec",
+        "targets": [
+          {
+            "expr": "rate(llm_calls_total[5m])"
+          }
+        ]
+      },
+      {
+        "title": "Storage Write Rate",
+        "targets": [
+          {
+            "expr": "rate(storage_bytes_written_total[5m])"
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
-
-### Using Request ID for Debugging
-
-**1. Find logs for a specific request:**
-```bash
-# Search logs by request ID
-grep "550e8400-e29b-41d4-a716-446655440000" /var/log/api.log
-```
-
-**2. Correlate metrics with logs:**
-- Use request ID from error response
-- Search logs for that request ID
-- Find related metrics (if logged)
-
-**3. Trace request flow:**
-- Request ID is consistent across:
-  - API logs
-  - Error responses
-  - Response headers
-  - Database operations (if logged)
-
-### Request ID Format
-
-- **Format:** UUID v4 (e.g., `550e8400-e29b-41d4-a716-446655440000`)
-- **Generation:** Auto-generated if not provided in `X-Request-ID` header
-- **Persistence:** Available throughout request lifecycle via context variables
 
 ---
 
 ## Best Practices
 
-### ✅ DO
+### 1. Set Up Alerts
 
-- ✅ Monitor error rates and latency continuously
-- ✅ Set up alerts for critical metrics
-- ✅ Use request IDs for debugging
-- ✅ Track cache hit rates for optimization
-- ✅ Monitor job failure rates by error type
-- ✅ Correlate metrics with logs using request IDs
+Configure alerts for:
+- High error rates (> 10%)
+- Slow operations (p95 > threshold)
+- Failed cleanup jobs
+- High costs
 
-### ❌ DON'T
+### 2. Monitor Trends
 
-- ❌ Don't scrape metrics too frequently (< 5 seconds)
-- ❌ Don't ignore high error rates
-- ❌ Don't expose metrics endpoint publicly (use authentication)
-- ❌ Don't store sensitive data in metric labels
-- ❌ Don't create too many unique label combinations (cardinality explosion)
+Track weekly/monthly trends:
+- LLM call volume
+- Storage growth
+- Cost increases
+- Performance degradation
+
+### 3. Capacity Planning
+
+Use metrics to plan:
+- When to scale LLM infrastructure
+- Storage capacity needs
+- Cost budget allocation
+
+### 4. Performance Optimization
+
+Identify optimization opportunities:
+- Slow models to replace
+- Inefficient storage patterns
+- Retry storms
+- Cache miss rates
+
+---
+
+## Troubleshooting
+
+### High LLM Latency
+
+1. Check `llm_call_seconds{quantile="0.99"}`
+2. Identify slow models
+3. Consider:
+   - Switching to faster models
+   - Increasing timeouts
+   - Load balancing across instances
+
+### Storage Failures
+
+1. Check `storage_failures_total` by operation
+2. Check storage provider health
+3. Verify credentials and permissions
+4. Check disk space (local) or quotas (S3)
+
+### High Costs
+
+1. Analyze cost breakdown:
+   - LLM: `llm_calls_total` by model
+   - Storage: `storage_bytes_written_total`
+   - TTS: `tts_jobs_total` by provider
+2. Identify cost drivers
+3. Optimize:
+   - Use cheaper models when possible
+   - Implement caching
+   - Enable retention policies
+   - Compress artifacts
 
 ---
 
 ## Related Documentation
 
-- [Pre-Deploy Readiness](./pre-deploy-readiness.md) - Deployment checklist
-- [Health Checks](./health-checks-implementation.md) - Health endpoint documentation
+- [Prompt S7: Database Pool Monitoring](./PROMPT-S7-COMPLETE.md)
+- [Prompt M5: Health Check System](./PROMPT-M5-COMPLETE.md)
+- [Security Metrics](./security.md#metrics)
+- [Performance Tuning](./performance.md)
 
 ---
 
-**Last Updated:** January 13, 2026  
-**Status:** ✅ Production Ready
+## Metrics Reference
 
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `llm_calls_total` | Counter | `model` | Total LLM API calls |
+| `llm_failures_total` | Counter | `model` | Failed LLM calls |
+| `llm_call_seconds` | Histogram | `model` | LLM call duration |
+| `storage_put_total` | Counter | `artifact_type` | Storage PUT operations |
+| `storage_get_total` | Counter | `artifact_type` | Storage GET operations |
+| `storage_delete_total` | Counter | `artifact_type` | Storage DELETE operations |
+| `storage_bytes_written_total` | Counter | `artifact_type` | Bytes written |
+| `storage_bytes_read_total` | Counter | `artifact_type` | Bytes read |
+| `storage_failures_total` | Counter | `artifact_type`, `operation` | Storage failures |
+| `video_renders_total` | Counter | `renderer` | Video renders |
+| `video_render_failures_total` | Counter | `renderer` | Failed renders |
+| `video_render_seconds` | Histogram | `renderer` | Render duration |
+| `tts_jobs_total` | Counter | `provider` | TTS operations |
+| `tts_failures_total` | Counter | `provider` | Failed TTS operations |
+| `tts_seconds` | Histogram | `provider` | TTS duration |
+| `retention_deletes_total` | Counter | `plan` | Items deleted |
+| `retention_bytes_freed_total` | Counter | `plan` | Bytes freed |
+| `retention_cleanup_seconds` | Histogram | - | Cleanup duration |
+
+---
+
+**Last Updated:** 2026-01-14  
+**Version:** 1.0.0 (M7)

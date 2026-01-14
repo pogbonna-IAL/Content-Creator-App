@@ -7,6 +7,8 @@ from .organization import Organization, Membership
 from .subscription import Subscription, UsageCounter
 from .content import ContentJob, ContentArtifact
 from .billing import BillingEvent
+from .notification import RetentionNotification
+from .invoice import Invoice, BillingAddress, InvoiceStatus
 
 __all__ = [
     "User",
@@ -18,5 +20,9 @@ __all__ = [
     "ContentJob",
     "ContentArtifact",
     "BillingEvent",
+    "RetentionNotification",
+    "Invoice",
+    "BillingAddress",
+    "InvoiceStatus",
 ]
 

@@ -22,9 +22,21 @@ def get_secret_key():
 
 # Security configuration
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 120  # 2 hours (reduced from 7 days for security)
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Bcrypt configuration
+# Cost factor (rounds): Higher = more secure but slower
+# - Development: 10-12 rounds (fast enough for dev)
+# - Production: 12-14 rounds (recommended for security)
+# - Default: 12 rounds (good balance)
+# Each increment doubles the time: 12→~300ms, 13→~600ms, 14→~1200ms
+BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=BCRYPT_ROUNDS
+)
 # Use HTTPBearer for more reliable token extraction
 # It handles Authorization header extraction more robustly
 http_bearer = HTTPBearer(auto_error=False)
@@ -97,13 +109,35 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create a JWT access token"""
+    """
+    Create a JWT access token with JTI (JWT ID) for blacklist support
+    
+    Args:
+        data: Dictionary with user data (must include 'sub' - user ID)
+        expires_delta: Optional custom expiration time
+    
+    Returns:
+        Encoded JWT token string
+    """
+    import uuid
+    
     to_encode = data.copy()
+    
+    # Set expiration
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    
+    # Add JTI (JWT ID) for token blacklist support
+    jti = str(uuid.uuid4())
+    
+    to_encode.update({
+        "exp": expire,
+        "jti": jti,  # Unique token identifier for blacklist
+        "iat": datetime.utcnow(),  # Issued at
+    })
+    
     secret_key = get_secret_key()
     encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=ALGORITHM)
     return encoded_jwt
@@ -190,6 +224,38 @@ async def get_current_user(
             detail="Invalid token format: user identifier is not valid",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Check token blacklist (for revoked tokens)
+    jti = payload.get("jti")
+    if jti:
+        try:
+            from .services.token_blacklist import get_token_blacklist
+            blacklist = get_token_blacklist()
+            
+            if blacklist.is_revoked(jti):
+                logger.warning(f"Authentication failed: Token {jti[:8]}... is blacklisted")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked. Please log in again.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            
+            # Check if token was issued before user-level revocation (password change, etc.)
+            token_issued_at = payload.get("iat")
+            if token_issued_at:
+                token_issued_datetime = datetime.utcfromtimestamp(token_issued_at)
+                if blacklist.is_user_revoked(user_id, token_issued_datetime):
+                    logger.warning(f"Authentication failed: Token for user {user_id} issued before revocation")
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token has been revoked. Please log in again.",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking token blacklist: {e}")
+            # Continue anyway - don't block auth if blacklist check fails
     
     logger.debug(f"Looking up user with ID: {user_id}")
     user = db.query(User).filter(User.id == user_id).first()

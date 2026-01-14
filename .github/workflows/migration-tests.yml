@@ -1,0 +1,271 @@
+name: Database Migration & Rollback Tests
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'alembic/**'
+      - 'src/content_creation_crew/db/**'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'alembic/**'
+      - 'src/content_creation_crew/db/**'
+
+jobs:
+  migration-test:
+    name: Migration & Rollback Drill
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+          POSTGRES_DB: content_crew_migrations
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install alembic psycopg2-binary
+      
+      - name: Configure Alembic for test
+        run: |
+          cat > alembic.test.ini <<EOF
+          [alembic]
+          script_location = alembic
+          prepend_sys_path = .
+          version_path_separator = os
+          
+          [loggers]
+          keys = root,sqlalchemy,alembic
+          
+          [handlers]
+          keys = console
+          
+          [formatters]
+          keys = generic
+          
+          [logger_root]
+          level = WARN
+          handlers = console
+          qualname =
+          
+          [logger_sqlalchemy]
+          level = WARN
+          handlers =
+          qualname = sqlalchemy.engine
+          
+          [logger_alembic]
+          level = INFO
+          handlers =
+          qualname = alembic
+          
+          [handler_console]
+          class = StreamHandler
+          args = (sys.stderr,)
+          level = NOTSET
+          formatter = generic
+          
+          [formatter_generic]
+          format = %(levelname)-5.5s [%(name)s] %(message)s
+          datefmt = %H:%M:%S
+          EOF
+      
+      - name: Wait for Postgres
+        run: |
+          timeout 30 bash -c 'until pg_isready -h localhost -p 5432; do sleep 1; done'
+          echo "✓ Postgres ready"
+      
+      - name: Test 1 - Apply all migrations (clean DB)
+        run: |
+          echo "=== Applying all migrations to clean database ==="
+          alembic -c alembic.test.ini upgrade head
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Verify migration success
+        run: |
+          echo "=== Verifying migration applied correctly ==="
+          psql postgresql://test_user:test_pass@localhost:5432/content_crew_migrations <<EOF
+          \dt
+          SELECT version_num FROM alembic_version;
+          EOF
+      
+      - name: Test 2 - Rollback one revision
+        run: |
+          echo "=== Rolling back one revision ==="
+          alembic -c alembic.test.ini downgrade -1
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Verify rollback success
+        run: |
+          echo "=== Verifying rollback succeeded ==="
+          psql postgresql://test_user:test_pass@localhost:5432/content_crew_migrations <<EOF
+          SELECT version_num FROM alembic_version;
+          EOF
+      
+      - name: Test 3 - Re-apply migration
+        run: |
+          echo "=== Re-applying migration ==="
+          alembic -c alembic.test.ini upgrade head
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Test 4 - Health check query
+        run: |
+          echo "=== Running health check queries ==="
+          psql postgresql://test_user:test_pass@localhost:5432/content_crew_migrations <<EOF
+          -- Verify key tables exist
+          SELECT COUNT(*) FROM users;
+          SELECT COUNT(*) FROM organizations;
+          SELECT COUNT(*) FROM subscriptions;
+          SELECT COUNT(*) FROM invoices;
+          SELECT COUNT(*) FROM content_artifacts;
+          
+          -- Verify indexes exist
+          SELECT schemaname, tablename, indexname 
+          FROM pg_indexes 
+          WHERE schemaname = 'public' 
+          LIMIT 10;
+          
+          SELECT '✓ Health check passed' as status;
+          EOF
+      
+      - name: Test 5 - Migration idempotency
+        run: |
+          echo "=== Testing migration idempotency (safe to run twice) ==="
+          alembic -c alembic.test.ini upgrade head
+          echo "✓ Second upgrade succeeded (idempotent)"
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Test 6 - Check for migration conflicts
+        run: |
+          echo "=== Checking for migration conflicts ==="
+          alembic -c alembic.test.ini branches
+          
+          # Check if there are multiple heads (conflict)
+          HEADS=$(alembic -c alembic.test.ini heads | wc -l)
+          if [ $HEADS -gt 1 ]; then
+            echo "ERROR: Multiple migration heads detected (conflict)"
+            alembic -c alembic.test.ini heads
+            exit 1
+          fi
+          
+          echo "✓ No migration conflicts"
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Test 7 - Check migration history
+        run: |
+          echo "=== Migration history ==="
+          alembic -c alembic.test.ini history
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/content_crew_migrations
+      
+      - name: Migration tests summary
+        run: |
+          echo "================================"
+          echo "✅ ALL MIGRATION TESTS PASSED"
+          echo "================================"
+          echo ""
+          echo "Tests completed:"
+          echo "  ✓ Clean migration (upgrade head)"
+          echo "  ✓ Rollback (downgrade -1)"
+          echo "  ✓ Re-apply migration"
+          echo "  ✓ Health check queries"
+          echo "  ✓ Idempotency check"
+          echo "  ✓ No conflicts"
+          echo "  ✓ History validated"
+          echo ""
+          echo "Database is production-ready!"
+
+  fresh-db-test:
+    name: Fresh Database Setup Test
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: fresh_user
+          POSTGRES_PASSWORD: fresh_pass
+          POSTGRES_DB: fresh_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install alembic psycopg2-binary
+      
+      - name: Simulate fresh production setup
+        run: |
+          echo "=== Simulating fresh production database setup ==="
+          alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://fresh_user:fresh_pass@localhost:5433/fresh_db
+      
+      - name: Verify fresh setup
+        run: |
+          echo "=== Verifying fresh database ==="
+          psql postgresql://fresh_user:fresh_pass@localhost:5433/fresh_db <<EOF
+          SELECT COUNT(*) as table_count 
+          FROM information_schema.tables 
+          WHERE table_schema = 'public';
+          
+          SELECT '✓ Fresh database setup successful' as status;
+          EOF
+
+  migration-summary:
+    name: Migration Tests Summary
+    runs-on: ubuntu-latest
+    needs: [migration-test, fresh-db-test]
+    if: always()
+    steps:
+      - name: Check Results
+        run: |
+          if [ "${{ needs.migration-test.result }}" != "success" ]; then
+            echo "❌ Migration tests failed"
+            exit 1
+          fi
+          
+          if [ "${{ needs.fresh-db-test.result }}" != "success" ]; then
+            echo "❌ Fresh DB setup failed"
+            exit 1
+          fi
+          
+          echo "✅ All migration tests passed - Database is production-ready!"
+

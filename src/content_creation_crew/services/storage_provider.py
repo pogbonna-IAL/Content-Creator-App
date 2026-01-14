@@ -3,9 +3,11 @@ Storage Provider Interface and Implementations
 Abstraction for storing generated files (local filesystem, S3, etc.)
 """
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 import logging
 import os
+import shutil
+import asyncio
 from pathlib import Path
 import hashlib
 from datetime import datetime
@@ -69,6 +71,32 @@ class StorageProvider(ABC):
             Public URL
         """
         pass
+    
+    async def check_health(self, write_test: bool = True, min_free_space_mb: int = 1024) -> Dict[str, Any]:
+        """
+        Check storage health (M5)
+        
+        Args:
+            write_test: Whether to perform write test
+            min_free_space_mb: Minimum free space required in MB
+        
+        Returns:
+            Dict with health information:
+            - accessible: bool
+            - writable: bool
+            - free_space_mb: int
+            - total_space_mb: int
+            - error: str (if any)
+        """
+        # Default implementation returns basic info
+        # Subclasses should override with specific checks
+        return {
+            "accessible": True,
+            "writable": True,
+            "free_space_mb": 0,
+            "total_space_mb": 0,
+            "health_check": "not_implemented"
+        }
 
 
 class LocalDiskStorageProvider(StorageProvider):
@@ -159,6 +187,90 @@ class LocalDiskStorageProvider(StorageProvider):
         random_suffix = hashlib.md5(os.urandom(16)).hexdigest()[:8]
         filename = f"{prefix}/{timestamp}_{random_suffix}{extension}"
         return filename
+    
+    async def check_health(self, write_test: bool = True, min_free_space_mb: int = 1024) -> Dict[str, Any]:
+        """
+        Check local disk storage health (M5)
+        
+        Verifies:
+        - Storage path exists and is accessible
+        - Storage path is writable (if write_test=True)
+        - Free space >= min_free_space_mb
+        
+        Args:
+            write_test: Whether to perform write test
+            min_free_space_mb: Minimum free space required in MB
+        
+        Returns:
+            Dict with health information
+        """
+        health_info = {
+            "accessible": False,
+            "writable": False,
+            "free_space_mb": 0,
+            "total_space_mb": 0,
+            "path": str(self.base_path),
+            "error": None
+        }
+        
+        try:
+            # Check if path exists and is accessible
+            if not self.base_path.exists():
+                health_info["error"] = "Storage path does not exist"
+                return health_info
+            
+            if not self.base_path.is_dir():
+                health_info["error"] = "Storage path is not a directory"
+                return health_info
+            
+            health_info["accessible"] = True
+            
+            # Check free space
+            stat = shutil.disk_usage(self.base_path)
+            free_mb = stat.free / (1024 * 1024)
+            total_mb = stat.total / (1024 * 1024)
+            
+            health_info["free_space_mb"] = int(free_mb)
+            health_info["total_space_mb"] = int(total_mb)
+            health_info["free_space_percent"] = round((stat.free / stat.total) * 100, 2) if stat.total > 0 else 0
+            
+            # Check if writable (if enabled)
+            if write_test:
+                test_file = self.base_path / ".health_check_test"
+                try:
+                    # Write test file
+                    with open(test_file, 'w') as f:
+                        f.write("health_check")
+                    
+                    # Read it back
+                    with open(test_file, 'r') as f:
+                        content = f.read()
+                    
+                    # Delete it
+                    test_file.unlink()
+                    
+                    if content == "health_check":
+                        health_info["writable"] = True
+                    else:
+                        health_info["error"] = "Write test failed: content mismatch"
+                
+                except Exception as e:
+                    health_info["error"] = f"Write test failed: {str(e)}"
+                    logger.warning(f"Storage write test failed: {e}")
+            else:
+                # Assume writable if accessible
+                health_info["writable"] = os.access(self.base_path, os.W_OK)
+            
+            # Check if free space meets minimum requirement
+            if free_mb < min_free_space_mb:
+                if not health_info["error"]:
+                    health_info["error"] = f"Low disk space: {int(free_mb)}MB < {min_free_space_mb}MB"
+        
+        except Exception as e:
+            health_info["error"] = f"Health check failed: {str(e)}"
+            logger.error(f"Storage health check failed: {e}")
+        
+        return health_info
 
 
 class S3StorageProvider(StorageProvider):
@@ -249,6 +361,91 @@ class S3StorageProvider(StorageProvider):
             Params={'Bucket': self.bucket_name, 'Key': key},
             ExpiresIn=3600  # 1 hour
         )
+    
+    async def check_health(self, write_test: bool = True, min_free_space_mb: int = 1024) -> Dict[str, Any]:
+        """
+        Check S3 storage health (M5)
+        
+        Verifies:
+        - S3 client is available
+        - Can perform HEAD bucket operation
+        - Can write/read/delete test object (if write_test=True)
+        
+        Args:
+            write_test: Whether to perform write test
+            min_free_space_mb: Not applicable for S3 (ignored)
+        
+        Returns:
+            Dict with health information
+        """
+        health_info = {
+            "accessible": False,
+            "writable": False,
+            "free_space_mb": -1,  # Not applicable for S3
+            "total_space_mb": -1,  # Not applicable for S3
+            "bucket": self.bucket_name,
+            "region": self.region,
+            "error": None
+        }
+        
+        if not self._available:
+            health_info["error"] = "S3 client not available"
+            return health_info
+        
+        try:
+            # HEAD bucket to check accessibility
+            self.s3_client.head_bucket(Bucket=self.bucket_name)
+            health_info["accessible"] = True
+            
+            # Perform write test if enabled
+            if write_test:
+                test_key = ".health_check_test"
+                test_data = b"health_check"
+                
+                try:
+                    # Write test object
+                    self.s3_client.put_object(
+                        Bucket=self.bucket_name,
+                        Key=test_key,
+                        Body=test_data
+                    )
+                    
+                    # Read it back
+                    response = self.s3_client.get_object(
+                        Bucket=self.bucket_name,
+                        Key=test_key
+                    )
+                    content = response['Body'].read()
+                    
+                    # Delete it
+                    self.s3_client.delete_object(
+                        Bucket=self.bucket_name,
+                        Key=test_key
+                    )
+                    
+                    if content == test_data:
+                        health_info["writable"] = True
+                    else:
+                        health_info["error"] = "Write test failed: content mismatch"
+                
+                except Exception as e:
+                    health_info["error"] = f"Write test failed: {str(e)}"
+                    logger.warning(f"S3 write test failed: {e}")
+            else:
+                # Assume writable if accessible
+                health_info["writable"] = True
+        
+        except self.s3_client.exceptions.NoSuchBucket:
+            health_info["error"] = f"Bucket '{self.bucket_name}' does not exist"
+        except self.s3_client.exceptions.ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            health_info["error"] = f"S3 error: {error_code}"
+            logger.error(f"S3 health check failed: {e}")
+        except Exception as e:
+            health_info["error"] = f"Health check failed: {str(e)}"
+            logger.error(f"S3 health check failed: {e}")
+        
+        return health_info
 
 
 def get_storage_provider(provider_name: str = None) -> StorageProvider:

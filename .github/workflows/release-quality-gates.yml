@@ -1,0 +1,224 @@
+name: Release Quality Gates
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  backend-quality:
+    name: Backend Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy pytest pytest-cov
+          pip install -r requirements.txt
+      
+      - name: Run Ruff (Linting)
+        run: |
+          ruff check src/ tests/
+      
+      - name: Run Ruff (Formatting Check)
+        run: |
+          ruff format --check src/ tests/
+      
+      - name: Run MyPy (Type Checking)
+        run: |
+          mypy src/content_creation_crew --ignore-missing-imports
+        continue-on-error: true  # Non-blocking initially
+      
+      - name: Run Unit Tests
+        run: |
+          pytest tests/ \
+            --cov=src/content_creation_crew \
+            --cov-report=xml \
+            --cov-report=term \
+            -v
+      
+      - name: Upload Coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: backend
+        continue-on-error: true
+
+  frontend-quality:
+    name: Frontend Quality Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./web-ui
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-ui/package-lock.json
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run ESLint
+        run: npm run lint
+      
+      - name: Run TypeScript Check
+        run: npm run typecheck
+      
+      - name: Run Tests
+        run: npm test -- --passWithNoTests
+      
+      - name: Build Frontend
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Dependency Scan - Python
+        run: |
+          pip install safety pip-audit
+          pip-audit --desc || true
+          safety check --json || true
+      
+      - name: Dependency Scan - NPM
+        working-directory: ./web-ui
+        run: |
+          npm audit --audit-level=moderate || true
+      
+      - name: Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+      
+      - name: SAST Scan (Bandit)
+        run: |
+          pip install bandit
+          bandit -r src/ -f json -o bandit-report.json || true
+          bandit -r src/ || true
+      
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+        if: always()
+
+  config-validation:
+    name: Configuration Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check .env.example completeness
+        run: |
+          echo "Validating .env.example has all required keys..."
+          
+          # Extract keys from .env.example
+          grep -v '^#' .env.example | grep '=' | cut -d '=' -f 1 | sort > env-example-keys.txt
+          
+          # Check for common required variables
+          required_vars=(
+            "DATABASE_URL"
+            "REDIS_URL"
+            "SECRET_KEY"
+            "STRIPE_SECRET_KEY"
+            "OLLAMA_BASE_URL"
+          )
+          
+          for var in "${required_vars[@]}"; do
+            if ! grep -q "^${var}=" .env.example; then
+              echo "ERROR: Required variable $var missing from .env.example"
+              exit 1
+            fi
+          done
+          
+          echo "✓ .env.example validation passed"
+      
+      - name: Check for default secrets
+        run: |
+          echo "Scanning for default/example secrets..."
+          
+          # Check for common example secrets that should not be in code
+          if grep -r "sk_test_" src/ --include="*.py" --include="*.ts" --include="*.tsx"; then
+            echo "ERROR: Found test API keys in code"
+            exit 1
+          fi
+          
+          if grep -r "your_secret_key_here" src/ web-ui/ --include="*.py" --include="*.ts" --include="*.tsx"; then
+            echo "ERROR: Found placeholder secrets in code"
+            exit 1
+          fi
+          
+          echo "✓ No default secrets found"
+      
+      - name: Validate Alembic migrations
+        run: |
+          echo "Checking migration file integrity..."
+          
+          # Check all migrations have proper revision IDs
+          if [ -d "alembic/versions" ]; then
+            for file in alembic/versions/*.py; do
+              if ! grep -q "^revision = " "$file"; then
+                echo "ERROR: Migration $file missing revision ID"
+                exit 1
+              fi
+            done
+          fi
+          
+          echo "✓ Migration files validated"
+
+  quality-summary:
+    name: Quality Gates Summary
+    runs-on: ubuntu-latest
+    needs: [backend-quality, frontend-quality, security-scan, config-validation]
+    if: always()
+    steps:
+      - name: Check Quality Gates
+        run: |
+          if [ "${{ needs.backend-quality.result }}" != "success" ]; then
+            echo "❌ Backend quality checks failed"
+            exit 1
+          fi
+          
+          if [ "${{ needs.frontend-quality.result }}" != "success" ]; then
+            echo "❌ Frontend quality checks failed"
+            exit 1
+          fi
+          
+          if [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "⚠️ Security scan had issues (non-blocking)"
+          fi
+          
+          if [ "${{ needs.config-validation.result }}" != "success" ]; then
+            echo "❌ Configuration validation failed"
+            exit 1
+          fi
+          
+          echo "✅ All quality gates passed!"
+

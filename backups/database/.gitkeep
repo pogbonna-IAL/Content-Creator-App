@@ -1,0 +1,10 @@
+# Database Backup Directory
+# Contains PostgreSQL dumps created by:
+#   - make backup
+#   - bash infra/scripts/create-backup.sh
+#
+# Format: backup_YYYYMMDD_HHMMSS.sql.gz
+# Example: backup_20260114_143022.sql.gz
+#
+# Automated cleanup removes backups older than 30 days
+

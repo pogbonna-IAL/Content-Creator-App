@@ -14,6 +14,7 @@ from .models import (
     ContentJob,
     ContentArtifact,
     BillingEvent,
+    RetentionNotification,
 )
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "ContentJob",
     "ContentArtifact",
     "BillingEvent",
+    "RetentionNotification",
 ]
 

@@ -21,20 +21,22 @@ class ContentCache:
         self.cache: Dict[str, Dict] = {}
         self.default_ttl = default_ttl
     
-    def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None) -> str:
+    def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None, moderation_version: str = None) -> str:
         """
-        Generate cache key from topic, content types, prompt version, and model
+        Generate cache key from topic, content types, prompt version, model, and moderation version (M6)
         
         Args:
             topic: Content topic
             content_types: List of content types requested
             prompt_version: Prompt version (e.g., "1.0.0")
             model: LLM model name (e.g., "ollama/llama3.2:1b")
+            moderation_version: Moderation rules version (NEW - M6)
             
         Returns:
-            MD5 hash of normalized topic, content types, prompt version, and model
+            MD5 hash of normalized topic, content types, prompt version, model, and moderation version
         """
         from ..schemas import PROMPT_VERSION
+        from ..config import config
         
         # Normalize topic (lowercase, strip whitespace)
         normalized_topic = topic.lower().strip()
@@ -48,8 +50,12 @@ class ContentCache:
         # Use provided model or empty string
         model = model or ""
         
-        # Create cache key from topic, content types, prompt version, and model
-        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}:{prompt_version}:{model}"
+        # Use provided moderation_version or from config (M6)
+        # This allows cache invalidation when moderation rules change
+        moderation_version = moderation_version or config.MODERATION_VERSION
+        
+        # Create cache key from topic, content types, prompt version, model, and moderation version
+        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}:{prompt_version}:{model}:{moderation_version}"
         return hashlib.md5(cache_string.encode()).hexdigest()
     
     def get(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None) -> Optional[Dict]:

@@ -1,542 +1,672 @@
-# Backup Strategy
+## Backup & Restore Strategy (M2)
+
+**Last Updated:** 2026-01-14  
+**Version:** 1.0.0  
+**Status:** Production Ready
+
+---
 
 ## Overview
 
-This document outlines the backup strategy for Content Creation Crew, covering PostgreSQL database, Redis cache, and file storage artifacts.
+This document describes the backup, restore, and verification strategy for the Content Creation Crew platform. A robust backup strategy is critical for disaster recovery, data protection, and business continuity.
+
+---
 
 ## Table of Contents
 
-1. [PostgreSQL Backup](#postgresql-backup)
-2. [Redis Backup](#redis-backup)
-3. [File Storage Backup](#file-storage-backup)
-4. [Backup Schedule](#backup-schedule)
-5. [Backup Retention](#backup-retention)
-6. [Backup Encryption](#backup-encryption)
-7. [Backup Storage](#backup-storage)
-8. [Verification](#verification)
+1. [Backup Strategy](#backup-strategy)
+2. [Restore Strategy](#restore-strategy)
+3. [Verification Procedure](#verification-procedure)
+4. [Automated Verification](#automated-verification)
+5. [Manual Operations](#manual-operations)
+6. [Monitoring & Alerts](#monitoring--alerts)
+7. [Disaster Recovery](#disaster-recovery)
+8. [Compliance](#compliance)
 
 ---
 
-## PostgreSQL Backup
+## Backup Strategy
 
-### Backup Method
+### What Gets Backed Up
 
-**Tool:** `pg_dump` (PostgreSQL native utility)
+#### 1. Database (PostgreSQL)
+- **All tables** - Users, organizations, subscriptions, content jobs, artifacts, etc.
+- **Schema** - Tables, indexes, constraints, sequences
+- **Data** - All user and system data
 
-**Format:** Custom format (`.dump`) - compressed and allows selective restore
-
-**Command:**
-```bash
-pg_dump -Fc -h <host> -U <user> -d <database> -f <backup_file.dump>
-```
-
-### Backup Script
-
-**Location:** `infra/scripts/backup-postgres.sh`
-
-**Features:**
-- Automatic timestamp in filename
-- Compression (custom format)
-- Optional encryption
-- Error handling
-- Backup verification
-
-**Usage:**
-```bash
-# Using Makefile
-make backup-db
-
-# Direct script
-bash infra/scripts/backup-postgres.sh
-
-# With custom output
-bash infra/scripts/backup-postgres.sh /path/to/backup.dump
-```
+#### 2. Storage Artifacts (Files)
+- **Content artifacts** - Videos, audio, images, documents
+- **User uploads** - Profile images, custom assets
+- **Generated content** - AI-created content files
 
 ### Backup Schedule
 
-**Production:**
-- **Daily:** Full database backup at 2:00 AM UTC
-- **Hourly:** Incremental backups (if using WAL archiving)
-- **Before deployments:** Manual backup
+| Type | Frequency | Retention | Method |
+|------|-----------|-----------|---------|
+| **Database** | Daily at 2 AM UTC | 30 days | `pg_dump` |
+| **Storage** | Daily at 3 AM UTC | 30 days | rsync/rclone |
+| **Full System** | Weekly (Sunday) | 90 days | Complete snapshot |
 
-**Staging:**
-- **Daily:** Full database backup at 3:00 AM UTC
+### Backup Location
 
-**Development:**
-- **On-demand:** Manual backups before major changes
+```
+backups/
+├── database/
+│   ├── backup_20260114_020000.sql.gz
+│   ├── backup_20260115_020000.sql.gz
+│   └── ...
+└── storage/
+    ├── artifacts_20260114_030000.tar.gz
+    ├── artifacts_20260115_030000.tar.gz
+    └── ...
+```
 
-### Backup Retention
+### Backup Format
 
-| Environment | Retention Period | Number of Backups |
-|-------------|------------------|-------------------|
-| **Production** | 30 days | ~30 daily backups |
-| **Staging** | 7 days | ~7 daily backups |
-| **Development** | 3 days | ~3 backups |
+**Database:**
+- Format: Plain SQL (`--format=plain`)
+- Compression: gzip
+- Options: `--no-owner`, `--no-acl`, `--clean`, `--if-exists`
 
-**Retention Policy:**
-- Keep daily backups for 7 days
-- Keep weekly backups (Sunday) for 4 weeks
-- Keep monthly backups (1st of month) for 12 months
-- Keep pre-deployment backups indefinitely (until verified)
+**Storage:**
+- Format: tar.gz or incremental rsync
+- Compression: gzip level 6
+- Includes: Metadata and file checksums
 
-### Backup Encryption
+---
 
-**At Rest:**
-- Backups stored in encrypted storage (S3 with encryption, or encrypted filesystem)
-- Encryption key managed via environment variable: `BACKUP_ENCRYPTION_KEY`
+## Restore Strategy
 
-**In Transit:**
-- Backups transferred via TLS/HTTPS
-- Database connections use SSL (production)
+### Restore Priority
 
-**Encryption Method:**
+1. **Critical** (RTO: 1 hour)
+   - Database schema
+   - User accounts
+   - Active subscriptions
+
+2. **High** (RTO: 4 hours)
+   - Recent content artifacts (last 7 days)
+   - Active jobs
+
+3. **Normal** (RTO: 24 hours)
+   - Historical data
+   - Archived content
+
+### Restore Process
+
+#### Database Restore
+
 ```bash
-# Encrypt backup with GPG
-gpg --symmetric --cipher-algo AES256 backup.dump
+# 1. Stop application
+docker-compose down
 
-# Or use openssl
-openssl enc -aes-256-cbc -salt -in backup.dump -out backup.dump.enc -k $BACKUP_ENCRYPTION_KEY
+# 2. Extract backup
+gunzip backups/database/backup_20260114_020000.sql.gz
+
+# 3. Drop and recreate database
+psql -U postgres -c "DROP DATABASE IF EXISTS content_creation_crew;"
+psql -U postgres -c "CREATE DATABASE content_creation_crew;"
+
+# 4. Restore backup
+psql -U postgres -d content_creation_crew -f backups/database/backup_20260114_020000.sql
+
+# 5. Verify restore
+psql -U postgres -d content_creation_crew -c "SELECT COUNT(*) FROM users;"
+
+# 6. Restart application
+docker-compose up -d
 ```
 
-### Backup Storage Locations
+#### Storage Restore
 
-**Local Development:**
-- `./backups/postgres/` directory
-- Git-ignored (see `.gitignore`)
-
-**Staging/Production:**
-- **Primary:** S3-compatible storage (encrypted)
-- **Secondary:** Off-site backup (different region/provider)
-- **Tertiary:** Local backup server (if available)
-
-**S3 Structure:**
-```
-s3://backups-bucket/
-  postgres/
-    daily/
-      content_crew_2026-01-13_020000.dump
-      content_crew_2026-01-14_020000.dump
-    weekly/
-      content_crew_2026-01-07_020000.dump
-    monthly/
-      content_crew_2026-01-01_020000.dump
-```
-
-### Restore Steps
-
-**See:** `docs/disaster-recovery.md` for detailed restore procedures
-
-**Quick Restore:**
 ```bash
-# Using Makefile
-make restore-db backup_file.dump
+# 1. Extract storage backup
+tar -xzf backups/storage/artifacts_20260114_030000.tar.gz -C /path/to/storage
 
-# Direct script
-bash infra/scripts/restore-postgres.sh backup_file.dump
+# 2. Verify file counts
+find /path/to/storage -type f | wc -l
+
+# 3. Check permissions
+chown -R appuser:appgroup /path/to/storage
 ```
 
 ---
 
-## Redis Backup
+## Verification Procedure
 
-### Backup Method
+### Automated Verification Script
 
-**Current Configuration:** Redis AOF (Append-Only File) enabled
+**Location:** `infra/scripts/verify-backup-restore.py`
 
-**Docker Compose:**
+**Purpose:** Ensures backups can be restored and contain valid data
+
+### Verification Process
+
+The script performs the following checks:
+
+1. **Backup File Validation**
+   - File exists and is readable
+   - File size > 0 bytes
+   - File format is valid SQL
+
+2. **Container Setup**
+   - Start temporary PostgreSQL container
+   - Wait for database readiness
+   - Create test database
+
+3. **Restore Operation**
+   - Copy backup file to container
+   - Execute restore (`psql -f backup.sql`)
+   - Check for fatal errors
+
+4. **Schema Verification**
+   - ✓ Alembic version table exists
+   - ✓ Users table exists
+   - ✓ Organizations table exists
+   - ✓ Content jobs table exists
+   - ✓ Content artifacts table exists
+   - ✓ Subscriptions table exists
+
+5. **Data Integrity Checks**
+   - ✓ Users count >= 0
+   - ✓ Organizations count >= 0
+   - ✓ Content jobs count >= 0
+   - ✓ Content artifacts count >= 0
+   - ✓ Subscriptions count >= 0
+
+6. **Migration State**
+   - ✓ Migration version exists
+   - ✓ Schema is up-to-date
+
+### Running Verification Manually
+
+```bash
+# Verify latest backup
+make backup-verify
+
+# Verify specific backup
+make backup-verify-file FILE=backups/database/backup_20260114_020000.sql
+
+# Verify with verbose output
+python3 infra/scripts/verify-backup-restore.py --latest --backup-dir ./backups --verbose
+
+# Keep test container for inspection
+python3 infra/scripts/verify-backup-restore.py --latest --no-cleanup
+```
+
+### Verification Output
+
+```
+================================================================================
+BACKUP RESTORE VERIFICATION
+================================================================================
+Backup file: backups/database/backup_20260114_020000.sql
+✓ Backup file exists: 15,234,567 bytes
+
+Starting PostgreSQL 15 container...
+✓ Container started: backup-restore-test
+✓ PostgreSQL ready after 5 attempts
+
+Restoring backup into restore_test...
+Copying backup file to container...
+Creating database: restore_test
+Restoring backup (this may take a while)...
+✓ Backup restored successfully
+
+Verifying database schema...
+  ✓ Alembic version table exists
+  ✓ Users table exists
+  ✓ Organizations table exists
+  ✓ Content jobs table exists
+  ✓ Content artifacts table exists
+  ✓ Subscriptions table exists
+
+Verifying data integrity...
+  ✓ Users count >= 0 (count: 142)
+  ✓ Organizations count >= 0 (count: 89)
+  ✓ Content jobs count >= 0 (count: 1,234)
+  ✓ Content artifacts count >= 0 (count: 5,678)
+  ✓ Subscriptions count >= 0 (count: 67)
+
+Verifying migrations...
+  ✓ Migration version: 0607bc5b8541
+
+================================================================================
+VERIFICATION SUMMARY
+================================================================================
+Backup file: backups/database/backup_20260114_020000.sql
+Total checks: 12
+Passed: 12
+Failed: 0
+
+✅ VERIFICATION PASSED
+Backup can be restored successfully
+================================================================================
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All checks passed |
+| `1` | One or more checks failed |
+| `2` | Script error (e.g., backup file not found) |
+
+---
+
+## Automated Verification
+
+### CI/CD Integration
+
+**GitHub Actions:** `.github/workflows/backup-verification.yml`
+
+**Schedule:** Nightly at 2 AM UTC
+
+**Process:**
+1. Start PostgreSQL service
+2. Run migrations to create schema
+3. Create test data (users, orgs, jobs)
+4. Create backup with `pg_dump`
+5. Run verification script
+6. Upload backup and logs as artifacts
+
+**Artifacts:**
+- `test-backup` - The created backup file (7 days retention)
+- `verification-logs` - Verification output (30 days retention)
+
+### Viewing CI Results
+
+```bash
+# Via GitHub CLI
+gh run list --workflow=backup-verification.yml
+
+# View latest run
+gh run view --log
+
+# Download artifacts
+gh run download <run-id>
+```
+
+### CI Alerts
+
+The workflow will:
+- ✅ Pass if verification succeeds
+- ❌ Fail if verification fails
+- 📧 Send notification on failure (if configured)
+
+---
+
+## Manual Operations
+
+### Creating a Backup
+
+```bash
+# Using Makefile
+make backup
+
+# Using script directly
+bash infra/scripts/create-backup.sh
+
+# With custom output path
+bash infra/scripts/create-backup.sh backups/manual_backup.sql
+```
+
+### Verifying a Backup
+
+```bash
+# Verify latest backup
+make backup-verify
+
+# Verify specific file
+make backup-verify-file FILE=path/to/backup.sql
+
+# With Docker Compose profile
+make backup-restore-test
+```
+
+### Restoring from Backup
+
+**⚠️ WARNING: This will replace existing data!**
+
+```bash
+# 1. Stop application
+docker-compose down
+
+# 2. Backup current database (safety)
+make backup
+
+# 3. Restore from backup
+gunzip -c backups/database/backup_20260114_020000.sql.gz | \
+  psql -U postgres -d content_creation_crew
+
+# 4. Verify restore
+psql -U postgres -d content_creation_crew -c "SELECT version_num FROM alembic_version;"
+
+# 5. Restart application
+docker-compose up -d
+```
+
+### Cleanup Old Backups
+
+```bash
+# Remove backups older than 30 days
+make backup-cleanup
+
+# Manual cleanup
+find backups/ -name "backup_*.sql.gz" -mtime +30 -delete
+```
+
+---
+
+## Monitoring & Alerts
+
+### Metrics to Track
+
+1. **Backup Success Rate**
+   ```promql
+   rate(backup_success_total[24h]) /
+   rate(backup_attempts_total[24h])
+   ```
+
+2. **Backup Size Trend**
+   ```promql
+   backup_size_bytes
+   ```
+
+3. **Verification Success Rate**
+   ```promql
+   rate(backup_verification_success_total[7d]) /
+   rate(backup_verification_attempts_total[7d])
+   ```
+
+4. **Restore Duration**
+   ```promql
+   histogram_quantile(0.95, backup_restore_seconds)
+   ```
+
+### Alerts
+
+#### Critical Alerts
+
 ```yaml
-redis:
-  command: redis-server --appendonly yes
-  volumes:
-    - redis_data:/data
+# Backup failed
+- alert: BackupFailed
+  expr: backup_success_total{status="failed"} > 0
+  for: 5m
+  annotations:
+    summary: "Database backup failed"
+    
+# Verification failed
+- alert: BackupVerificationFailed
+  expr: backup_verification_success_total{status="failed"} > 0
+  for: 5m
+  annotations:
+    summary: "Backup restore verification failed"
+    
+# No backup in 25 hours
+- alert: BackupMissing
+  expr: (time() - backup_last_success_timestamp) > 90000
+  for: 1h
+  annotations:
+    summary: "No successful backup in 25+ hours"
 ```
 
-### Backup Strategy
+#### Warning Alerts
 
-**Redis Persistence:**
-- **AOF (Append-Only File):** Enabled by default
-- **RDB Snapshots:** Optional (can be enabled)
-
-**Why Redis Backup is Less Critical:**
-- Redis is primarily a cache (can be rebuilt)
-- User sessions can be recreated
-- Content cache can be regenerated
-
-**When to Backup Redis:**
-- Before major cache invalidation
-- If storing critical session data
-- For disaster recovery completeness
-
-### Backup Methods
-
-**Method 1: Copy AOF File (Recommended)**
-```bash
-# Docker
-docker compose exec redis redis-cli BGSAVE
-docker cp content-crew-redis:/data/appendonly.aof ./backups/redis/appendonly_$(date +%Y%m%d).aof
-
-# Local
-cp ~/.redis/appendonly.aof ./backups/redis/appendonly_$(date +%Y%m%d).aof
-```
-
-**Method 2: RDB Snapshot**
-```bash
-# Create snapshot
-docker compose exec redis redis-cli BGSAVE
-
-# Copy snapshot
-docker cp content-crew-redis:/data/dump.rdb ./backups/redis/dump_$(date +%Y%m%d).rdb
-```
-
-**Method 3: Redis Dump Command**
-```bash
-# Export all keys
-docker compose exec redis redis-cli --rdb - > ./backups/redis/dump_$(date +%Y%m%d).rdb
-```
-
-### Backup Schedule
-
-**Production:**
-- **Daily:** AOF file backup (if critical data stored)
-- **Weekly:** RDB snapshot
-
-**Staging/Development:**
-- **On-demand:** Manual backups only
-
-### Backup Retention
-
-| Environment | Retention Period |
-|-------------|------------------|
-| **Production** | 7 days (if backed up) |
-| **Staging** | 3 days |
-| **Development** | Not required |
-
-### Restore Steps
-
-**Restore AOF:**
-```bash
-# Stop Redis
-docker compose stop redis
-
-# Copy AOF file back
-docker cp ./backups/redis/appendonly_20260113.aof content-crew-redis:/data/appendonly.aof
-
-# Start Redis (will load AOF)
-docker compose start redis
-```
-
-**Restore RDB:**
-```bash
-# Stop Redis
-docker compose stop redis
-
-# Copy RDB file
-docker cp ./backups/redis/dump_20260113.rdb content-crew-redis:/data/dump.rdb
-
-# Start Redis
-docker compose start redis
+```yaml
+# Backup size anomaly
+- alert: BackupSizeAnomaly
+  expr: abs(backup_size_bytes - backup_size_bytes offset 1d) / backup_size_bytes > 0.5
+  for: 30m
+  annotations:
+    summary: "Backup size changed by >50%"
+    
+# Restore duration high
+- alert: RestoreDurationHigh
+  expr: backup_restore_seconds > 300
+  for: 5m
+  annotations:
+    summary: "Backup restore taking >5 minutes"
 ```
 
 ---
 
-## File Storage Backup
+## Disaster Recovery
 
-### Storage Types
+### Scenarios
 
-**Local Disk Storage (Development):**
-- Location: `./storage/` (or `STORAGE_PATH` env var)
-- Subdirectories:
-  - `voiceovers/` - TTS audio files
-  - `artifacts/` - Content artifacts
-  - `videos/` - Rendered video files
-  - `storyboard_images/` - Storyboard images
-  - `video_clips/` - Video clip segments
+#### 1. Database Corruption
 
-**S3-Compatible Storage (Production):**
-- Provider: AWS S3, MinIO, or compatible service
-- Bucket: Configured via `S3_BUCKET_NAME`
-- Versioning: Enabled (recommended)
+**RTO:** 1 hour  
+**RPO:** 1 day (last backup)
 
-### Backup Strategy
+**Steps:**
+1. Identify corruption (failed queries, data inconsistencies)
+2. Stop application immediately
+3. Isolate corrupted database
+4. Restore from latest verified backup
+5. Verify restore with verification script
+6. Restart application
+7. Monitor for issues
 
-**Local Disk:**
-- **Method:** File system backup (rsync, tar, or cloud sync)
-- **Schedule:** Daily incremental, weekly full
-- **Retention:** 30 days
+#### 2. Complete Data Loss
 
-**S3-Compatible:**
-- **Method:** S3 versioning + cross-region replication
-- **Schedule:** Continuous (automatic via versioning)
-- **Retention:** 90 days (via lifecycle policies)
+**RTO:** 4 hours  
+**RPO:** 1 day
 
-### Backup Methods
+**Steps:**
+1. Provision new infrastructure
+2. Restore database from backup
+3. Restore storage artifacts from backup
+4. Run verification on all restored data
+5. Update DNS/load balancers
+6. Restart application
+7. Notify users of potential data loss
 
-**Method 1: rsync (Local)**
-```bash
-# Full backup
-rsync -av --delete ./storage/ ./backups/storage/full_$(date +%Y%m%d)/
+#### 3. Ransomware Attack
 
-# Incremental backup
-rsync -av ./storage/ ./backups/storage/incremental_$(date +%Y%m%d)/
-```
+**RTO:** 24 hours  
+**RPO:** 1 day
 
-**Method 2: tar Archive (Local)**
-```bash
-# Create compressed archive
-tar -czf ./backups/storage/storage_$(date +%Y%m%d).tar.gz ./storage/
+**Steps:**
+1. Isolate infected systems
+2. Verify backup integrity (pre-infection)
+3. Provision clean infrastructure
+4. Restore from verified clean backup
+5. Apply security patches
+6. Scan restored data
+7. Gradually bring systems online
 
-# With encryption
-tar -czf - ./storage/ | openssl enc -aes-256-cbc -out ./backups/storage/storage_$(date +%Y%m%d).tar.gz.enc
-```
+### Recovery Testing
 
-**Method 3: S3 Sync (Local to S3)**
-```bash
-# Sync to S3 backup bucket
-aws s3 sync ./storage/ s3://backups-bucket/storage/$(date +%Y%m%d)/ --delete
-```
+**Frequency:** Quarterly
 
-**Method 4: S3 Versioning (Production)**
-```bash
-# Enable versioning on bucket
-aws s3api put-bucket-versioning \
-  --bucket content-crew-storage \
-  --versioning-configuration Status=Enabled
-
-# Enable lifecycle policy for old versions
-aws s3api put-bucket-lifecycle-configuration \
-  --bucket content-crew-storage \
-  --lifecycle-configuration file://lifecycle.json
-```
-
-### Backup Schedule
-
-**Production (S3):**
-- **Continuous:** Via S3 versioning
-- **Daily:** Cross-region replication check
-
-**Production (Local):**
-- **Daily:** Incremental backup at 3:00 AM UTC
-- **Weekly:** Full backup on Sunday at 2:00 AM UTC
-
-**Staging:**
-- **Daily:** Full backup at 4:00 AM UTC
-
-**Development:**
-- **On-demand:** Manual backups
-
-### Backup Retention
-
-| Storage Type | Retention Period |
-|--------------|------------------|
-| **S3 Versioning** | 90 days (current + previous versions) |
-| **Local Full Backups** | 30 days |
-| **Local Incremental** | 7 days |
-
-### Restore Steps
-
-**Local Storage:**
-```bash
-# Restore from tar archive
-tar -xzf ./backups/storage/storage_20260113.tar.gz -C ./
-
-# Restore from rsync backup
-rsync -av ./backups/storage/full_20260113/ ./storage/
-```
-
-**S3 Storage:**
-```bash
-# Restore specific version
-aws s3api get-object \
-  --bucket content-crew-storage \
-  --key voiceovers/file.wav \
-  --version-id <version-id> \
-  restored_file.wav
-
-# Restore entire prefix
-aws s3 sync s3://backups-bucket/storage/20260113/ s3://content-crew-storage/ --delete
-```
+**Process:**
+1. Schedule maintenance window
+2. Create fresh backup
+3. Provision test environment
+4. Perform full restore
+5. Run application tests
+6. Document timing and issues
+7. Update RTO/RPO estimates
 
 ---
 
-## Backup Schedule Summary
+## Compliance
 
-### Production Schedule
+### Data Retention
 
-| Component | Frequency | Time (UTC) | Retention |
-|-----------|-----------|------------|-----------|
-| **PostgreSQL** | Daily | 2:00 AM | 30 days |
-| **PostgreSQL** | Weekly | Sunday 2:00 AM | 4 weeks |
-| **PostgreSQL** | Monthly | 1st of month 2:00 AM | 12 months |
-| **Redis** | Daily (if critical) | 2:30 AM | 7 days |
-| **File Storage** | Daily (incremental) | 3:00 AM | 7 days |
-| **File Storage** | Weekly (full) | Sunday 3:00 AM | 30 days |
-| **S3 Versioning** | Continuous | N/A | 90 days |
+- **Backups:** 30 days (database), 30 days (storage)
+- **Weekly backups:** 90 days
+- **Annual backups:** 7 years (compliance)
 
-### Staging Schedule
+### GDPR Compliance
 
-| Component | Frequency | Time (UTC) | Retention |
-|-----------|-----------|------------|-----------|
-| **PostgreSQL** | Daily | 3:00 AM | 7 days |
-| **File Storage** | Daily | 4:00 AM | 7 days |
+- Backups include deleted user data (within retention)
+- After retention window, data is purged from backups
+- Right to be forgotten: user data removed after 30 days
+- Backup encryption: at rest and in transit
 
----
+### Audit Trail
 
-## Backup Encryption
-
-### Encryption Requirements
-
-**Production Backups:**
-- ✅ Must be encrypted at rest
-- ✅ Must use TLS/HTTPS in transit
-- ✅ Encryption keys stored securely (not in code)
-
-**Staging Backups:**
-- ✅ Should be encrypted at rest
-- ✅ Must use TLS/HTTPS in transit
-
-**Development Backups:**
-- ⚠️ Optional encryption (recommended if contains real data)
-
-### Encryption Methods
-
-**GPG Encryption:**
-```bash
-# Encrypt
-gpg --symmetric --cipher-algo AES256 backup.dump
-
-# Decrypt
-gpg --decrypt backup.dump.gpg > backup.dump
-```
-
-**OpenSSL Encryption:**
-```bash
-# Encrypt
-openssl enc -aes-256-cbc -salt -in backup.dump -out backup.dump.enc -k $BACKUP_ENCRYPTION_KEY
-
-# Decrypt
-openssl enc -aes-256-cbc -d -in backup.dump.enc -out backup.dump -k $BACKUP_ENCRYPTION_KEY
-```
-
-**S3 Server-Side Encryption:**
-```bash
-# Enable SSE-S3 (AWS managed keys)
-aws s3 cp backup.dump s3://backups-bucket/ --server-side-encryption AES256
-
-# Enable SSE-KMS (customer managed keys)
-aws s3 cp backup.dump s3://backups-bucket/ --server-side-encryption aws:kms --ssekms-key-id <key-id>
-```
-
----
-
-## Backup Storage
-
-### Storage Locations
-
-**Primary Storage:**
-- S3-compatible bucket (production)
-- Local `./backups/` directory (development)
-
-**Secondary Storage (Disaster Recovery):**
-- Different AWS region (production)
-- Off-site backup server (if available)
-- Cloud storage provider (Backblaze, Wasabi, etc.)
-
-### Storage Requirements
-
-**PostgreSQL Backups:**
-- **Size:** ~100-500 MB per backup (compressed)
-- **Monthly:** ~15-150 GB (30 daily backups)
-- **Yearly:** ~180 GB - 1.8 TB (with monthly backups)
-
-**File Storage Backups:**
-- **Size:** Varies by usage (typically 1-10 GB)
-- **Monthly:** ~30-300 GB (daily incremental + weekly full)
-
-**Total Storage Estimate:**
-- **Minimum:** 50 GB
-- **Typical:** 200-500 GB
-- **High Usage:** 1-2 TB
-
----
-
-## Verification
-
-### Backup Verification Checklist
-
-**PostgreSQL:**
-- [ ] Backup file exists and is non-empty
-- [ ] Backup file size is reasonable (not 0 bytes)
-- [ ] Can restore backup to test database
-- [ ] Backup contains expected tables
-- [ ] Backup is encrypted (if required)
-
-**Redis:**
-- [ ] AOF file exists and is recent
-- [ ] Can restore AOF to test Redis instance
-- [ ] Keys are restored correctly
-
-**File Storage:**
-- [ ] Backup contains all subdirectories
-- [ ] File counts match source
-- [ ] File sizes match source
-- [ ] Can restore files from backup
-
-### Automated Verification
-
-**PostgreSQL:**
-```bash
-# Verify backup file
-pg_restore --list backup.dump | head -20
-
-# Test restore to temporary database
-createdb test_restore
-pg_restore -d test_restore backup.dump
-dropdb test_restore
-```
-
-**File Storage:**
-```bash
-# Verify tar archive
-tar -tzf storage_backup.tar.gz | wc -l
-
-# Compare file counts
-tar -tzf storage_backup.tar.gz | wc -l
-find ./storage -type f | wc -l
-```
+All backup operations are logged:
+- Timestamp
+- Operator (if manual)
+- Backup size
+- Success/failure
+- Verification status
 
 ---
 
 ## Best Practices
 
-### ✅ DO
+### For Operators
 
-- ✅ Test backups regularly (monthly restore test)
-- ✅ Store backups in multiple locations
-- ✅ Encrypt sensitive backups
-- ✅ Monitor backup success/failure
-- ✅ Document backup procedures
-- ✅ Keep backup logs
-- ✅ Verify backup integrity
+1. **Verify backups regularly** - Don't wait for disaster
+2. **Test restores quarterly** - Practice makes perfect
+3. **Monitor backup metrics** - Catch issues early
+4. **Keep backup credentials secure** - Separate from production
+5. **Document procedures** - Make it repeatable
 
-### ❌ DON'T
+### For Developers
 
-- ❌ Don't store backups on same server as database
-- ❌ Don't skip backup verification
-- ❌ Don't ignore backup failures
-- ❌ Don't store unencrypted backups with sensitive data
-- ❌ Don't delete backups without verification
-- ❌ Don't rely on single backup location
+1. **Design for backups** - Consider restore complexity
+2. **Test migrations** - Ensure they're reversible
+3. **Avoid breaking changes** - Keep backward compatibility
+4. **Log changes** - Audit trail for debugging
+
+### Checklist
+
+**Daily:**
+- [ ] Check backup CI job passed
+- [ ] Verify backup size is reasonable
+- [ ] Review verification logs
+
+**Weekly:**
+- [ ] Manual backup verification test
+- [ ] Review backup storage usage
+- [ ] Check for failed verifications
+
+**Monthly:**
+- [ ] Full restore test to staging
+- [ ] Review backup retention policy
+- [ ] Audit backup access logs
+
+**Quarterly:**
+- [ ] Disaster recovery drill
+- [ ] Update RTO/RPO estimates
+- [ ] Review and update procedures
+
+---
+
+## Troubleshooting
+
+### Issue: Backup Verification Fails
+
+**Symptoms:**
+- Verification script exits with code 1
+- Schema checks fail
+- Data integrity checks fail
+
+**Diagnosis:**
+```bash
+# Run with verbose output
+python3 infra/scripts/verify-backup-restore.py --latest --verbose
+
+# Keep container for manual inspection
+python3 infra/scripts/verify-backup-restore.py --latest --no-cleanup
+
+# Connect to test database
+docker exec -it backup-restore-test psql -U postgres -d restore_test
+```
+
+**Solutions:**
+1. Check backup file integrity
+2. Verify PostgreSQL version compatibility
+3. Check for migration issues
+4. Review restore logs for errors
+
+### Issue: Backup Size Anomaly
+
+**Symptoms:**
+- Backup suddenly much larger/smaller
+- Compression ratio changed significantly
+
+**Diagnosis:**
+```bash
+# Compare backup sizes
+ls -lh backups/database/ | tail -5
+
+# Check table sizes
+psql -d content_creation_crew -c "
+  SELECT
+    schemaname,
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+  FROM pg_tables
+  WHERE schemaname = 'public'
+  ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+"
+```
+
+**Solutions:**
+1. Check for data anomalies (mass inserts/deletes)
+2. Vacuum/analyze database
+3. Review retention cleanup jobs
+
+### Issue: Restore Takes Too Long
+
+**Symptoms:**
+- Restore duration > expected
+- Timeout errors
+
+**Diagnosis:**
+```bash
+# Check backup file size
+ls -lh backup.sql.gz
+
+# Monitor restore progress
+docker exec backup-restore-test tail -f /var/log/postgresql/postgresql.log
+```
+
+**Solutions:**
+1. Increase restore timeout
+2. Optimize backup format (consider custom format)
+3. Use parallel restore for large databases
+4. Provision more resources for restore
 
 ---
 
 ## Related Documentation
 
-- [Disaster Recovery Guide](./disaster-recovery.md) - Restore procedures
-- [Pre-Deploy Readiness](./pre-deploy-readiness.md) - Deployment checklist
+- [GDPR Compliance](./gdpr.md) - Data retention and deletion
+- [Data Retention Policy](./retention-policy.md) - Artifact retention
+- [Monitoring Guide](./monitoring.md) - Backup metrics and alerts
+- [Disaster Recovery Plan](./disaster-recovery.md) - Complete DR procedures
 
 ---
 
-**Last Updated:** January 13, 2026  
-**Status:** ✅ Production Ready
+## Changelog
 
+### Version 1.0.0 (M2) - 2026-01-14
+- Initial backup strategy documentation
+- Automated restore verification script
+- CI/CD integration for nightly verification
+- Makefile targets for backup operations
+- Docker Compose restore-test profile
+
+---
+
+## Support
+
+For questions or issues with backups:
+- **Runbook:** `/docs/runbooks/backup-restore.md`
+- **Slack:** `#ops-alerts`
+- **On-call:** PagerDuty escalation
+- **Email:** ops@contentcreationcrew.com
+
+---
+
+**Last Updated:** 2026-01-14  
+**Next Review:** 2026-04-14 (Quarterly)  
+**Owner:** DevOps Team

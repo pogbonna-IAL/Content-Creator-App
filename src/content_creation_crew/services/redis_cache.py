@@ -87,16 +87,20 @@ class RedisContentCache:
             self.fallback_cache = None
             logger.info("Using Redis content cache")
     
-    def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None) -> str:
-        """Generate cache key (same logic as ContentCache)"""
+    def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None, moderation_version: str = None) -> str:
+        """Generate cache key (same logic as ContentCache) with moderation version (M6)"""
         from ..schemas import PROMPT_VERSION
+        from ..config import config
         
         normalized_topic = topic.lower().strip()
         normalized_types = sorted(content_types or ['blog'])
         prompt_version = prompt_version or PROMPT_VERSION
         model = model or ""
         
-        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}:{prompt_version}:{model}"
+        # Add moderation_version to cache key (M6)
+        moderation_version = moderation_version or config.MODERATION_VERSION
+        
+        cache_string = f"{normalized_topic}:{':'.join(normalized_types)}:{prompt_version}:{model}:{moderation_version}"
         import hashlib
         return f"content:{hashlib.md5(cache_string.encode()).hexdigest()}"
     

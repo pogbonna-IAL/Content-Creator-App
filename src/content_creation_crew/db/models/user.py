@@ -29,6 +29,15 @@ class User(Base):
         self.provider = value
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+    
+    # Email Verification (S8)
+    email_verified = Column(Boolean, default=False, nullable=False)  # New field for explicit tracking
+    email_verification_token = Column(String, nullable=True, index=True)
+    email_verification_sent_at = Column(DateTime, nullable=True)
+    
+    # GDPR deletion
+    deleted_at = Column(DateTime, nullable=True)  # Soft delete timestamp
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

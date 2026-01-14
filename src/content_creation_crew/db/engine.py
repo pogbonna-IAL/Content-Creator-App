@@ -34,30 +34,41 @@ if not config.DATABASE_URL.startswith("postgresql"):
     logger.error("=" * 60)
     sys.exit(1)
 
-# Create PostgreSQL engine with optimized pool settings
+# Create PostgreSQL engine with production-ready pool settings
 engine = create_engine(
     config.DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_size=2,  # Minimal pool size
-    max_overflow=3,  # Minimal overflow
-    pool_recycle=900,  # Recycle connections after 15 minutes
-    pool_timeout=10,  # Reduced timeout to fail faster
+    pool_pre_ping=True,  # Verify connections before using (health check)
+    pool_size=config.DB_POOL_SIZE,  # Base pool size (default: 10)
+    max_overflow=config.DB_MAX_OVERFLOW,  # Additional connections (default: 10, total: 20)
+    pool_recycle=config.DB_POOL_RECYCLE,  # Recycle connections after 1 hour (default)
+    pool_timeout=config.DB_POOL_TIMEOUT,  # Wait up to 30s for connection (default)
     echo=False,  # Disable SQL logging for performance
     connect_args={
-        "connect_timeout": 3,  # Very short connection timeout
+        "connect_timeout": 5,  # Connection timeout (5 seconds)
         "keepalives": 1,  # Enable TCP keepalives
         "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
         "keepalives_interval": 10,  # Send keepalive every 10 seconds
-        "keepalives_count": 3,  # Reduced keepalive failures before disconnect
+        "keepalives_count": 3,  # Keepalive failures before disconnect
         "application_name": "content_creation_crew",
+        # Set statement timeout at connection level (default: 10 seconds)
+        "options": f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT}",
     }
 )
+
+logger.info(f"PostgreSQL engine configured:")
+logger.info(f"  - Pool size: {config.DB_POOL_SIZE}")
+logger.info(f"  - Max overflow: {config.DB_MAX_OVERFLOW}")
+logger.info(f"  - Total max connections: {config.DB_POOL_SIZE + config.DB_MAX_OVERFLOW}")
+logger.info(f"  - Pool timeout: {config.DB_POOL_TIMEOUT}s")
+logger.info(f"  - Statement timeout: {config.DB_STATEMENT_TIMEOUT}ms")
 
 # Add event listeners for connection pool management
 @event.listens_for(Pool, "checkout")
 def receive_checkout(dbapi_conn, connection_record, connection_proxy):
     """Called when a connection is retrieved from the pool"""
-    logger.debug("Connection checked out from pool")
+    # Track pool statistics
+    pool_status = engine.pool.status()
+    logger.debug(f"Connection checked out from pool | Pool status: {pool_status}")
 
 @event.listens_for(Pool, "checkin")
 def receive_checkin(dbapi_conn, connection_record):
@@ -69,7 +80,17 @@ def receive_invalidate(dbapi_conn, connection_record, exception):
     """Called when a connection is invalidated"""
     logger.warning(f"Connection invalidated: {exception}")
 
-logger.info("PostgreSQL engine created successfully")
+@event.listens_for(Pool, "connect")
+def receive_connect(dbapi_conn, connection_record):
+    """Called when a new connection is created"""
+    logger.debug("New database connection created")
+
+@event.listens_for(Pool, "close")
+def receive_close(dbapi_conn, connection_record):
+    """Called when a connection is closed"""
+    logger.debug("Database connection closed")
+
+logger.info("✓ PostgreSQL engine created successfully")
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

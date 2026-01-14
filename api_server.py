@@ -128,6 +128,14 @@ setup_logging(env=config.ENV, log_level=config.LOG_LEVEL)
 import logging
 logger = logging.getLogger(__name__)
 
+# Set up PII redaction filter for all logs
+try:
+    from content_creation_crew.logging_filter import setup_pii_redaction
+    setup_pii_redaction()
+    logger.info("✓ PII redaction filter enabled (emails, tokens, passwords will be redacted)")
+except Exception as e:
+    logger.warning(f"Failed to enable PII redaction filter: {e}")
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -157,6 +165,18 @@ except Exception as e:
     logger.error(f"Database initialization failed: {e}", exc_info=True)
     # Continue anyway - app might work for read-only operations
     # Database will be initialized on first request if needed
+
+# Start scheduled jobs (GDPR cleanup, etc.)
+try:
+    import os as _os
+    if _os.getenv("DISABLE_SCHEDULER", "false").lower() not in ("true", "1", "yes"):
+        from content_creation_crew.services.scheduled_jobs import start_scheduler
+        start_scheduler()
+        logger.info("✓ Scheduled jobs started (GDPR cleanup daily at 2 AM)")
+    else:
+        logger.info("Scheduled jobs disabled via DISABLE_SCHEDULER env var")
+except Exception as e:
+    logger.warning(f"Failed to start scheduled jobs: {e}. GDPR cleanup can still be run manually via cron or scripts/gdpr_cleanup.py")
 
 # Validate FFmpeg availability at startup (if video rendering enabled)
 try:
@@ -292,7 +312,38 @@ app.add_middleware(
     allow_methods=allowed_methods,
     allow_headers=allowed_headers,
     expose_headers=["X-Request-ID"],  # Expose request ID to clients
+    max_age=86400,  # Cache preflight requests for 24 hours (86400 seconds)
 )
+
+logger.info(f"✓ CORS configured with preflight caching (max_age: 86400s / 24h)")
+
+# Request size limit middleware (M4)
+from content_creation_crew.middleware.request_size_limit import RequestSizeLimitMiddleware
+
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    max_request_bytes=config.MAX_REQUEST_BYTES,
+    max_upload_bytes=config.MAX_UPLOAD_BYTES
+)
+
+# Global exception handlers (M3) - Error hygiene
+from content_creation_crew.middleware.error_handler import (
+    database_error_handler,
+    validation_error_handler,
+    http_exception_handler,
+    generic_exception_handler
+)
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+# Register exception handlers in order of specificity
+app.add_exception_handler(SQLAlchemyError, database_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
+logger.info("✓ Global exception handlers configured (M3 - error hygiene)")
 
 # Include authentication routes
 app.include_router(auth_router)
@@ -303,6 +354,26 @@ app.include_router(billing_router)
 # Include v1 content routes
 from content_creation_crew.content_routes import router as content_router
 app.include_router(content_router)
+
+# Include GDPR routes
+from content_creation_crew.gdpr_routes import router as gdpr_router
+app.include_router(gdpr_router)
+logger.info("✓ GDPR routes registered")
+
+# Register Admin routes (M6)
+from content_creation_crew.admin_routes import router as admin_router
+app.include_router(admin_router)
+logger.info("✓ Admin routes registered")
+
+# Register Invoice routes
+from content_creation_crew.invoice_routes import router as invoice_router
+app.include_router(invoice_router)
+logger.info("✓ Invoice routes registered")
+
+# Register Refund routes
+from content_creation_crew.refund_routes import router as refund_router
+app.include_router(refund_router)
+logger.info("✓ Refund routes registered")
 
 # Add static file serving for storage (voiceovers, etc.)
 from fastapi.staticfiles import StaticFiles
@@ -352,128 +423,62 @@ async def _check_ollama_health(ollama_url: str) -> bool:
         return response.status_code == 200
 
 
+@app.get("/health/pool")
+async def health_pool():
+    """
+    Database connection pool health check
+    
+    Returns detailed pool statistics for monitoring
+    """
+    from content_creation_crew.db.pool_monitor import get_pool_stats, check_pool_health
+    
+    stats = get_pool_stats()
+    is_healthy, message = check_pool_health()
+    
+    response = {
+        "healthy": is_healthy,
+        "message": message,
+        "pool_stats": stats
+    }
+    
+    status_code = 200 if is_healthy else 503
+    return JSONResponse(content=response, status_code=status_code)
+
+
 @app.get("/health")
 async def health():
     """
-    Health check endpoint that verifies database and cache connectivity
-    Returns 200 if healthy, 503 if unhealthy
+    Comprehensive health check endpoint (M5)
     
-    Timeouts:
-    - Database: 2 seconds max
-    - Redis: 1 second max
-    - Ollama: 2 seconds max
-    - Total: < 3 seconds guaranteed (never hangs)
+    Verifies:
+    - Database connectivity
+    - Redis connectivity (if configured)
+    - Storage availability and free space
+    - LLM provider (Ollama) connectivity
+    
+    Returns:
+    - 200 if healthy
+    - 503 if unhealthy or degraded
+    
+    Strict timeouts enforced (never hangs)
     """
-    import asyncio
-    from datetime import datetime
+    from content_creation_crew.services.health_check import get_health_checker
     
-    start_time = datetime.now()
-    health_status = {
-        "status": "healthy",
-        "service": "content-creation-crew",
-        "environment": config.ENV,
-        "checks": {},
-        "response_time_ms": 0
-    }
-    all_healthy = True
+    health_checker = get_health_checker()
+    result = await health_checker.check_all()
     
-    # Check database connection with timeout (2 seconds max)
-    def check_database():
-        """Synchronous database check function"""
-        conn = engine.connect()
-        try:
-            conn.execute(text("SELECT 1"))
-            return True
-        finally:
-            conn.close()
+    # Add service metadata
+    result["service"] = "content-creation-crew"
+    result["environment"] = config.ENV
     
-    try:
-        loop = asyncio.get_event_loop()
-        await asyncio.wait_for(
-            loop.run_in_executor(None, check_database),
-            timeout=2.0
-        )
-        health_status["checks"]["database"] = "healthy"
-    except asyncio.TimeoutError:
-        logger.error("Database health check timed out after 2 seconds")
-        health_status["checks"]["database"] = "unhealthy: timeout"
-        all_healthy = False
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
-        health_status["checks"]["database"] = f"unhealthy: {str(e)[:100]}"  # Truncate long errors
-        all_healthy = False
-    
-    # Check cache backend (Redis or in-memory) with timeout
-    try:
-        cache = get_cache()
-        stats = cache.get_stats()
-        cache_type = stats.get('backend', 'in-memory')
-        health_status["checks"]["cache"] = {
-            "status": "healthy",
-            "type": cache_type,
-            "entries": stats.get("total_entries", 0)
-        }
-        
-        # Check Redis connection if using Redis (1 second max)
-        if cache_type == 'redis':
-            try:
-                from content_creation_crew.services.redis_cache import get_redis_client
-                redis_client = get_redis_client()
-                if redis_client:
-                    # Run Redis ping in executor with timeout
-                    loop = asyncio.get_event_loop()
-                    await asyncio.wait_for(
-                        loop.run_in_executor(None, redis_client.ping),
-                        timeout=1.0
-                    )
-                    health_status["checks"]["redis"] = "healthy"
-                else:
-                    health_status["checks"]["redis"] = "unavailable"
-            except asyncio.TimeoutError:
-                logger.warning("Redis health check timed out after 1 second")
-                health_status["checks"]["redis"] = "unhealthy: timeout"
-                # Redis timeout doesn't fail overall health (non-critical)
-            except Exception as redis_error:
-                logger.warning(f"Redis health check failed: {redis_error}")
-                health_status["checks"]["redis"] = f"unhealthy: {str(redis_error)[:100]}"
-                # Redis failure doesn't fail overall health (non-critical)
-    except Exception as e:
-        logger.error(f"Cache health check failed: {e}")
-        health_status["checks"]["cache"] = f"unhealthy: {str(e)[:100]}"
-        # Cache failure doesn't fail overall health (can use in-memory fallback)
-    
-    # Check Ollama connection (optional - 2 seconds max, non-critical)
-    try:
-        import httpx
-        await asyncio.wait_for(
-            _check_ollama_health(config.OLLAMA_BASE_URL),
-            timeout=2.0
-        )
-        health_status["checks"]["ollama"] = "healthy"
-    except asyncio.TimeoutError:
-        logger.warning("Ollama health check timed out after 2 seconds (non-critical)")
-        health_status["checks"]["ollama"] = "unavailable: timeout"
-    except Exception as e:
-        logger.warning(f"Ollama health check failed (non-critical): {e}")
-        health_status["checks"]["ollama"] = f"unavailable: {str(e)[:100]}"
-    
-    # Calculate response time
-    end_time = datetime.now()
-    response_time_ms = (end_time - start_time).total_seconds() * 1000
-    health_status["response_time_ms"] = round(response_time_ms, 2)
-    
-    # Ensure we never exceed 3 seconds (safety check)
-    if response_time_ms > 3000:
-        logger.warning(f"Health check took {response_time_ms}ms (exceeded 3s limit)")
-    
-    # Return 503 if critical services (database) are unhealthy
-    if not all_healthy:
+    # Return 503 if overall status is not OK
+    if result["status"] != "ok":
         return JSONResponse(
-            content=health_status,
+            content=result,
             status_code=503
         )
     
-    return health_status
+    return result
 
 
 @app.get("/meta")
@@ -495,13 +500,24 @@ async def meta():
 async def metrics():
     """
     Prometheus metrics endpoint
-    Returns metrics in Prometheus text format
+    Returns metrics in Prometheus text format including DB pool metrics
     """
     from content_creation_crew.services.metrics import get_metrics_collector
+    from content_creation_crew.db.pool_monitor import get_pool_metrics_for_prometheus
     from fastapi.responses import Response
     
     collector = get_metrics_collector()
     metrics_text = collector.format_prometheus()
+    
+    # Add DB pool metrics
+    try:
+        pool_metrics = get_pool_metrics_for_prometheus()
+        for metric_name, value in pool_metrics.items():
+            metrics_text += f"\n# HELP {metric_name} Database connection pool metric\n"
+            metrics_text += f"# TYPE {metric_name} gauge\n"
+            metrics_text += f"{metric_name} {value}\n"
+    except Exception as e:
+        logger.warning(f"Failed to add pool metrics: {e}")
     
     return Response(
         content=metrics_text,

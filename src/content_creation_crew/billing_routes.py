@@ -324,6 +324,12 @@ async def stripe_webhook(
             parsed_event
         )
         
+        # Invalidate cache for affected organization (M6)
+        if subscription:
+            from .services.cache_invalidation import get_cache_invalidation_service
+            cache_invalidation = get_cache_invalidation_service()
+            cache_invalidation.invalidate_org_on_subscription_change(subscription.organization_id)
+        
         return {"status": "ok", "processed": subscription is not None}
         
     except HTTPException:
@@ -376,6 +382,51 @@ async def paystack_webhook(
             parsed_event["provider_event_id"],
             parsed_event
         )
+        
+        # Invalidate cache for affected organization (M6)
+        if subscription:
+            from .services.cache_invalidation import get_cache_invalidation_service
+            cache_invalidation = get_cache_invalidation_service()
+            cache_invalidation.invalidate_org_on_subscription_change(subscription.organization_id)
+        
+        # Create invoice for successful payments
+        if subscription and parsed_event["event_type"] == "payment_succeeded":
+            try:
+                from .services.invoice_service import InvoiceService
+                invoice_service = InvoiceService(db)
+                
+                # Get plan details for line item
+                plan_name = subscription.plan
+                amount = parsed_event.get("amount", 0)  # Amount from webhook
+                
+                if amount > 0:
+                    # Create invoice
+                    line_items = [{
+                        "description": f"{plan_name.title()} Plan - Monthly Subscription",
+                        "quantity": 1,
+                        "unit_price": float(amount) / 100  # Convert from cents
+                    }]
+                    
+                    invoice = invoice_service.create_invoice(
+                        organization_id=subscription.organization_id,
+                        subscription_id=subscription.id,
+                        line_items=line_items,
+                        currency="USD",
+                        provider=PaymentProvider.PAYSTACK.value,
+                        provider_invoice_id=parsed_event.get("invoice_id"),
+                    )
+                    
+                    # Mark as paid immediately
+                    invoice_service.mark_invoice_paid(
+                        invoice.id,
+                        invoice.total,
+                        datetime.utcnow()
+                    )
+                    
+                    logger.info(f"Created and marked paid invoice {invoice.invoice_number} for subscription {subscription.id}")
+            except Exception as e:
+                logger.error(f"Failed to create invoice from webhook: {e}", exc_info=True)
+                # Don't fail the webhook - invoice creation is non-critical
         
         return {"status": "ok", "processed": subscription is not None}
         

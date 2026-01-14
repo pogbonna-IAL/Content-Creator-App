@@ -11,6 +11,7 @@ from datetime import datetime
 import json
 import asyncio
 import logging
+import time
 
 from .database import User, get_db, ContentJob, ContentArtifact, JobStatus
 from .auth import get_current_user
@@ -140,7 +141,40 @@ async def create_generation_job(
     policy = PlanPolicy(db, current_user)
     plan = policy.get_plan()
     
-    # Moderate input (before generation)
+    # Step 1: Prompt safety check (prevent injection attacks)
+    from .services.prompt_safety_service import get_prompt_safety_service
+    
+    safety_service = get_prompt_safety_service()
+    sanitized_topic, is_safe, safety_reason, safety_details = safety_service.sanitize_input(
+        topic,
+        max_length=5000  # 5000 chars for topic
+    )
+    
+    if not is_safe:
+        from .exceptions import ErrorResponse
+        from .logging_config import get_request_id
+        
+        logger.warning(f"Prompt safety check failed for user {current_user.id}: {safety_reason}")
+        
+        error_response = ErrorResponse.create(
+            message=safety_details or "Input was blocked by safety filters",
+            code="INPUT_BLOCKED",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            request_id=get_request_id(),
+            details={
+                "reason": safety_reason.value if safety_reason else "unknown",
+            }
+        )
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_response
+        )
+    
+    # Use sanitized topic for generation
+    topic = sanitized_topic
+    
+    # Step 2: Moderate input (after sanitization)
     if config.ENABLE_CONTENT_MODERATION:
         from .services.moderation_service import get_moderation_service
         moderation_service = get_moderation_service()
@@ -576,6 +610,12 @@ async def run_generation_async(
         
         # Run crew synchronously with timeout (we're already in async task)
         loop = asyncio.get_event_loop()
+        
+        # Track LLM metrics (M7)
+        from .services.metrics import LLMMetrics
+        llm_start_time = time.time()
+        llm_success = False
+        
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(
@@ -584,7 +624,12 @@ async def run_generation_async(
                 ),
                 timeout=timeout_seconds
             )
+            llm_success = True
             logger.info(f"Job {job_id}: CrewAI execution completed successfully")
+        finally:
+            # Record LLM metrics (M7)
+            llm_duration = time.time() - llm_start_time
+            LLMMetrics.record_call(model_name, llm_duration, success=llm_success)
         except asyncio.TimeoutError:
             error_msg = f"Content generation timed out after {timeout_seconds} seconds. The generation process took longer than the configured timeout."
             logger.error(f"Job {job_id}: {error_msg}")
@@ -1060,15 +1105,24 @@ async def _generate_voiceover_async(
             }
         )
         
-        # Synthesize speech
-        audio_bytes, metadata = tts_provider.synthesize(
-            text=narration_text,
-            voice_id=voice_id,
-            speed=speed,
-            format=format
-        )
+        # Synthesize speech with metrics (M7)
+        from .services.metrics import TTSMetrics
+        provider_name = type(tts_provider).__name__.replace("Provider", "").lower()
         
-        logger.info(f"TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s")
+        tts_start_time = time.time()
+        tts_success = False
+        try:
+            audio_bytes, metadata = tts_provider.synthesize(
+                text=narration_text,
+                voice_id=voice_id,
+                speed=speed,
+                format=format
+            )
+            tts_success = True
+            logger.info(f"TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s")
+        finally:
+            tts_duration = time.time() - tts_start_time
+            TTSMetrics.record_synthesis(provider_name, tts_duration, success=tts_success)
         
         # Send progress event
         sse_store.add_event(
@@ -1084,9 +1138,15 @@ async def _generate_voiceover_async(
         # Store audio file
         storage = get_storage_provider()
         storage_key = storage.generate_key('voiceovers', f'.{format}')
-        storage_url = storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
-        
-        logger.info(f"Audio file stored: {storage_key} for job {job_id}")
+        # Store audio with metrics (M7)
+        from .services.metrics import StorageMetrics
+        try:
+            storage_url = storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
+            StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
+            logger.info(f"Audio file stored: {storage_key} for job {job_id}")
+        except Exception as e:
+            StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
+            raise
         
         # Moderate output before saving artifact
         if config.ENABLE_CONTENT_MODERATION:
@@ -1445,6 +1505,8 @@ async def _render_video_async(
                 
                 # Store image
                 storage_key = storage.generate_key('storyboard_images', '.png')
+                # Store with metrics (M7)
+                StorageMetrics.record_put("storyboard_image", len(image_bytes), success=True)
                 storage.put(storage_key, image_bytes, content_type='image/png')
                 
                 # Create artifact
@@ -1477,6 +1539,8 @@ async def _render_video_async(
                 
                 # Store clip
                 storage_key = storage.generate_key('video_clips', '.mp4')
+                # Store with metrics (M7)
+                StorageMetrics.record_put("video_clip", len(clip_bytes), success=True)
                 storage.put(storage_key, clip_bytes, content_type='video/mp4')
                 
                 # Create artifact

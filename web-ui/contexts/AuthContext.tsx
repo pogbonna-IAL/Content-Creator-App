@@ -226,15 +226,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(null)
       Cookies.remove(USER_COOKIE)
       
-      // Clear saved email and password if "Remember me" was not checked
+      // Clear saved email if "Remember me" was not checked
       if (typeof window !== 'undefined') {
         const rememberMe = localStorage.getItem('remember_me')
         if (rememberMe !== 'true') {
           localStorage.removeItem('saved_email')
-          localStorage.removeItem('saved_password')
           localStorage.removeItem('remember_me')
         }
-        // If "Remember me" was checked, keep the email and password for next login
+        // If "Remember me" was checked, keep the email only (passwords are NEVER stored)
       }
     }
   }

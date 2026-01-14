@@ -13,9 +13,14 @@ from .auth import (
     get_password_hash,
     create_access_token,
     get_current_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    http_bearer
 )
+from fastapi.security import HTTPAuthorizationCredentials
 from .config import config
+from .services.gdpr_export_service import GDPRExportService
+from .services.gdpr_deletion_service import GDPRDeletionService
+from .middleware.auth_rate_limit import get_auth_rate_limiter
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -24,6 +29,15 @@ class UserSignup(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com",
+                "password": "MyP@ssw0rd123",
+                "full_name": "John Doe"
+            }
+        }
 
 
 class UserLogin(BaseModel):
@@ -46,9 +60,40 @@ class UserResponse(BaseModel):
     provider: Optional[str] = None
 
 
-@router.post("/signup", response_model=Token)
+@router.get("/password-requirements", status_code=status.HTTP_200_OK)
+async def get_password_requirements():
+    """
+    Get password requirements for signup
+    
+    Returns the current password policy requirements.
+    Use this to show requirements on the signup form.
+    """
+    from .services.password_validator import get_password_validator
+    
+    validator = get_password_validator()
+    
+    return {
+        "requirements": validator.get_requirements_list(),
+        "description": validator.get_requirements_text(),
+        "example": "MyP@ssw0rd123"
+    }
+
+
+@router.post("/signup", response_model=Token, dependencies=[Depends(get_auth_rate_limiter())])
 async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
-    """Register a new user with email and password"""
+    """
+    Register a new user with email and password
+    
+    Password Requirements:
+    - At least 8 characters
+    - One uppercase letter (A-Z)
+    - One lowercase letter (a-z)
+    - One number (0-9)
+    - One special character (!@#$%^&* etc.)
+    - Not a commonly used password
+    
+    Use GET /api/auth/password-requirements to get dynamic requirements.
+    """
     import logging
     logger = logging.getLogger(__name__)
     
@@ -64,12 +109,17 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
                 detail="Email already registered"
             )
         
-        # Validate password length
-        if len(user_data.password) < 8:
-            logger.warning(f"Signup failed: Password too short for email - {user_data.email}")
+        # Validate password strength
+        from .services.password_validator import get_password_validator
+        
+        validator = get_password_validator()
+        is_valid, error_message = validator.validate(user_data.password)
+        
+        if not is_valid:
+            logger.warning(f"Signup failed: Weak password for email - {user_data.email}: {error_message}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password must be at least 8 characters long"
+                detail=error_message
             )
         
         # Create new user
@@ -88,6 +138,15 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_user)
         logger.info(f"User created successfully with ID: {new_user.id}")
+        
+        # Audit log
+        from .services.audit_log_service import get_audit_log_service
+        audit_service = get_audit_log_service(db)
+        audit_service.log(
+            action_type="SIGNUP",
+            actor_user_id=new_user.id,
+            details={"provider": "email"}
+        )
         
         # Create access token
         # JWT requires 'sub' claim to be a string
@@ -151,7 +210,7 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
         )
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, dependencies=[Depends(get_auth_rate_limiter())])
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Login with email and password"""
     # Find user by email (username field in OAuth2PasswordRequestForm)
@@ -304,5 +363,158 @@ async def get_csrf_token(current_user: User = Depends(get_current_user)):
         "csrf_token": token,
         "expires_in": 3600,  # 1 hour
         "header_name": "X-CSRF-Token"
+    }
+
+
+# =====================================================================
+# Email Verification Endpoints (S8)
+# =====================================================================
+
+class EmailVerificationRequest(BaseModel):
+    """Request model for email verification"""
+    pass
+
+
+class EmailVerificationConfirm(BaseModel):
+    """Confirm model for email verification"""
+    token: str
+
+
+@router.post("/verify-email/request", status_code=status.HTTP_200_OK)
+async def request_email_verification(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Request email verification email to be sent
+    
+    Sends a verification email to the user's registered email address.
+    The email contains a verification link with a unique token.
+    """
+    import logging
+    import secrets
+    from .services.email_provider import send_verification_email
+    from .services.audit_log_service import get_audit_log_service
+    
+    logger = logging.getLogger(__name__)
+    
+    # Check if already verified
+    if current_user.email_verified:
+        return {
+            "message": "Email already verified",
+            "email_verified": True
+        }
+    
+    # Generate verification token
+    verification_token = secrets.token_urlsafe(32)
+    
+    # Store token and timestamp
+    current_user.email_verification_token = verification_token
+    current_user.email_verification_sent_at = datetime.utcnow()
+    
+    db.commit()
+    
+    # Build verification URL
+    frontend_url = config.FRONTEND_URL or "http://localhost:3000"
+    verification_url = f"{frontend_url}/verify-email?token={verification_token}"
+    
+    # Send verification email
+    try:
+        send_verification_email(current_user.email, verification_url)
+        logger.info(f"Verification email sent to user {current_user.id}")
+        
+        # Audit log
+        audit_service = get_audit_log_service(db)
+        audit_service.log_email_verification_sent(
+            user_id=current_user.id,
+            email_hash=audit_service._hash_pii(current_user.email)
+        )
+        
+        return {
+            "message": "Verification email sent",
+            "email": current_user.email
+        }
+    except Exception as e:
+        logger.error(f"Failed to send verification email: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email"
+        )
+
+
+@router.post("/verify-email/confirm", status_code=status.HTTP_200_OK)
+async def confirm_email_verification(
+    data: EmailVerificationConfirm,
+    db: Session = Depends(get_db)
+):
+    """
+    Confirm email verification with token
+    
+    Verifies the user's email address using the token from the verification email.
+    """
+    import logging
+    from .services.audit_log_service import get_audit_log_service
+    
+    logger = logging.getLogger(__name__)
+    
+    # Find user by verification token
+    user = db.query(User).filter(
+        User.email_verification_token == data.token
+    ).first()
+    
+    if not user:
+        logger.warning(f"Invalid verification token: {data.token[:10]}...")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token"
+        )
+    
+    # Check if token is expired (24 hours)
+    if user.email_verification_sent_at:
+        token_age = datetime.utcnow() - user.email_verification_sent_at
+        if token_age.total_seconds() > 86400:  # 24 hours
+            logger.warning(f"Expired verification token for user {user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification token has expired. Please request a new one."
+            )
+    
+    # Mark email as verified
+    user.email_verified = True
+    user.email_verification_token = None  # Clear token after use
+    user.email_verification_sent_at = None
+    
+    db.commit()
+    
+    logger.info(f"Email verified for user {user.id}")
+    
+    # Audit log
+    audit_service = get_audit_log_service(db)
+    audit_service.log_email_verification_success(user_id=user.id)
+    
+    # Invalidate user cache (M6)
+    from .services.cache_invalidation import get_cache_invalidation_service
+    cache_invalidation = get_cache_invalidation_service()
+    cache_invalidation.invalidate_user_on_email_verification(user.id)
+    
+    return {
+        "message": "Email verified successfully",
+        "email_verified": True
+    }
+
+
+@router.get("/verify-email/status", status_code=status.HTTP_200_OK)
+async def get_email_verification_status(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get current email verification status
+    
+    Returns whether the user's email has been verified.
+    """
+    return {
+        "email": current_user.email,
+        "email_verified": current_user.email_verified,
+        "verification_required": not current_user.email_verified
     }
 

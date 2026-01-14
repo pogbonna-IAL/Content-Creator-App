@@ -811,7 +811,7 @@ Backup scripts exist but no verification that backups can be restored.
 **Category:** User Experience / Security
 
 **Issue:**  
-Some error messages reveal too much information (database errors, internal paths).
+ errors, internal paths).Some error messages reveal too much information (database
 
 **Fix Required:**
 ```python

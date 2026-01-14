@@ -251,11 +251,23 @@ api_keys.txt
 tokens.txt
 credentials.txt
 
-# Backup directories
+# Backup directories (M2)
 # ===================
+# Allow directory structure but ignore actual backup files
 backup/
-backups/
 *.backup/
+
+# Backups directory - track structure, ignore files
+backups/**/*.sql
+backups/**/*.sql.gz
+backups/**/*.tar
+backups/**/*.tar.gz
+backups/**/*.zip
+backups/**/*.bak
+# Allow .gitkeep and README files
+!backups/.gitkeep
+!backups/README.md
+!backups/**/.gitkeep
 
 # Local development files
 # ========================

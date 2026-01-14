@@ -1,0 +1,37 @@
+version: '3.8'
+
+# Restore Test Profile (M2)
+# Temporary PostgreSQL container for backup restore verification
+# Usage: docker-compose --profile restore-test up -d
+
+services:
+  postgres-restore-test:
+    image: postgres:15
+    container_name: backup-restore-test
+    profiles:
+      - restore-test
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: postgres
+    ports:
+      - "5433:5432"  # Use different port to avoid conflicts
+    volumes:
+      - restore-test-data:/var/lib/postgresql/data
+      - ./backups:/backups:ro  # Mount backups directory (read-only)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - restore-test-network
+
+volumes:
+  restore-test-data:
+    driver: local
+
+networks:
+  restore-test-network:
+    driver: bridge
+

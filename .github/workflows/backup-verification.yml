@@ -1,0 +1,197 @@
+name: Backup Verification
+
+# Nightly backup restore verification (M2)
+# Ensures backups can be restored successfully
+
+on:
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/scripts/verify-backup-restore.py'
+      - 'infra/scripts/create-backup.sh'
+      - '.github/workflows/backup-verification.yml'
+
+jobs:
+  backup-verification:
+    name: Verify Backup Restore
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: content_creation_crew
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install psycopg2-binary alembic
+      
+      - name: Setup database schema
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: content_creation_crew
+          DB_USER: postgres
+          DB_PASSWORD: testpass
+        run: |
+          # Run migrations to create schema
+          alembic upgrade head
+      
+      - name: Create test data
+        env:
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/content_creation_crew
+        run: |
+          python -c "
+          from src.content_creation_crew.db.engine import SessionLocal
+          from src.content_creation_crew.database import User, Organization, Membership
+          from src.content_creation_crew.auth import get_password_hash
+          from datetime import datetime
+          
+          db = SessionLocal()
+          
+          try:
+              # Create test user
+              user = User(
+                  email='test@example.com',
+                  hashed_password=get_password_hash('testpass'),
+                  is_active=True,
+                  email_verified=True,
+                  created_at=datetime.utcnow()
+              )
+              db.add(user)
+              db.flush()
+              
+              # Create test organization
+              org = Organization(
+                  name='Test Org',
+                  created_at=datetime.utcnow()
+              )
+              db.add(org)
+              db.flush()
+              
+              # Add membership
+              membership = Membership(
+                  user_id=user.id,
+                  organization_id=org.id,
+                  role='owner'
+              )
+              db.add(membership)
+              
+              db.commit()
+              print(f'Created test user (ID: {user.id}) and org (ID: {org.id})')
+          finally:
+              db.close()
+          "
+      
+      - name: Create backup directory
+        run: mkdir -p backups
+      
+      - name: Create database backup
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: content_creation_crew
+          DB_USER: postgres
+          DB_PASSWORD: testpass
+          PGPASSWORD: testpass
+        run: |
+          echo "Creating backup..."
+          pg_dump \
+            -h localhost \
+            -p 5432 \
+            -U postgres \
+            -d content_creation_crew \
+            --format=plain \
+            --no-owner \
+            --no-acl \
+            --clean \
+            --if-exists \
+            -f backups/test_backup.sql
+          
+          echo "Backup created:"
+          ls -lh backups/test_backup.sql
+      
+      - name: Install Docker (for restore verification)
+        run: |
+          # Docker is pre-installed on GitHub Actions runners
+          docker --version
+      
+      - name: Run backup restore verification
+        run: |
+          echo "Running backup restore verification..."
+          python3 infra/scripts/verify-backup-restore.py backups/test_backup.sql --verbose
+      
+      - name: Verify with latest flag
+        run: |
+          echo "Testing --latest flag..."
+          python3 infra/scripts/verify-backup-restore.py --latest --backup-dir ./backups
+      
+      - name: Upload backup artifact
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-backup
+          path: backups/test_backup.sql
+          retention-days: 7
+      
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: verification-logs
+          path: |
+            *.log
+            verification-*.txt
+          retention-days: 30
+          if-no-files-found: ignore
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Backup verification failed! Check logs for details."
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Backup Verification Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backup Size**: $(stat -c%s backups/test_backup.sql | numfmt --to=iec-i --suffix=B)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Backup restore verification passed!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The backup can be restored successfully and all verification checks passed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Backup restore verification failed!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
+

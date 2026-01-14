@@ -98,6 +98,53 @@ class Config:
     ENABLE_CONTENT_MODERATION: bool = os.getenv("ENABLE_CONTENT_MODERATION", "true").lower() in ("true", "1", "yes")
     ENABLE_CONTENT_MODERATION_CLASSIFIER: bool = os.getenv("ENABLE_CONTENT_MODERATION_CLASSIFIER", "false").lower() in ("true", "1", "yes")
     MODERATION_DISALLOWED_KEYWORDS: Optional[str] = os.getenv("MODERATION_DISALLOWED_KEYWORDS", None)  # Comma-separated keywords
+    MODERATION_VERSION: str = os.getenv("MODERATION_VERSION", "1.0.0")  # Bump to invalidate content cache (M6)
+    
+    # GDPR Compliance
+    GDPR_DELETION_GRACE_DAYS: int = int(os.getenv("GDPR_DELETION_GRACE_DAYS", "30"))
+    
+    # Artifact Retention Policy (M1)
+    RETENTION_DAYS_FREE: int = int(os.getenv("RETENTION_DAYS_FREE", "30"))
+    RETENTION_DAYS_BASIC: int = int(os.getenv("RETENTION_DAYS_BASIC", "90"))
+    RETENTION_DAYS_PRO: int = int(os.getenv("RETENTION_DAYS_PRO", "365"))
+    RETENTION_DAYS_ENTERPRISE: int = int(os.getenv("RETENTION_DAYS_ENTERPRISE", "-1"))  # -1 = unlimited
+    RETENTION_DRY_RUN: bool = os.getenv("RETENTION_DRY_RUN", "false").lower() in ("true", "1", "yes")
+    
+    # Retention Notification Settings (M1 Enhancement)
+    RETENTION_NOTIFY_DAYS_BEFORE: int = int(os.getenv("RETENTION_NOTIFY_DAYS_BEFORE", "7"))  # Notify 7 days before deletion
+    RETENTION_NOTIFY_ENABLED: bool = os.getenv("RETENTION_NOTIFY_ENABLED", "true").lower() in ("true", "1", "yes")
+    RETENTION_NOTIFY_BATCH_SIZE: int = int(os.getenv("RETENTION_NOTIFY_BATCH_SIZE", "100"))  # Max notifications per run
+    
+    # Health Check Configuration (M5)
+    HEALTHCHECK_TIMEOUT_SECONDS: int = int(os.getenv("HEALTHCHECK_TIMEOUT_SECONDS", "3"))
+    MIN_FREE_SPACE_MB: int = int(os.getenv("MIN_FREE_SPACE_MB", "1024"))
+    HEALTHCHECK_STORAGE_WRITE_TEST: bool = os.getenv("HEALTHCHECK_STORAGE_WRITE_TEST", "true").lower() in ("true", "1", "yes")
+    
+    # Password Security (S9)
+    PASSWORD_MIN_LENGTH: int = int(os.getenv("PASSWORD_MIN_LENGTH", "8"))
+    PASSWORD_REQUIRE_UPPERCASE: bool = os.getenv("PASSWORD_REQUIRE_UPPERCASE", "true").lower() in ("true", "1", "yes")
+    PASSWORD_REQUIRE_LOWERCASE: bool = os.getenv("PASSWORD_REQUIRE_LOWERCASE", "true").lower() in ("true", "1", "yes")
+    PASSWORD_REQUIRE_DIGIT: bool = os.getenv("PASSWORD_REQUIRE_DIGIT", "true").lower() in ("true", "1", "yes")
+    PASSWORD_REQUIRE_SYMBOL: bool = os.getenv("PASSWORD_REQUIRE_SYMBOL", "true").lower() in ("true", "1", "yes")
+    PASSWORD_BLOCK_COMMON: bool = os.getenv("PASSWORD_BLOCK_COMMON", "true").lower() in ("true", "1", "yes")
+    PASSWORD_COMMON_LIST_FILE: str = os.getenv("PASSWORD_COMMON_LIST_FILE", "src/content_creation_crew/data/common_passwords.txt")
+    
+    # Bcrypt Configuration (S9)
+    BCRYPT_ROUNDS: int = int(os.getenv("BCRYPT_ROUNDS", "12"))
+    
+    # Request Size Limits (M4)
+    MAX_REQUEST_BYTES: int = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))  # 2MB default
+    MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))  # 10MB for uploads
+    
+    # Database Pool Configuration (S7)
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "20"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "3600"))  # 1 hour
+    DB_STATEMENT_TIMEOUT: int = int(os.getenv("DB_STATEMENT_TIMEOUT", "10000"))  # 10 seconds in milliseconds
+    
+    # Ollama URL alias (for compatibility)
+    OLLAMA_URL: str = OLLAMA_BASE_URL
     
     def __init__(self):
         """Initialize configuration and validate required variables"""
