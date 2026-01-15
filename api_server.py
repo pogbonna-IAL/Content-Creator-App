@@ -157,15 +157,6 @@ import asyncio
 import json
 from typing import AsyncGenerator
 
-# Initialize database with error handling
-try:
-    init_db()
-    logger.info("Database initialized successfully")
-except Exception as e:
-    logger.error(f"Database initialization failed: {e}", exc_info=True)
-    # Continue anyway - app might work for read-only operations
-    # Database will be initialized on first request if needed
-
 # Start scheduled jobs (GDPR cleanup, etc.)
 try:
     import os as _os
@@ -316,6 +307,47 @@ app.add_middleware(
 )
 
 logger.info(f"✓ CORS configured with preflight caching (max_age: 86400s / 24h)")
+
+# Startup event handler - runs migrations automatically on deploy
+@app.on_event("startup")
+async def startup_event():
+    """
+    FastAPI startup event handler.
+    Runs database migrations automatically on application startup.
+    This ensures migrations are applied before the app accepts requests.
+    """
+    logger.info("=" * 60)
+    logger.info("🚀 Application Startup - Running Database Migrations")
+    logger.info("=" * 60)
+    
+    try:
+        # Run database migrations using Alembic
+        logger.info("Initializing database and running migrations...")
+        init_db()
+        logger.info("✅ Database migrations completed successfully")
+    except Exception as e:
+        error_msg = f"❌ Database initialization/migration failed: {e}"
+        logger.error(error_msg, exc_info=True)
+        
+        # In production/staging, fail fast if migrations fail
+        if config.ENV in ["staging", "prod"]:
+            logger.critical("=" * 60)
+            logger.critical("FATAL: Database migrations failed in production environment")
+            logger.critical("Application cannot start without a properly migrated database")
+            logger.critical("=" * 60)
+            logger.critical("Troubleshooting steps:")
+            logger.critical("1. Check DATABASE_URL is correctly set in Railway")
+            logger.critical("2. Verify PostgreSQL service is running and accessible")
+            logger.critical("3. Check Railway logs for connection errors")
+            logger.critical("4. Manually run migrations: alembic upgrade head")
+            logger.critical("=" * 60)
+            # Exit with error code to prevent app from starting
+            sys.exit(1)
+        else:
+            # In dev, warn but continue (allows for manual migration)
+            logger.warning("⚠️  Continuing in dev mode despite migration failure")
+            logger.warning("⚠️  Database features may not work until migrations are applied")
+            logger.warning("⚠️  Run 'alembic upgrade head' to apply migrations manually")
 
 # Request size limit middleware (M4)
 from content_creation_crew.middleware.request_size_limit import RequestSizeLimitMiddleware
