@@ -1,0 +1,58 @@
+# Generated from pyproject.toml dependencies
+# Python 3.10-3.13 compatible
+
+# Core Framework
+crewai[tools]==1.7.0
+litellm>=1.30.0
+
+# Web Framework
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.6
+
+# Task Queue
+rq>=2.0.0
+
+# Configuration & Utilities
+pyyaml>=6.0
+appdirs>=1.4.0
+backoff>=2.0.0
+python-dotenv>=1.0.0
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Authentication & Security
+email-validator>=2.0.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+fastapi-sso>=0.4.0
+
+# Data Validation
+pydantic[email]>=2.0.0
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+psycopg2-binary>=2.9.0
+
+# Cache & Queue
+redis>=5.0.0
+
+# Payment Providers
+stripe>=7.0.0
+
+# HTTP Client
+httpx>=0.25.0
+
+# Media Processing
+pillow>=10.0.0
+moviepy>=1.0.3
+
+# PDF Generation
+reportlab>=4.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+

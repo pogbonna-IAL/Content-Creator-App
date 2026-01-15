@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import config from "@/lib/env";
+import { API_URL } from "@/lib/env";
+
+// Force dynamic rendering (no static generation)
+export const dynamic = 'force-dynamic';
 
 interface Subscription {
   id: number;
@@ -21,8 +24,8 @@ interface PaymentInstructions {
   instructions: string;
 }
 
-export default function BillingPage() {
-  const { user, isAuthenticated } = useAuth();
+function BillingContent() {
+  const { user } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const subscriptionId = searchParams.get("subscription_id");
@@ -34,16 +37,16 @@ export default function BillingPage() {
   const [reference, setReference] = useState("");
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!user) {
       router.push("/auth");
       return;
     }
     fetchSubscription();
-  }, [isAuthenticated]);
+  }, [user]);
 
   const fetchSubscription = async () => {
     try {
-      const response = await fetch(`${config.NEXT_PUBLIC_API_URL}/v1/billing/subscription`, {
+      const response = await fetch(`${API_URL}/v1/billing/subscription`, {
         headers: {
           Authorization: `Bearer ${localStorage.getItem("token")}`,
         },
@@ -64,7 +67,7 @@ export default function BillingPage() {
     if (!subscription) return;
 
     try {
-      const response = await fetch(`${config.NEXT_PUBLIC_API_URL}/v1/billing/bank-transfer`, {
+      const response = await fetch(`${API_URL}/v1/billing/bank-transfer`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -96,7 +99,7 @@ export default function BillingPage() {
     }
 
     try {
-      const response = await fetch(`${config.NEXT_PUBLIC_API_URL}/v1/billing/cancel`, {
+      const response = await fetch(`${API_URL}/v1/billing/cancel`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${localStorage.getItem("token")}`,
@@ -257,6 +260,18 @@ export default function BillingPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function BillingPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-lg">Loading billing information...</div>
+      </div>
+    }>
+      <BillingContent />
+    </Suspense>
   );
 }
 

@@ -1,34 +1,33 @@
 # Multi-stage Dockerfile for Content Creation Crew Web UI
 # Production-ready Next.js build
 
-# Stage 1: Dependencies
-FROM node:20-alpine as deps
-
-WORKDIR /app
-
-# Copy package files
-COPY web-ui/package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
-
-# Stage 2: Builder
+# Stage 1: Builder
 FROM node:20-alpine as builder
 
 WORKDIR /app
 
-# Copy dependencies from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# Build argument for API URL
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# Copy package files explicitly
+COPY web-ui/package.json web-ui/package-lock.json ./
+
+# Install ALL dependencies (dev dependencies needed for Next.js build)
+# Use --legacy-peer-deps to handle ESLint version conflict (eslint-config-next requires ESLint 8, but we have ESLint 9)
+RUN npm ci --legacy-peer-deps || (echo "npm ci failed, trying npm install..." && npm install --legacy-peer-deps) && \
+    npm cache clean --force
 
 # Copy source code
 COPY web-ui/ .
 
 # Build application
+# Set DOCKER_BUILD to allow localhost URLs during build (actual URL set at runtime)
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
+ENV DOCKER_BUILD=true
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
-RUN npm run build
+# Build with NODE_ENV=production
+RUN NODE_ENV=production npm run build
 
 # Stage 3: Runner
 FROM node:20-alpine as runner
@@ -42,10 +41,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Copy built application
-COPY --from=builder /app/public ./public
+# Copy built application (standalone output)
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 
@@ -59,6 +58,6 @@ ENV HOSTNAME="0.0.0.0"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-# Start application
+# Start application (standalone mode)
 CMD ["node", "server.js"]
 

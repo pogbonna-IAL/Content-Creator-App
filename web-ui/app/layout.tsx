@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import DevToolsSuppress from '@/components/DevToolsSuppress'
 import { AuthProvider } from '@/contexts/AuthContext'
@@ -7,14 +7,6 @@ export const metadata: Metadata = {
   title: 'Content Creator',
   description: 'AI-powered content creation with CrewAI',
   manifest: '/manifest.json',
-  themeColor: '#00f0ff',
-  viewport: {
-    width: 'device-width',
-    initialScale: 1,
-    maximumScale: 5,
-    userScalable: true,
-    viewportFit: 'cover',
-  },
   icons: {
     icon: [
       { url: '/favicon.svg', type: 'image/svg+xml' },
@@ -30,6 +22,15 @@ export const metadata: Metadata = {
     statusBarStyle: 'black-translucent',
     title: 'Content Crew',
   },
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
+  viewportFit: 'cover',
+  themeColor: '#00f0ff',
 }
 
 export default function RootLayout({

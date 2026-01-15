@@ -91,8 +91,8 @@ All Python dependencies are managed via `pyproject.toml` and will be installed a
    ```
 
 2. **Install Python dependencies**
-   ```bash
-   pip install uv
+```bash
+pip install uv
    crewai install
    # Or manually: uv pip install -r pyproject.toml
    ```

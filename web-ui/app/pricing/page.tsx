@@ -18,7 +18,7 @@ interface Tier {
 }
 
 export default function PricingPage() {
-  const { user, isAuthenticated } = useAuth();
+  const { user } = useAuth();
   const router = useRouter();
   const [tiers, setTiers] = useState<Tier[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,7 +44,7 @@ export default function PricingPage() {
   };
 
   const handleUpgrade = async (plan: string) => {
-    if (!isAuthenticated) {
+    if (!user) {
       router.push("/auth");
       return;
     }

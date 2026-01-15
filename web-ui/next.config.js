@@ -4,22 +4,20 @@ const withPWA = require('next-pwa')({
   skipWaiting: true,
   disable: process.env.NODE_ENV === 'development',
   runtimeCaching: [
-    // Network-first strategy for API routes (never cache)
+    // Network-only strategy for API routes (never cache, no timeout needed)
     {
       urlPattern: /^https?:\/\/.*\/api\/.*/,
       handler: 'NetworkOnly',
       options: {
         cacheName: 'api-cache',
-        networkTimeoutSeconds: 10,
       },
     },
-    // Network-first strategy for auth routes (never cache)
+    // Network-only strategy for auth routes (never cache, no timeout needed)
     {
       urlPattern: /^https?:\/\/.*\/auth\/.*/,
       handler: 'NetworkOnly',
       options: {
         cacheName: 'auth-cache',
-        networkTimeoutSeconds: 10,
       },
     },
     // Cache static assets
@@ -70,6 +68,7 @@ const withPWA = require('next-pwa')({
 function validateBuildEnv() {
   const env = process.env.NODE_ENV || 'development'
   const isProd = env === 'production'
+  const isDockerBuild = process.env.DOCKER_BUILD === 'true' || process.env.CI === 'true'
   
   // Check required environment variables
   const apiUrl = process.env.NEXT_PUBLIC_API_URL
@@ -79,6 +78,12 @@ function validateBuildEnv() {
     console.error('   Set it as an environment variable:')
     console.error('   NEXT_PUBLIC_API_URL=https://api.yourdomain.com npm run build')
     process.exit(1)
+  }
+  
+  // Skip strict validation during Docker builds (API URL can be set at runtime)
+  if (isDockerBuild) {
+    console.log('ℹ️  Docker build detected - allowing localhost/default API URL (will be set at runtime)')
+    return
   }
   
   if (isProd && apiUrl && !apiUrl.startsWith('https://')) {
