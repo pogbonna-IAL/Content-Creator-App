@@ -70,7 +70,7 @@ COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY src/ ./src/
-COPY config/ ./config/
+# Note: config files are included in src/content_creation_crew/config/
 
 # Install hatchling build backend (required for package imports)
 RUN pip install --no-cache-dir hatchling setuptools wheel
