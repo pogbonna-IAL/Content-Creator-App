@@ -69,8 +69,8 @@ class ProrationEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     subscription = relationship("Subscription", backref="proration_events")
@@ -127,8 +127,8 @@ class UsageMeter(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     organization = relationship("Organization", backref="usage_meters")
@@ -167,8 +167,8 @@ class UsageEvent(Base):
     event_time = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     meter = relationship("UsageMeter", back_populates="events")
@@ -230,8 +230,8 @@ class CreditNote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     organization = relationship("Organization", backref="credit_notes")
@@ -288,8 +288,8 @@ class PaymentPlan(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     organization = relationship("Organization", backref="payment_plans")
@@ -387,8 +387,8 @@ class Chargeback(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     organization = relationship("Organization", backref="chargebacks")
@@ -463,8 +463,8 @@ class DunningRetryPrediction(Base):
     actual_success = Column(Boolean, nullable=True)
     actual_retry_time = Column(DateTime, nullable=True)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     dunning_process = relationship("DunningProcess")

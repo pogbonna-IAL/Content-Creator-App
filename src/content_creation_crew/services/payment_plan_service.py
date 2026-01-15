@@ -263,7 +263,7 @@ class PaymentPlanService:
             from .billing_gateway import get_billing_gateway
             
             # Determine provider from plan metadata
-            provider = plan.metadata.get("payment_provider", "stripe") if plan.metadata else "stripe"
+            provider = plan.extra_metadata.get("payment_provider", "stripe") if plan.extra_metadata else "stripe"
             gateway = get_billing_gateway(provider)
             
             result = gateway.charge_customer(
@@ -450,8 +450,8 @@ class PaymentPlanService:
         plan.cancelled_at = datetime.utcnow()
         
         if reason:
-            plan.metadata = plan.metadata or {}
-            plan.metadata["cancellation_reason"] = reason
+            plan.extra_metadata = plan.extra_metadata or {}
+            plan.extra_metadata["cancellation_reason"] = reason
         
         # Cancel pending installments
         pending_installments = self.db.query(PaymentInstallment).filter(

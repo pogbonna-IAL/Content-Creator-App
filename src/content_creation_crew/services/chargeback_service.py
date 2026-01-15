@@ -172,8 +172,8 @@ class ChargebackService:
         chargeback.status = "under_review"
         
         if submitted_by:
-            chargeback.metadata = chargeback.metadata or {}
-            chargeback.metadata["evidence_submitted_by"] = submitted_by
+            chargeback.extra_metadata = chargeback.extra_metadata or {}
+            chargeback.extra_metadata["evidence_submitted_by"] = submitted_by
         
         self.db.commit()
         
@@ -216,8 +216,8 @@ class ChargebackService:
         chargeback.resolved_at = datetime.utcnow()
         
         if resolution:
-            chargeback.metadata = chargeback.metadata or {}
-            chargeback.metadata["resolution"] = resolution
+            chargeback.extra_metadata = chargeback.extra_metadata or {}
+            chargeback.extra_metadata["resolution"] = resolution
         
         # Get invoice
         invoice = chargeback.invoice

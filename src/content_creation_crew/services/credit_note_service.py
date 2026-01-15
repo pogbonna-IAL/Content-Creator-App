@@ -204,8 +204,8 @@ class CreditNoteService:
         credit_note.void_at = datetime.utcnow()
         
         if reason:
-            credit_note.metadata = credit_note.metadata or {}
-            credit_note.metadata["void_reason"] = reason
+            credit_note.extra_metadata = credit_note.extra_metadata or {}
+            credit_note.extra_metadata["void_reason"] = reason
         
         self.db.commit()
         

@@ -78,7 +78,7 @@ class Invoice(Base):
     # Notes and metadata
     notes = Column(String(1000), nullable=True)  # Internal notes
     memo = Column(String(500), nullable=True)  # Customer-visible memo
-    metadata = Column(JSONB, nullable=True)  # Additional data
+    extra_metadata = Column(JSONB, nullable=True)  # Additional data (renamed from 'metadata' - reserved in SQLAlchemy)
     
     # Email tracking
     emailed_to = Column(String(255), nullable=True)  # Email address invoice was sent to

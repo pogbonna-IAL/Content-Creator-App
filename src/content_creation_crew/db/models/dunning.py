@@ -78,8 +78,8 @@ class PaymentAttempt(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     subscription = relationship("Subscription", backref="payment_attempts")
@@ -141,8 +141,8 @@ class DunningProcess(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     subscription = relationship("Subscription", backref="dunning_processes")
@@ -189,8 +189,8 @@ class DunningNotification(Base):
     email_provider = Column(String(50), nullable=True)
     provider_message_id = Column(String(200), nullable=True)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     dunning_process = relationship("DunningProcess", back_populates="notifications")
@@ -254,8 +254,8 @@ class Refund(Base):
     # Requester
     requested_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     
-    # Metadata
-    metadata = Column(JSONB, nullable=True)
+    # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
+    extra_metadata = Column(JSONB, nullable=True)
     
     # Relationships
     subscription = relationship("Subscription", backref="refunds")
