@@ -626,10 +626,6 @@ async def run_generation_async(
             )
             llm_success = True
             logger.info(f"Job {job_id}: CrewAI execution completed successfully")
-        finally:
-            # Record LLM metrics (M7)
-            llm_duration = time.time() - llm_start_time
-            LLMMetrics.record_call(model_name, llm_duration, success=llm_success)
         except asyncio.TimeoutError:
             error_msg = f"Content generation timed out after {timeout_seconds} seconds. The generation process took longer than the configured timeout."
             logger.error(f"Job {job_id}: {error_msg}")
@@ -639,6 +635,10 @@ async def run_generation_async(
                 'error_type': 'timeout'
             })
             raise TimeoutError(error_msg)
+        finally:
+            # Record LLM metrics (M7)
+            llm_duration = time.time() - llm_start_time
+            LLMMetrics.record_call(model_name, llm_duration, success=llm_success)
         
         # Send progress update
         sse_store.add_event(job_id, 'agent_progress', {
