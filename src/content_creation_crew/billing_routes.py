@@ -172,15 +172,15 @@ async def create_bank_transfer_request(
             detail=f"Invalid plan: {request.plan}"
         )
     
-        # Create bank transfer subscription
-        try:
-            gateway = get_billing_gateway("bank_transfer", config)
-            subscription = billing_service.create_subscription(org.id, plan, PaymentProvider.BANK_TRANSFER, gateway)
-            
-            # Override status to pending_verification for bank transfer
-            subscription.status = "pending_verification"
-            db.commit()
-            db.refresh(subscription)
+    # Create bank transfer subscription
+    try:
+        gateway = get_billing_gateway("bank_transfer", config)
+        subscription = billing_service.create_subscription(org.id, plan, PaymentProvider.BANK_TRANSFER, gateway)
+        
+        # Override status to pending_verification for bank transfer
+        subscription.status = "pending_verification"
+        db.commit()
+        db.refresh(subscription)
         
         payment_instructions = gateway._get_payment_instructions(plan.value)
         
@@ -197,6 +197,12 @@ async def create_bank_transfer_request(
             "payment_instructions": payment_instructions,
             "reference": request.reference
         }
+    except Exception as e:
+        logger.error(f"Failed to create bank transfer subscription: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create bank transfer subscription: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Bank transfer request failed: {e}", exc_info=True)
         raise HTTPException(
