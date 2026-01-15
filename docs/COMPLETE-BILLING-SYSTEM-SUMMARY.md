@@ -359,6 +359,288 @@ MULTI_CURRENCY_ENABLED=true
 USAGE_BILLING_ENABLED=true
 ```
 
+---
+
+## 💳 Payment Gateway Setup
+
+### Overview
+
+The billing system supports multiple payment gateways:
+- **Stripe** - International payments (USD, EUR, GBP, etc.)
+- **Paystack** - African markets (NGN, ZAR, GHS, KES, etc.)
+- **Bank Transfer** - Manual payment processing
+
+Each gateway requires API keys and webhook secrets for secure payment processing and event handling.
+
+---
+
+### Stripe Setup
+
+#### 1. Create Stripe Account
+
+1. Go to [Stripe Dashboard](https://dashboard.stripe.com)
+2. Sign up or log in to your account
+3. Complete account verification (required for live mode)
+
+#### 2. Get API Keys
+
+**For Staging/Test Mode:**
+1. Ensure you're in **Test Mode** (toggle in top right)
+2. Navigate to **Developers** → **API Keys**
+3. Copy:
+   - **Publishable key** (starts with `pk_test_`) → `STRIPE_TEST_PUBLIC_KEY`
+   - **Secret key** (starts with `sk_test_`) → `STRIPE_TEST_SECRET_KEY`
+
+**For Production:**
+1. Switch to **Live Mode** (toggle in top right)
+2. Navigate to **Developers** → **API Keys**
+3. Copy:
+   - **Publishable key** (starts with `pk_live_`) → `STRIPE_PUBLIC_KEY`
+   - **Secret key** (starts with `sk_live_`) → `STRIPE_SECRET_KEY`
+
+#### 3. Set Up Webhook Endpoint
+
+**For Staging:**
+1. Stay in **Test Mode**
+2. Navigate to **Developers** → **Webhooks**
+3. Click **"+ Add endpoint"**
+4. Enter your staging webhook URL:
+   ```
+   https://your-staging-domain.com/v1/billing/webhooks/stripe
+   ```
+5. Select events to listen to:
+   - `payment_intent.succeeded`
+   - `payment_intent.payment_failed`
+   - `customer.subscription.created`
+   - `customer.subscription.updated`
+   - `customer.subscription.deleted`
+   - `invoice.payment_succeeded`
+   - `invoice.payment_failed`
+6. Click **"Add endpoint"**
+7. After creation, click **"Reveal"** next to **"Signing secret"**
+8. Copy the secret (starts with `whsec_`) → `STRIPE_TEST_WEBHOOK_SECRET`
+
+**For Production:**
+1. Switch to **Live Mode**
+2. Follow the same steps as staging
+3. Use your production webhook URL:
+   ```
+   https://your-production-domain.com/v1/billing/webhooks/stripe
+   ```
+4. Copy the signing secret → `STRIPE_WEBHOOK_SECRET`
+
+#### 4. Local Development Testing
+
+For local testing, use Stripe CLI:
+
+```bash
+# Install Stripe CLI
+# macOS: brew install stripe/stripe-cli/stripe
+# Linux: See https://stripe.com/docs/stripe-cli
+
+# Login to Stripe
+stripe login
+
+# Forward webhooks to local server
+stripe listen --forward-to localhost:8000/v1/billing/webhooks/stripe
+```
+
+The CLI will display a webhook signing secret (starts with `whsec_`) - use this for `STRIPE_TEST_WEBHOOK_SECRET` in local development.
+
+---
+
+### Paystack Setup
+
+#### 1. Create Paystack Account
+
+1. Go to [Paystack Dashboard](https://dashboard.paystack.com)
+2. Sign up or log in to your account
+3. Complete business verification (required for live mode)
+
+#### 2. Get API Keys
+
+**For Staging/Test Mode:**
+1. Ensure you're in **Test Mode** (toggle in top right)
+2. Navigate to **Settings** → **API Keys & Webhooks**
+3. Copy:
+   - **Public key** (starts with `pk_test_`) → `PAYSTACK_TEST_PUBLIC_KEY`
+   - **Secret key** (starts with `sk_test_`) → `PAYSTACK_TEST_SECRET_KEY`
+
+**For Production:**
+1. Switch to **Live Mode** (toggle in top right)
+2. Navigate to **Settings** → **API Keys & Webhooks**
+3. Copy:
+   - **Public key** (starts with `pk_live_`) → `PAYSTACK_PUBLIC_KEY`
+   - **Secret key** (starts with `sk_live_`) → `PAYSTACK_SECRET_KEY`
+
+#### 3. Set Up Webhook Endpoint
+
+**For Staging:**
+1. Stay in **Test Mode**
+2. Navigate to **Settings** → **API Keys & Webhooks**
+3. Scroll to **"Webhooks"** section
+4. Click **"Add Webhook URL"**
+5. Enter your staging webhook URL:
+   ```
+   https://your-staging-domain.com/v1/billing/webhooks/paystack
+   ```
+6. Select events to listen to:
+   - `charge.success`
+   - `charge.failed`
+   - `subscription.create`
+   - `subscription.update`
+   - `subscription.disable`
+   - `invoice.create`
+   - `invoice.payment_failed`
+7. Click **"Add Webhook"**
+8. After creation, copy the **"Secret Key"** shown for that webhook → `PAYSTACK_TEST_WEBHOOK_SECRET`
+
+**For Production:**
+1. Switch to **Live Mode**
+2. Follow the same steps as staging
+3. Use your production webhook URL:
+   ```
+   https://your-production-domain.com/v1/billing/webhooks/paystack
+   ```
+4. Copy the secret key → `PAYSTACK_WEBHOOK_SECRET`
+
+---
+
+### Environment Variables Configuration
+
+#### Staging Environment
+
+Add these to your `.env` file or Railway environment variables:
+
+```bash
+# Stripe (Test Mode)
+STRIPE_TEST_PUBLIC_KEY=pk_test_xxxxx
+STRIPE_TEST_SECRET_KEY=sk_test_xxxxx
+STRIPE_TEST_WEBHOOK_SECRET=whsec_xxxxx
+
+# Paystack (Test Mode)
+PAYSTACK_TEST_PUBLIC_KEY=pk_test_xxxxx
+PAYSTACK_TEST_SECRET_KEY=sk_test_xxxxx
+PAYSTACK_TEST_WEBHOOK_SECRET=your-paystack-webhook-secret
+
+# Environment
+ENV=staging
+```
+
+#### Production Environment
+
+```bash
+# Stripe (Live Mode)
+STRIPE_PUBLIC_KEY=pk_live_xxxxx
+STRIPE_SECRET_KEY=sk_live_xxxxx
+STRIPE_WEBHOOK_SECRET=whsec_xxxxx
+
+# Paystack (Live Mode)
+PAYSTACK_PUBLIC_KEY=pk_live_xxxxx
+PAYSTACK_SECRET_KEY=sk_live_xxxxx
+PAYSTACK_WEBHOOK_SECRET=your-paystack-webhook-secret
+
+# Environment
+ENV=prod
+```
+
+---
+
+### Important Notes
+
+#### 1. Test vs Production Secrets
+
+- **Staging:** Use `STRIPE_TEST_WEBHOOK_SECRET` and `PAYSTACK_TEST_WEBHOOK_SECRET`
+- **Production:** Use `STRIPE_WEBHOOK_SECRET` and `PAYSTACK_WEBHOOK_SECRET`
+- The application automatically selects the correct secrets based on the `ENV` variable
+
+#### 2. Webhook URL Format
+
+Your webhook endpoints must be:
+- **Stripe:** `https://your-domain.com/v1/billing/webhooks/stripe`
+- **Paystack:** `https://your-domain.com/v1/billing/webhooks/paystack`
+
+#### 3. Security Best Practices
+
+- ✅ **Never commit secrets to git** - Use environment variables
+- ✅ **Use different secrets for staging and production**
+- ✅ **Rotate secrets periodically** (every 90 days recommended)
+- ✅ **Verify webhook signatures** (already implemented in code)
+- ✅ **Use HTTPS** for all webhook endpoints (required by providers)
+
+#### 4. Webhook Secret Generation
+
+**Important:** Webhook secrets are **NOT randomly generated**. They are:
+- **Provided by the payment provider** when you create a webhook endpoint
+- **Unique per webhook endpoint**
+- **Required for signature verification** to prevent webhook spoofing
+
+You cannot generate these yourself - they must be obtained from:
+- Stripe Dashboard → Developers → Webhooks → [Your Endpoint] → Signing secret
+- Paystack Dashboard → Settings → API Keys & Webhooks → [Your Webhook] → Secret Key
+
+#### 5. Testing Webhooks Locally
+
+**Option 1: Stripe CLI (Recommended)**
+```bash
+stripe listen --forward-to localhost:8000/v1/billing/webhooks/stripe
+```
+
+**Option 2: ngrok**
+```bash
+# Install ngrok: https://ngrok.com
+ngrok http 8000
+
+# Use the ngrok URL in Stripe/Paystack webhook settings
+# Example: https://abc123.ngrok.io/v1/billing/webhooks/stripe
+```
+
+---
+
+### Verification Checklist
+
+After setup, verify:
+
+- [ ] API keys are set in environment variables
+- [ ] Webhook secrets are set in environment variables
+- [ ] Webhook endpoints are configured in provider dashboards
+- [ ] Webhook URLs use HTTPS (required)
+- [ ] Correct secrets are used for staging vs production
+- [ ] Webhook events are selected correctly
+- [ ] Test webhook delivery in provider dashboards
+- [ ] Verify webhook signature verification is working (check logs)
+
+---
+
+### Troubleshooting
+
+#### Issue: Webhook signature verification fails
+
+**Solution:**
+1. Verify you're using the correct webhook secret for the environment
+2. Ensure the webhook URL matches exactly in provider dashboard
+3. Check that `ENV` variable matches the secret type (test vs live)
+4. Verify HTTPS is enabled (required by providers)
+
+#### Issue: Webhooks not received
+
+**Solution:**
+1. Check webhook endpoint URL is correct and accessible
+2. Verify webhook is enabled in provider dashboard
+3. Check application logs for webhook processing errors
+4. Test webhook delivery manually from provider dashboard
+5. For local testing, ensure Stripe CLI or ngrok is running
+
+#### Issue: Wrong environment secrets used
+
+**Solution:**
+1. Verify `ENV` variable is set correctly (`staging` or `prod`)
+2. Check that test secrets are used when `ENV=staging`
+3. Check that production secrets are used when `ENV=prod`
+4. Review `billing_gateway.py` logic for secret selection
+
+---
+
 ### Migration
 ```bash
 # Run all migrations

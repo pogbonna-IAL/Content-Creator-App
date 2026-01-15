@@ -5,7 +5,7 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, Foreign
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
-from ..database import Base
+from ..base import Base
 
 
 class RetentionNotification(Base):
