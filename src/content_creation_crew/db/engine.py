@@ -34,26 +34,117 @@ if not config.DATABASE_URL.startswith("postgresql"):
     logger.error("=" * 60)
     sys.exit(1)
 
+# Validate DATABASE_URL format before creating engine
+def validate_database_url(url: str) -> None:
+    """Validate DATABASE_URL format and provide helpful error messages"""
+    import re
+    from urllib.parse import urlparse
+    
+    # Check for common malformed patterns
+    if "://" not in url:
+        logger.error("=" * 60)
+        logger.error("❌ MALFORMED DATABASE_URL")
+        logger.error("=" * 60)
+        logger.error("DATABASE_URL must include '://' protocol separator")
+        logger.error(f"Got: {url[:100]}...")
+        logger.error("Expected format: postgresql://user:password@host:port/database")
+        logger.error("=" * 60)
+        sys.exit(1)
+    
+    # Parse URL to check components
+    try:
+        parsed = urlparse(url)
+        
+        # Check for empty port (host: without port number)
+        if parsed.hostname and ":" in parsed.netloc and not parsed.port:
+            # Check if there's a trailing colon without port
+            netloc_parts = parsed.netloc.split("@")
+            if len(netloc_parts) > 1:
+                host_part = netloc_parts[-1]
+                if host_part.count(":") > 0 and not any(c.isdigit() for c in host_part.split(":")[-1]):
+                    logger.error("=" * 60)
+                    logger.error("❌ MALFORMED DATABASE_URL - EMPTY PORT")
+                    logger.error("=" * 60)
+                    logger.error("DATABASE_URL has an empty port number (trailing colon without port)")
+                    logger.error(f"Got: {url[:100]}...")
+                    logger.error("")
+                    logger.error("Common causes:")
+                    logger.error("1. DATABASE_URL has format: postgresql://user:pass@host:/database")
+                    logger.error("2. Railway variable DATABASE_URL is incorrectly set")
+                    logger.error("3. Missing port number in connection string")
+                    logger.error("")
+                    logger.error("Expected format: postgresql://user:password@host:5432/database")
+                    logger.error("")
+                    logger.error("SOLUTION:")
+                    logger.error("1. Go to Railway Dashboard → Backend Service → Variables")
+                    logger.error("2. Check DATABASE_URL value")
+                    logger.error("3. Ensure it includes port number (usually :5432)")
+                    logger.error("4. If incorrect, delete it and re-link PostgreSQL service")
+                    logger.error("=" * 60)
+                    sys.exit(1)
+    except Exception as e:
+        # If parsing fails, we'll let SQLAlchemy handle it with better error
+        pass
+
+# Validate DATABASE_URL format
+validate_database_url(config.DATABASE_URL)
+
 # Create PostgreSQL engine with production-ready pool settings
-engine = create_engine(
-    config.DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using (health check)
-    pool_size=config.DB_POOL_SIZE,  # Base pool size (default: 10)
-    max_overflow=config.DB_MAX_OVERFLOW,  # Additional connections (default: 10, total: 20)
-    pool_recycle=config.DB_POOL_RECYCLE,  # Recycle connections after 1 hour (default)
-    pool_timeout=config.DB_POOL_TIMEOUT,  # Wait up to 30s for connection (default)
-    echo=False,  # Disable SQL logging for performance
-    connect_args={
-        "connect_timeout": 5,  # Connection timeout (5 seconds)
-        "keepalives": 1,  # Enable TCP keepalives
-        "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
-        "keepalives_interval": 10,  # Send keepalive every 10 seconds
-        "keepalives_count": 3,  # Keepalive failures before disconnect
-        "application_name": "content_creation_crew",
-        # Set statement timeout at connection level (default: 10 seconds)
-        "options": f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT}",
-    }
-)
+try:
+    engine = create_engine(
+        config.DATABASE_URL,
+        pool_pre_ping=True,  # Verify connections before using (health check)
+        pool_size=config.DB_POOL_SIZE,  # Base pool size (default: 10)
+        max_overflow=config.DB_MAX_OVERFLOW,  # Additional connections (default: 10, total: 20)
+        pool_recycle=config.DB_POOL_RECYCLE,  # Recycle connections after 1 hour (default)
+        pool_timeout=config.DB_POOL_TIMEOUT,  # Wait up to 30s for connection (default)
+        echo=False,  # Disable SQL logging for performance
+        connect_args={
+            "connect_timeout": 5,  # Connection timeout (5 seconds)
+            "keepalives": 1,  # Enable TCP keepalives
+            "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
+            "keepalives_interval": 10,  # Send keepalive every 10 seconds
+            "keepalives_count": 3,  # Keepalive failures before disconnect
+            "application_name": "content_creation_crew",
+            # Set statement timeout at connection level (default: 10 seconds)
+            "options": f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT}",
+        }
+    )
+except ValueError as e:
+    # Catch SQLAlchemy URL parsing errors (e.g., empty port)
+    error_str = str(e).lower()
+    if "invalid literal for int()" in error_str or "port" in error_str:
+        logger.error("=" * 60)
+        logger.error("❌ MALFORMED DATABASE_URL - URL PARSING ERROR")
+        logger.error("=" * 60)
+        logger.error(f"SQLAlchemy could not parse DATABASE_URL: {e}")
+        logger.error(f"DATABASE_URL: {config.DATABASE_URL[:100]}...")
+        logger.error("")
+        logger.error("Common causes:")
+        logger.error("1. Empty port number (host: without port)")
+        logger.error("2. Invalid port format")
+        logger.error("3. Malformed connection string")
+        logger.error("")
+        logger.error("Expected format: postgresql://user:password@host:5432/database")
+        logger.error("")
+        logger.error("SOLUTION:")
+        logger.error("1. Go to Railway Dashboard → Backend Service → Variables")
+        logger.error("2. Check DATABASE_URL value")
+        logger.error("3. Ensure format is: postgresql://user:password@host:PORT/database")
+        logger.error("4. If incorrect, delete it and re-link PostgreSQL service")
+        logger.error("5. Railway will automatically set correct DATABASE_URL when services are linked")
+        logger.error("=" * 60)
+    else:
+        logger.error(f"Error creating database engine: {e}")
+    sys.exit(1)
+except Exception as e:
+    logger.error("=" * 60)
+    logger.error("❌ ERROR CREATING DATABASE ENGINE")
+    logger.error("=" * 60)
+    logger.error(f"Unexpected error: {e}")
+    logger.error(f"DATABASE_URL: {config.DATABASE_URL[:100]}...")
+    logger.error("=" * 60)
+    sys.exit(1)
 
 logger.info(f"PostgreSQL engine configured:")
 logger.info(f"  - Pool size: {config.DB_POOL_SIZE}")

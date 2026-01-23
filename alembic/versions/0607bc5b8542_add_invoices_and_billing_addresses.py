@@ -8,6 +8,7 @@ Create Date: 2026-01-14 10:00:00.000000
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision = '0607bc5b8542'
@@ -17,6 +18,53 @@ depends_on = None
 
 
 def upgrade():
+    # Get list of existing tables
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    tables = inspector.get_table_names()
+    
+    # Ensure organizations table exists (required for foreign keys)
+    if 'organizations' not in tables:
+        op.create_table(
+            'organizations',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('name', sa.String(), nullable=False),
+            sa.Column('owner_user_id', sa.Integer(), nullable=False),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_organizations_id'), 'organizations', ['id'], unique=False)
+        op.create_index(op.f('ix_organizations_name'), 'organizations', ['name'], unique=False)
+        op.create_index(op.f('ix_organizations_owner_user_id'), 'organizations', ['owner_user_id'], unique=False)
+        tables.append('organizations')
+    
+    # Ensure subscriptions table exists (required for invoices foreign key)
+    if 'subscriptions' not in tables:
+        op.create_table(
+            'subscriptions',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('org_id', sa.Integer(), nullable=False),
+            sa.Column('plan', sa.String(), nullable=False),
+            sa.Column('status', sa.String(), nullable=False),
+            sa.Column('provider', sa.String(), nullable=True),
+            sa.Column('provider_customer_id', sa.String(), nullable=True),
+            sa.Column('provider_subscription_id', sa.String(), nullable=True),
+            sa.Column('current_period_end', sa.DateTime(), nullable=False),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_subscriptions_id'), 'subscriptions', ['id'], unique=False)
+        op.create_index(op.f('ix_subscriptions_org_id'), 'subscriptions', ['org_id'], unique=False)
+        op.create_index(op.f('ix_subscriptions_plan'), 'subscriptions', ['plan'], unique=False)
+        op.create_index(op.f('ix_subscriptions_status'), 'subscriptions', ['status'], unique=False)
+        op.create_index(op.f('ix_subscriptions_provider_customer_id'), 'subscriptions', ['provider_customer_id'], unique=False)
+        op.create_index(op.f('ix_subscriptions_provider_subscription_id'), 'subscriptions', ['provider_subscription_id'], unique=True)
+        tables.append('subscriptions')
+    
     # Create billing_addresses table
     op.create_table(
         'billing_addresses',
@@ -76,7 +124,7 @@ def upgrade():
         sa.Column('provider_payment_intent_id', sa.String(length=100), nullable=True),
         sa.Column('notes', sa.String(length=1000), nullable=True),
         sa.Column('memo', sa.String(length=500), nullable=True),
-        sa.Column('metadata', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column('extra_metadata', postgresql.JSONB(astext_type=sa.Text()), nullable=True),  # Renamed from 'metadata' - reserved in SQLAlchemy
         sa.Column('emailed_to', sa.String(length=255), nullable=True),
         sa.Column('emailed_at', sa.DateTime(), nullable=True),
         sa.Column('email_count', sa.Integer(), default=0),

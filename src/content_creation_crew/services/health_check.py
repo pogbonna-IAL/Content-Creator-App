@@ -88,7 +88,23 @@ class HealthChecker:
         
         try:
             from ..db.engine import SessionLocal
+            from ..config import config
             from sqlalchemy import text
+            
+            # Check DATABASE_URL for common misconfigurations
+            db_url = config.DATABASE_URL or ""
+            error_details = {}
+            
+            # Detect Railway internal hostname issues
+            if ".railway.internal" in db_url:
+                error_details["issue"] = "Railway internal hostname detected"
+                error_details["fix"] = "Ensure PostgreSQL service is properly linked to backend service in Railway"
+                error_details["note"] = "Railway should set DATABASE_URL automatically when services are linked"
+            
+            # Detect Docker Compose hostname issues
+            if "@db:" in db_url or "@postgres:" in db_url:
+                error_details["issue"] = "Docker Compose hostname detected"
+                error_details["fix"] = "Use Railway's automatically generated DATABASE_URL, not Docker Compose format"
             
             # Create session with timeout
             db = SessionLocal()
@@ -123,11 +139,43 @@ class HealthChecker:
                 name="database",
                 status=HealthStatus.DOWN,
                 message="Database health check timed out",
-                details={"timeout_seconds": self.timeout_seconds}
+                details={"timeout_seconds": self.timeout_seconds, **error_details}
             )
         
         except Exception as e:
             response_time = (time.time() - start_time) * 1000
+            error_str = str(e).lower()
+            error_type = type(e).__name__
+            
+            # Detect DNS/hostname resolution errors
+            if "name or service not known" in error_str or "could not translate host name" in error_str:
+                logger.error(f"Database health check failed: DNS resolution error - {e}")
+                logger.error("=" * 60)
+                logger.error("DATABASE_URL CONFIGURATION ERROR")
+                logger.error("=" * 60)
+                logger.error(f"DATABASE_URL contains invalid hostname")
+                logger.error(f"Current DATABASE_URL: {db_url[:100]}..." if len(db_url) > 100 else f"Current DATABASE_URL: {db_url}")
+                logger.error("")
+                logger.error("SOLUTION:")
+                logger.error("1. Go to Railway Dashboard → Backend Service → Variables")
+                logger.error("2. Check DATABASE_URL value")
+                logger.error("3. If it contains '.railway.internal' or 'db:', delete it")
+                logger.error("4. Link PostgreSQL service to Backend service properly")
+                logger.error("5. Railway will automatically set correct DATABASE_URL")
+                logger.error("=" * 60)
+                
+                return ComponentHealth(
+                    name="database",
+                    status=HealthStatus.DOWN,
+                    message="Database hostname cannot be resolved - check DATABASE_URL configuration",
+                    response_time_ms=response_time,
+                    details={
+                        "error_type": error_type,
+                        "error": "DNS resolution failed",
+                        **error_details
+                    }
+                )
+            
             logger.error(f"Database health check failed: {e}")
             
             return ComponentHealth(
@@ -135,7 +183,7 @@ class HealthChecker:
                 status=HealthStatus.DOWN,
                 message="Database is not accessible",
                 response_time_ms=response_time,
-                details={"error_type": type(e).__name__}
+                details={"error_type": error_type, **error_details}
             )
     
     async def check_redis(self) -> ComponentHealth:

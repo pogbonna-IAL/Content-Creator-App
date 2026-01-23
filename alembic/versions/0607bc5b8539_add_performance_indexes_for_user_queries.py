@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -39,41 +40,121 @@ def upgrade() -> None:
     - billing_events(provider, provider_event_id) unique - migration 0607bc5b8537
     """
     
+    # Get list of existing tables
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    tables = inspector.get_table_names()
+    
+    # Ensure organizations table exists (required for foreign keys)
+    if 'organizations' not in tables:
+        op.create_table(
+            'organizations',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('name', sa.String(), nullable=False),
+            sa.Column('owner_user_id', sa.Integer(), nullable=False),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_organizations_id'), 'organizations', ['id'], unique=False)
+        op.create_index(op.f('ix_organizations_name'), 'organizations', ['name'], unique=False)
+        op.create_index(op.f('ix_organizations_owner_user_id'), 'organizations', ['owner_user_id'], unique=False)
+        tables.append('organizations')
+    
+    # Ensure content_jobs table exists
+    if 'content_jobs' not in tables:
+        op.create_table(
+            'content_jobs',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('org_id', sa.Integer(), nullable=False),
+            sa.Column('user_id', sa.Integer(), nullable=False),
+            sa.Column('topic', sa.String(), nullable=False),
+            sa.Column('formats_requested', sa.JSON(), nullable=False),
+            sa.Column('status', sa.String(), nullable=False),
+            sa.Column('idempotency_key', sa.String(), nullable=True),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('started_at', sa.DateTime(), nullable=True),
+            sa.Column('finished_at', sa.DateTime(), nullable=True),
+            sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ),
+            sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_content_jobs_id'), 'content_jobs', ['id'], unique=False)
+        op.create_index(op.f('ix_content_jobs_org_id'), 'content_jobs', ['org_id'], unique=False)
+        op.create_index(op.f('ix_content_jobs_status'), 'content_jobs', ['status'], unique=False)
+        op.create_index(op.f('ix_content_jobs_user_id'), 'content_jobs', ['user_id'], unique=False)
+        op.create_index(op.f('ix_content_jobs_created_at'), 'content_jobs', ['created_at'], unique=False)
+        op.create_index('ix_content_jobs_idempotency_key', 'content_jobs', ['idempotency_key'], unique=True)
+        op.create_index('idx_content_jobs_status_created', 'content_jobs', ['status', 'created_at'], unique=False)
+        tables.append('content_jobs')
+    
+    # Ensure content_artifacts table exists
+    if 'content_artifacts' not in tables:
+        # Check if JSONB is available (PostgreSQL)
+        from sqlalchemy.dialects import postgresql
+        jsonb_type = postgresql.JSONB if hasattr(postgresql, 'JSONB') else sa.JSON
+        
+        op.create_table(
+            'content_artifacts',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('job_id', sa.Integer(), nullable=False),
+            sa.Column('type', sa.String(), nullable=False),
+            sa.Column('content_json', jsonb_type(), nullable=True),
+            sa.Column('content_text', sa.Text(), nullable=True),
+            sa.Column('prompt_version', sa.String(), nullable=True),
+            sa.Column('model_used', sa.String(), nullable=True),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(['job_id'], ['content_jobs.id'], ),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_content_artifacts_id'), 'content_artifacts', ['id'], unique=False)
+        op.create_index(op.f('ix_content_artifacts_job_id'), 'content_artifacts', ['job_id'], unique=False)
+        op.create_index(op.f('ix_content_artifacts_type'), 'content_artifacts', ['type'], unique=False)
+        op.create_index(op.f('ix_content_artifacts_created_at'), 'content_artifacts', ['created_at'], unique=False)
+        op.create_index('idx_content_artifacts_job_type', 'content_artifacts', ['job_id', 'type'], unique=False)
+        tables.append('content_artifacts')
+    
     # content_jobs(user_id) - for filtering jobs by user
     # This is especially useful for user-specific queries
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_content_jobs_user_id
-        ON content_jobs(user_id)
-    """)
+    if 'content_jobs' in tables:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_jobs_user_id
+            ON content_jobs(user_id)
+        """)
     
     # content_jobs(user_id, created_at DESC) - composite for user's job history
     # Optimizes queries like: SELECT * FROM content_jobs WHERE user_id = X ORDER BY created_at DESC LIMIT 50
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_content_jobs_user_created_desc
-        ON content_jobs(user_id, created_at DESC)
-    """)
+    if 'content_jobs' in tables:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_jobs_user_created_desc
+            ON content_jobs(user_id, created_at DESC)
+        """)
     
     # sessions(user_id) - for user session queries and cleanup
     # Optimizes: SELECT * FROM sessions WHERE user_id = X
     # And: DELETE FROM sessions WHERE user_id = X (GDPR deletion)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_sessions_user_id
-        ON sessions(user_id)
-    """)
+    if 'sessions' in tables:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_id
+            ON sessions(user_id)
+        """)
     
-    # organizations(owner_id) - for finding organizations owned by a user
-    # Optimizes: SELECT * FROM organizations WHERE owner_id = X
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_organizations_owner_id
-        ON organizations(owner_id)
-    """)
+    # organizations(owner_user_id) - for finding organizations owned by a user
+    # Optimizes: SELECT * FROM organizations WHERE owner_user_id = X
+    if 'organizations' in tables:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_organizations_owner_user_id
+            ON organizations(owner_user_id)
+        """)
     
     # content_artifacts(created_at DESC) - for recent artifacts queries
     # Optimizes: SELECT * FROM content_artifacts ORDER BY created_at DESC LIMIT 100
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_content_artifacts_created_desc
-        ON content_artifacts(created_at DESC)
-    """)
+    if 'content_artifacts' in tables:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_artifacts_created_desc
+            ON content_artifacts(created_at DESC)
+        """)
     
     # users(deleted_at) - already added in migration 0607bc5b8538
     # This is useful for GDPR cleanup queries: WHERE deleted_at IS NOT NULL AND deleted_at < X
