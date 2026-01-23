@@ -106,14 +106,63 @@ class PIIRedactionFilter(logging.Filter):
         
         # 3. Redact API keys and tokens
         for pattern in self.API_KEY_PATTERNS:
-            redacted = pattern.sub(r'\1=***REDACTED***', redacted)
+            try:
+                # Check if pattern has capture groups
+                if pattern.groups >= 1:
+                    # Pattern has capture groups - keep key name, redact value
+                    # For patterns with 2 groups: \1 is key name, \2 is value (we redact \2)
+                    # For patterns with 1 group: \1 is the key name
+                    if pattern.groups >= 2:
+                        # Two groups: keep first group (key name), redact second (value)
+                        redacted = pattern.sub(r'\1***REDACTED***', redacted)
+                    else:
+                        # One group: keep it and add redacted marker
+                        redacted = pattern.sub(r'\1***REDACTED***', redacted)
+                else:
+                    # Pattern has no capture groups, replace entire match
+                    redacted = pattern.sub('***REDACTED***', redacted)
+            except re.error as e:
+                # If regex substitution fails, just replace the whole match
+                logger.debug(f"Regex substitution failed for pattern {pattern.pattern}: {e}")
+                redacted = pattern.sub('***REDACTED***', redacted)
         
         # 4. Redact passwords
         for pattern in self.PASSWORD_PATTERNS:
-            redacted = pattern.sub(r'\1=***REDACTED***', redacted)
+            try:
+                # Check if pattern has capture groups
+                if pattern.groups >= 1:
+                    # Pattern has capture groups - keep key name, redact value
+                    if pattern.groups >= 2:
+                        # Two groups: keep first group (key name), redact second (value)
+                        redacted = pattern.sub(r'\1***REDACTED***', redacted)
+                    else:
+                        # One group: keep it and add redacted marker
+                        redacted = pattern.sub(r'\1***REDACTED***', redacted)
+                else:
+                    # Pattern has no capture groups, replace entire match
+                    redacted = pattern.sub('***REDACTED***', redacted)
+            except re.error as e:
+                # If regex substitution fails, just replace the whole match
+                logger.debug(f"Regex substitution failed for pattern {pattern.pattern}: {e}")
+                redacted = pattern.sub('***REDACTED***', redacted)
         
         # 5. Redact authorization headers
-        redacted = self.AUTH_HEADER_PATTERN.sub(r'\1: Bearer ***REDACTED***', redacted)
+        try:
+            if self.AUTH_HEADER_PATTERN.groups >= 1:
+                # Pattern has capture groups - keep header name, redact token
+                if self.AUTH_HEADER_PATTERN.groups >= 2:
+                    # Multiple groups: keep first group (header name), redact token
+                    redacted = self.AUTH_HEADER_PATTERN.sub(r'\1: Bearer ***REDACTED***', redacted)
+                else:
+                    # Single group: keep it and add redacted marker
+                    redacted = self.AUTH_HEADER_PATTERN.sub(r'\1: Bearer ***REDACTED***', redacted)
+            else:
+                # Pattern has no capture groups, replace entire match
+                redacted = self.AUTH_HEADER_PATTERN.sub('Authorization: Bearer ***REDACTED***', redacted)
+        except re.error as e:
+            # If regex substitution fails, just replace the whole match
+            logger.debug(f"Regex substitution failed for AUTH_HEADER_PATTERN: {e}")
+            redacted = self.AUTH_HEADER_PATTERN.sub('Authorization: Bearer ***REDACTED***', redacted)
         
         # 6. Redact credit card numbers
         redacted = self.CC_PATTERN.sub('XXXX-XXXX-XXXX-XXXX', redacted)
