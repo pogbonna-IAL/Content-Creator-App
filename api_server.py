@@ -492,18 +492,21 @@ async def health():
     Comprehensive health check endpoint (M5)
     
     Verifies:
-    - Database connectivity
-    - Redis connectivity (if configured)
-    - Storage availability and free space
-    - LLM provider (Ollama) connectivity
+    - Database connectivity (CRITICAL)
+    - Redis connectivity (optional)
+    - Storage availability and free space (optional)
+    - LLM provider (Ollama) connectivity (optional)
     
     Returns:
-    - 200 if healthy
-    - 503 if unhealthy or degraded
+    - 200 if critical components (database) are healthy
+    - 503 only if critical components are DOWN
+    
+    Note: Optional components (LLM, Redis) can be DEGRADED without affecting health status.
+    This ensures Railway health checks pass as long as the database is accessible.
     
     Strict timeouts enforced (never hangs)
     """
-    from content_creation_crew.services.health_check import get_health_checker
+    from content_creation_crew.services.health_check import get_health_checker, HealthStatus
     
     health_checker = get_health_checker()
     result = await health_checker.check_all()
@@ -512,14 +515,58 @@ async def health():
     result["service"] = "content-creation-crew"
     result["environment"] = config.ENV
     
-    # Return 503 if overall status is not OK
-    if result["status"] != "ok":
+    # Determine health status based on critical vs optional components
+    components = result.get("components", {})
+    database_status = components.get("database", {}).get("status", "unknown")
+    
+    # Critical components that must be OK for service to be healthy
+    critical_components = ["database"]
+    
+    # Check if any critical component is DOWN
+    critical_down = any(
+        components.get(comp, {}).get("status") == HealthStatus.DOWN.value
+        for comp in critical_components
+    )
+    
+    # Return 503 only if critical components are DOWN
+    # Return 200 if critical components are OK (even if optional components are DEGRADED)
+    if critical_down or database_status == HealthStatus.DOWN.value:
         return JSONResponse(
             content=result,
             status_code=503
         )
     
-    return result
+    # Service is healthy (critical components OK, optional components may be degraded)
+    return JSONResponse(
+        content=result,
+        status_code=200
+    )
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """
+    Simple readiness check for Railway/deployment health checks.
+    
+    Returns 200 if the service is ready to accept requests.
+    This is a lightweight check that doesn't verify all components.
+    """
+    try:
+        # Quick database connectivity check
+        from content_creation_crew.db.engine import test_connection
+        if test_connection():
+            return {"status": "ready", "service": "content-creation-crew"}
+        else:
+            return JSONResponse(
+                content={"status": "not_ready", "reason": "database_unavailable"},
+                status_code=503
+            )
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        return JSONResponse(
+            content={"status": "not_ready", "reason": str(e)},
+            status_code=503
+        )
 
 
 @app.get("/meta")
