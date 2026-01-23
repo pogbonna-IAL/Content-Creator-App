@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { API_URL } from "@/lib/env";
+import { API_URL } from "../../lib/env";
 
 interface Tier {
   name: string;

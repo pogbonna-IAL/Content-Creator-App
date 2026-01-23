@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { API_URL } from "@/lib/env";
+import { API_URL } from "../../lib/env";
 
 // Force dynamic rendering (no static generation)
 export const dynamic = 'force-dynamic';
