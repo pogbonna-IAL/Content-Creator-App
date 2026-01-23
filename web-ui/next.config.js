@@ -111,62 +111,32 @@ const nextConfig = {
   output: 'standalone',
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer, webpack }) => {
-    // Configure path aliases for webpack (matches tsconfig.json)
-    // CRITICAL: Explicitly set @ alias to ensure @/lib/env resolves during Docker build
-    // Next.js should auto-detect from tsconfig.json, but explicitly set for reliability
+    // CRITICAL: Preserve Next.js's automatic aliases from tsconfig.json
+    // Next.js automatically reads path aliases, but we need to ensure they're preserved
     const projectRoot = path.resolve(__dirname)
     
-    // CRITICAL: Ensure @ alias is set to project root
-    // This must be done before any other alias processing
-    // Use Object.assign to ensure the alias is set even if Next.js/PWA plugin modifies it
+    // Preserve existing aliases (Next.js sets these automatically from tsconfig.json)
+    const existingAliases = config.resolve?.alias || {}
+    
+    // CRITICAL: Ensure @ alias is set, but preserve Next.js's automatic aliases
     config.resolve = config.resolve || {}
-    config.resolve.alias = Object.assign({}, config.resolve.alias || {}, {
-      '@': projectRoot,
-    })
-    
-    // Ensure proper module resolution - project root must be first
-    if (!config.resolve.modules) {
-      config.resolve.modules = []
-    }
-    // Remove projectRoot if it exists, then add it first
-    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot)
-    config.resolve.modules.unshift(projectRoot)
-    // Ensure node_modules is at the end
-    if (!config.resolve.modules.includes('node_modules')) {
-      config.resolve.modules.push('node_modules')
+    config.resolve.alias = {
+      ...existingAliases, // Preserve Next.js's automatic aliases first
+      '@': projectRoot,   // Then set our explicit alias
     }
     
-    // Ensure extensions include TypeScript (order matters - check .ts before .js)
-    if (!config.resolve.extensions) {
-      config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
-    } else {
-      // Ensure TypeScript extensions are present and in correct order
-      const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
-      extensions.forEach(ext => {
-        if (!config.resolve.extensions.includes(ext)) {
-          config.resolve.extensions.push(ext)
-        }
-      })
-      // Reorder to ensure .ts comes before .js
-      const ordered = ['.tsx', '.ts', '.jsx', '.js', '.json']
-      config.resolve.extensions = [
-        ...ordered.filter(ext => config.resolve.extensions.includes(ext)),
-        ...config.resolve.extensions.filter(ext => !ordered.includes(ext))
-      ]
+    // Ensure proper module resolution
+    config.resolve.modules = config.resolve.modules || []
+    if (!config.resolve.modules.includes(projectRoot)) {
+      config.resolve.modules.unshift(projectRoot)
     }
     
-    // Debug logging (always log in Docker builds to help diagnose)
-    const isDockerBuild = process.env.DOCKER_BUILD === 'true' || process.env.CI === 'true'
-    if (dev || isDockerBuild) {
-      console.log('Webpack resolve config:')
-      console.log('  Project root:', projectRoot)
-      console.log('  @ alias:', config.resolve.alias['@'])
-      console.log('  Modules:', config.resolve.modules.slice(0, 3), '...')
-      console.log('  Extensions:', config.resolve.extensions.slice(0, 5), '...')
-    }
+    // Debug logging
+    console.log('[WEBPACK] Project root:', projectRoot)
+    console.log('[WEBPACK] @ alias:', config.resolve.alias['@'])
+    console.log('[WEBPACK] All aliases:', Object.keys(config.resolve.alias))
     
     if (dev && !isServer) {
-      // Suppress installhook.js errors in development
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
@@ -201,61 +171,32 @@ const nextConfig = {
   },
 }
 
-// Apply PWA plugin first
+// Apply PWA plugin - it should preserve our webpack config
 const configWithPWA = withPWA(nextConfig)
 
-// CRITICAL: Override webpack config AFTER PWA plugin to ensure @ alias is ALWAYS set
-// This must be done after PWA plugin because PWA might modify the webpack config
-const originalWebpackAfterPWA = configWithPWA.webpack
-
-configWithPWA.webpack = (config, options) => {
-  const projectRoot = path.resolve(__dirname)
-  
-  // CRITICAL: Always log to verify this function is being called
-  console.log('='.repeat(60))
-  console.log('[WEBPACK CONFIG] Function called!')
-  console.log('[WEBPACK CONFIG] Project root:', projectRoot)
-  console.log('[WEBPACK CONFIG] Resolve exists:', !!config.resolve)
-  console.log('[WEBPACK CONFIG] Alias exists:', !!config.resolve?.alias)
-  console.log('='.repeat(60))
-  
-  // CRITICAL: Set @ alias FIRST, before any other processing
-  config.resolve = config.resolve || {}
-  config.resolve.alias = config.resolve.alias || {}
-  config.resolve.alias['@'] = projectRoot
-  
-  // Ensure proper module resolution
-  config.resolve.modules = config.resolve.modules || []
-  config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot && typeof m === 'string')
-  config.resolve.modules.unshift(projectRoot)
-  if (!config.resolve.modules.includes('node_modules')) {
-    config.resolve.modules.push('node_modules')
-  }
-  
-  // Ensure TypeScript extensions
-  if (!config.resolve.extensions) {
-    config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
-  }
-  
-  // Log final state
-  console.log('[WEBPACK CONFIG] Final @ alias:', config.resolve.alias['@'])
-  console.log('[WEBPACK CONFIG] Modules:', config.resolve.modules.slice(0, 3))
-  console.log('='.repeat(60))
-  
-  // Apply original webpack config (from PWA or nextConfig) if it exists
-  if (originalWebpackAfterPWA) {
-    const result = originalWebpackAfterPWA(config, options)
-    // CRITICAL: Re-apply alias after original (in case it was modified)
-    if (result) {
-      result.resolve = result.resolve || {}
-      result.resolve.alias = result.resolve.alias || {}
-      result.resolve.alias['@'] = projectRoot
-      console.log('[WEBPACK CONFIG] Re-applied @ alias after original:', result.resolve.alias['@'])
-      return result
+// CRITICAL: Ensure webpack config is preserved after PWA plugin
+// The webpack config in nextConfig should already have the @ alias set
+// But we'll override it again after PWA to ensure it's not modified
+if (configWithPWA.webpack) {
+  const pwaWebpack = configWithPWA.webpack
+  configWithPWA.webpack = (config, options) => {
+    // First apply PWA's webpack config
+    const result = pwaWebpack(config, options) || config
+    
+    // Then ensure @ alias is set (preserve existing aliases)
+    const projectRoot = path.resolve(__dirname)
+    const existingAliases = result.resolve?.alias || {}
+    
+    result.resolve = result.resolve || {}
+    result.resolve.alias = {
+      ...existingAliases,
+      '@': projectRoot,
     }
+    
+    console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
+    
+    return result
   }
-  
-  return config
 }
 
 module.exports = configWithPWA
