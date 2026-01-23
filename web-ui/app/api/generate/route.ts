@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { API_URL } from '../../../lib/env'
+import { API_URL } from '../../lib/env'
 
 // Increase timeout for this API route (30 minutes)
 export const maxDuration = 1800 // 30 minutes in seconds

@@ -7,7 +7,7 @@ import AuthForm from '@/components/AuthForm'
 import ContactForm from '@/components/ContactForm'
 
 // Import validated API URL from env module
-import { API_URL } from '../../lib/env'
+import { API_URL } from '../lib/env'
 
 export default function AuthPage() {
   const [isSignUp, setIsSignUp] = useState(false)
