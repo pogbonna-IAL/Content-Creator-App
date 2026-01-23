@@ -141,6 +141,7 @@ const nextConfig = {
     // These provide direct resolution paths if the @ alias doesn't work
     config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
     config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env.ts')
+    config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env.ts')
     config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
     config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
     
@@ -310,6 +311,10 @@ if (configWithPWA.webpack) {
       '@': projectRoot,
       '@/lib': path.resolve(projectRoot, 'lib'),
       '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),
+      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),
+      '@/lib': path.resolve(projectRoot, 'lib'),
+      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),
+      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),
       ...(config.resolve.alias || {}),
     }
     
