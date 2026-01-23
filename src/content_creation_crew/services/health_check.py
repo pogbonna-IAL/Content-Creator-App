@@ -308,7 +308,21 @@ class HealthChecker:
             from ..config import config
             import httpx
             
-            ollama_url = config.OLLAMA_URL or "http://localhost:11434"
+            ollama_url = config.OLLAMA_BASE_URL or config.OLLAMA_URL or "http://localhost:11434"
+            
+            # Skip health check if URL points to localhost or Docker service names in production
+            # (these won't work in Railway unless Ollama is deployed as a service)
+            if ollama_url.startswith("http://localhost") or ollama_url.startswith("http://ollama"):
+                return ComponentHealth(
+                    name="llm",
+                    status=HealthStatus.DEGRADED,
+                    message="LLM provider not configured for this environment",
+                    details={
+                        "provider": "ollama",
+                        "url": ollama_url,
+                        "reason": "localhost/service name not accessible in Railway"
+                    }
+                )
             
             # Lightweight health check
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -341,9 +355,39 @@ class HealthChecker:
         except asyncio.TimeoutError:
             return ComponentHealth(
                 name="llm",
-                status=HealthStatus.DOWN,
+                status=HealthStatus.DEGRADED,  # Changed from DOWN to DEGRADED - LLM is optional
                 message="LLM health check timed out",
                 details={"timeout_seconds": self.timeout_seconds, "provider": "ollama"}
+            )
+        
+        except (httpx.ConnectError, httpx.NetworkError, OSError) as e:
+            # DNS resolution errors, connection refused, etc.
+            response_time = (time.time() - start_time) * 1000
+            error_type = type(e).__name__
+            
+            # Check if it's a DNS/hostname resolution error
+            error_str = str(e).lower()
+            if "name or service not known" in error_str or "nodename nor servname provided" in error_str:
+                logger.warning(f"LLM health check failed: LLM provider hostname cannot be resolved (this is OK if LLM is not deployed)")
+                return ComponentHealth(
+                    name="llm",
+                    status=HealthStatus.DEGRADED,  # DEGRADED not DOWN - LLM is optional
+                    message="LLM provider hostname cannot be resolved",
+                    response_time_ms=response_time,
+                    details={
+                        "error_type": error_type,
+                        "provider": "ollama",
+                        "note": "LLM is optional - application will work without it"
+                    }
+                )
+            
+            logger.warning(f"LLM health check failed: {e}")
+            return ComponentHealth(
+                name="llm",
+                status=HealthStatus.DEGRADED,  # DEGRADED not DOWN - LLM is optional
+                message="LLM provider is not accessible",
+                response_time_ms=response_time,
+                details={"error_type": error_type, "provider": "ollama"}
             )
         
         except Exception as e:
@@ -352,7 +396,7 @@ class HealthChecker:
             
             return ComponentHealth(
                 name="llm",
-                status=HealthStatus.DEGRADED,
+                status=HealthStatus.DEGRADED,  # DEGRADED not DOWN - LLM is optional
                 message="LLM provider is not accessible",
                 response_time_ms=response_time,
                 details={"error_type": type(e).__name__, "provider": "ollama"}
