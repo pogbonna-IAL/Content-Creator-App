@@ -113,29 +113,29 @@ const nextConfig = {
   webpack: (config, { dev, isServer, webpack }) => {
     const projectRoot = path.resolve(__dirname)
     
-    // CRITICAL: Set alias directly - preserve Next.js's automatic aliases first
-    // Next.js automatically reads aliases from tsconfig.json, but we ensure @ is set
+    // CRITICAL: Configure resolve BEFORE any other processing
+    // This ensures the alias is set before Next.js processes imports
     config.resolve = config.resolve || {}
     
-    // Preserve existing aliases (Next.js sets these from tsconfig.json)
+    // CRITICAL: Set @ alias FIRST, before preserving existing aliases
+    // This ensures our alias takes precedence
     const existingAliases = config.resolve.alias || {}
     
-    // CRITICAL: Ensure @ alias is set, but preserve all existing aliases
-    // This ensures Next.js's automatic alias resolution still works
+    // Force set @ alias - this is the key fix
     config.resolve.alias = {
-      ...existingAliases,  // Preserve Next.js's automatic aliases
-      '@': projectRoot,    // Set our explicit alias (may override if Next.js already set it)
+      '@': projectRoot,    // Set FIRST - this is critical
+      ...existingAliases,  // Then preserve other aliases
     }
     
-    // Debug: Log all aliases to see what Next.js set
-    console.log('[WEBPACK] Existing aliases:', Object.keys(existingAliases))
-    console.log('[WEBPACK] Final aliases:', Object.keys(config.resolve.alias))
+    // CRITICAL: Also set explicit path for lib directory
+    // This provides a fallback if the @ alias doesn't work
+    config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
+    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env.ts')
     
     // CRITICAL: Ensure module resolution includes project root FIRST
-    // Webpack resolves modules in order, so project root must come before node_modules
     config.resolve.modules = config.resolve.modules || []
     // Remove projectRoot if it exists anywhere
-    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot)
+    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot && typeof m === 'string')
     // Add project root FIRST (before node_modules)
     config.resolve.modules.unshift(projectRoot)
     // Ensure node_modules is at the end
@@ -151,7 +151,7 @@ const nextConfig = {
     if (!config.resolve.extensions) {
       config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
     } else {
-      // Ensure .ts and .tsx come before .js - reorder if needed
+      // Ensure .ts and .tsx come before .js
       const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
       const currentExts = [...config.resolve.extensions]
       const orderedExts = []
@@ -163,7 +163,7 @@ const nextConfig = {
         }
       })
       
-      // Add any other extensions that aren't in our list
+      // Add any other extensions
       currentExts.forEach(ext => {
         if (!extensions.includes(ext) && !orderedExts.includes(ext)) {
           orderedExts.push(ext)
@@ -178,11 +178,12 @@ const nextConfig = {
     console.log('[WEBPACK CONFIG] Applied!')
     console.log('[WEBPACK CONFIG] Project root:', projectRoot)
     console.log('[WEBPACK CONFIG] @ alias:', config.resolve.alias['@'])
+    console.log('[WEBPACK CONFIG] @/lib alias:', config.resolve.alias['@/lib'])
+    console.log('[WEBPACK CONFIG] @/lib/env alias:', config.resolve.alias['@/lib/env'])
     console.log('[WEBPACK CONFIG] All aliases:', Object.keys(config.resolve.alias))
     console.log('[WEBPACK CONFIG] Extensions:', config.resolve.extensions.slice(0, 5))
     console.log('[WEBPACK CONFIG] Modules (full):', config.resolve.modules)
     console.log('[WEBPACK CONFIG] Project root index:', config.resolve.modules.indexOf(projectRoot))
-    console.log('[WEBPACK CONFIG] node_modules index:', config.resolve.modules.indexOf('node_modules'))
     console.log('='.repeat(60))
     
     if (dev && !isServer) {
@@ -239,8 +240,10 @@ if (configWithPWA.webpack) {
     
     result.resolve = result.resolve || {}
     result.resolve.alias = {
-      ...existingAliases,
-      '@': projectRoot,
+      '@': projectRoot,                    // Base alias
+      '@/lib': path.resolve(projectRoot, 'lib'),  // Explicit lib alias
+      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),  // Explicit env alias
+      ...existingAliases,                  // Then preserve other aliases
     }
     
     // CRITICAL: Ensure module resolution includes project root FIRST
@@ -284,6 +287,8 @@ if (configWithPWA.webpack) {
     }
     
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
+    console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
+    console.log('[WEBPACK AFTER PWA] @/lib/env alias:', result.resolve.alias['@/lib/env'])
     console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
     return result
@@ -295,8 +300,10 @@ if (configWithPWA.webpack) {
     
     config.resolve = config.resolve || {}
     config.resolve.alias = {
-      ...(config.resolve.alias || {}),
       '@': projectRoot,
+      '@/lib': path.resolve(projectRoot, 'lib'),
+      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),
+      ...(config.resolve.alias || {}),
     }
     
     // CRITICAL: Ensure module resolution includes project root FIRST
