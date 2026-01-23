@@ -113,24 +113,8 @@ const nextConfig = {
   webpack: (config, { dev, isServer, webpack }) => {
     const projectRoot = path.resolve(__dirname)
     
-    // CRITICAL: Use webpack's NormalModuleReplacementPlugin as a fallback
-    // This ensures @/lib/env resolves even if alias doesn't work
-    config.plugins = config.plugins || []
-    
-    // Add a plugin to handle @ alias resolution
-    config.plugins.push(
-      new webpack.NormalModuleReplacementPlugin(
-        /^@\/(.*)$/,
-        (resource) => {
-          const match = resource.request.match(/^@\/(.*)$/)
-          if (match) {
-            resource.request = path.resolve(projectRoot, match[1])
-          }
-        }
-      )
-    )
-    
-    // Also set alias directly (preserve existing)
+    // CRITICAL: Set alias directly - this is the primary method
+    // Next.js should read from tsconfig.json, but we ensure it's set
     config.resolve = config.resolve || {}
     config.resolve.alias = {
       ...(config.resolve.alias || {}),
@@ -143,12 +127,26 @@ const nextConfig = {
       config.resolve.modules.unshift(projectRoot)
     }
     
+    // Ensure TypeScript extensions are included and in correct order
+    if (!config.resolve.extensions) {
+      config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    } else {
+      // Ensure .ts and .tsx come before .js
+      const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      extensions.forEach(ext => {
+        if (!config.resolve.extensions.includes(ext)) {
+          config.resolve.extensions.push(ext)
+        }
+      })
+    }
+    
     // Debug logging
     console.log('='.repeat(60))
     console.log('[WEBPACK CONFIG] Applied!')
     console.log('[WEBPACK CONFIG] Project root:', projectRoot)
     console.log('[WEBPACK CONFIG] @ alias:', config.resolve.alias['@'])
-    console.log('[WEBPACK CONFIG] Plugins count:', config.plugins.length)
+    console.log('[WEBPACK CONFIG] Extensions:', config.resolve.extensions.slice(0, 5))
+    console.log('[WEBPACK CONFIG] Modules:', config.resolve.modules.slice(0, 3))
     console.log('='.repeat(60))
     
     if (dev && !isServer) {
@@ -200,22 +198,7 @@ if (configWithPWA.webpack) {
     
     const projectRoot = path.resolve(__dirname)
     
-    // Add NormalModuleReplacementPlugin as fallback for @ alias
-    result.plugins = result.plugins || []
-    result.plugins.push(
-      new options.webpack.NormalModuleReplacementPlugin(
-        /^@\/(.*)$/,
-        (resource) => {
-          const match = resource.request.match(/^@\/(.*)$/)
-          if (match) {
-            resource.request = path.resolve(projectRoot, match[1])
-            console.log('[PLUGIN] Resolved @/' + match[1] + ' to:', resource.request)
-          }
-        }
-      )
-    )
-    
-    // Then ensure @ alias is set (preserve existing aliases)
+    // CRITICAL: Ensure @ alias is set (preserve existing aliases)
     const existingAliases = result.resolve?.alias || {}
     
     result.resolve = result.resolve || {}
@@ -230,33 +213,41 @@ if (configWithPWA.webpack) {
       result.resolve.modules.unshift(projectRoot)
     }
     
+    // Ensure TypeScript extensions are included
+    if (!result.resolve.extensions) {
+      result.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    } else {
+      const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      extensions.forEach(ext => {
+        if (!result.resolve.extensions.includes(ext)) {
+          result.resolve.extensions.push(ext)
+        }
+      })
+    }
+    
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
-    console.log('[WEBPACK AFTER PWA] Plugins count:', result.plugins.length)
+    console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
     return result
   }
 } else {
-  // If PWA removed webpack config, add it back with plugin
+  // If PWA removed webpack config, add it back
   configWithPWA.webpack = (config, options) => {
     const projectRoot = path.resolve(__dirname)
-    
-    config.plugins = config.plugins || []
-    config.plugins.push(
-      new options.webpack.NormalModuleReplacementPlugin(
-        /^@\/(.*)$/,
-        (resource) => {
-          const match = resource.request.match(/^@\/(.*)$/)
-          if (match) {
-            resource.request = path.resolve(projectRoot, match[1])
-          }
-        }
-      )
-    )
     
     config.resolve = config.resolve || {}
     config.resolve.alias = {
       ...(config.resolve.alias || {}),
       '@': projectRoot,
+    }
+    
+    config.resolve.modules = config.resolve.modules || []
+    if (!config.resolve.modules.includes(projectRoot)) {
+      config.resolve.modules.unshift(projectRoot)
+    }
+    
+    if (!config.resolve.extensions) {
+      config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
     }
     
     return config
