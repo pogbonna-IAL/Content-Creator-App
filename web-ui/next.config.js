@@ -201,5 +201,82 @@ const nextConfig = {
   },
 }
 
-module.exports = withPWA(nextConfig)
+// Store original webpack function before PWA plugin wraps it
+const originalWebpack = nextConfig.webpack
+
+// Apply PWA plugin
+const configWithPWA = withPWA(nextConfig)
+
+// Store PWA's webpack function (if it modified it)
+const pwaWebpack = configWithPWA.webpack
+
+// CRITICAL: Re-apply webpack config after PWA plugin to ensure @ alias is set
+// The PWA plugin might modify or wrap the webpack config, so we need to ensure
+// our path alias configuration is applied correctly
+configWithPWA.webpack = (config, options) => {
+  const projectRoot = path.resolve(__dirname)
+  
+  // CRITICAL: Ensure @ alias is set to project root FIRST
+  // This must happen before any other webpack processing
+  if (!config.resolve) {
+    config.resolve = {}
+  }
+  if (!config.resolve.alias) {
+    config.resolve.alias = {}
+  }
+  
+  // Force set @ alias - this is the key fix
+  config.resolve.alias['@'] = projectRoot
+  
+  // Ensure proper module resolution - project root must be first
+  if (!config.resolve.modules) {
+    config.resolve.modules = []
+  }
+  // Remove projectRoot if it exists, then add it first
+  config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot && typeof m === 'string')
+  config.resolve.modules.unshift(projectRoot)
+  // Ensure node_modules is at the end
+  if (!config.resolve.modules.includes('node_modules')) {
+    config.resolve.modules.push('node_modules')
+  }
+  
+  // Ensure TypeScript extensions are included
+  if (!config.resolve.extensions) {
+    config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+  } else {
+    // Ensure .ts and .tsx are present and before .js
+    const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    extensions.forEach(ext => {
+      if (!config.resolve.extensions.includes(ext)) {
+        config.resolve.extensions.push(ext)
+      }
+    })
+  }
+  
+  // Debug logging for Docker builds
+  const isDockerBuild = process.env.DOCKER_BUILD === 'true' || process.env.CI === 'true'
+  if (isDockerBuild || options.dev) {
+    console.log('[Webpack Config] Project root:', projectRoot)
+    console.log('[Webpack Config] @ alias:', config.resolve.alias['@'])
+    console.log('[Webpack Config] Modules (first 3):', config.resolve.modules.slice(0, 3))
+  }
+  
+  // Apply PWA's webpack config first (if it exists and is different from ours)
+  if (pwaWebpack && pwaWebpack !== configWithPWA.webpack) {
+    config = pwaWebpack(config, options) || config
+    // Re-apply our alias after PWA (in case PWA modified it)
+    config.resolve.alias['@'] = projectRoot
+  }
+  
+  // Apply original webpack config if it exists (from nextConfig)
+  if (originalWebpack) {
+    config = originalWebpack(config, options) || config
+    // Re-apply our alias after original (in case it modified it)
+    config.resolve.alias['@'] = projectRoot
+  }
+  
+  return config
+}
+
+module.exports = configWithPWA
 
