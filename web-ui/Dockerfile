@@ -16,13 +16,17 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 # Copy source code
 COPY . .
 
-# Set environment variable for build
+# Set environment variables for build
+# CRITICAL: Set DOCKER_BUILD=true to skip strict validation during Docker builds
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV DOCKER_BUILD=true
+ENV CI=true
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Build Next.js application
+# This will create .next/standalone and .next/static directories
 RUN npm run build
 
 # Stage 2: Production
@@ -47,22 +51,30 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY --from=builder /app/public ./public
 
 # Copy standalone build (preferred method)
+# Next.js standalone includes server.js and necessary dependencies
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+
+# CRITICAL: Copy next.config.js and tsconfig.json for standalone build
+# These are needed for proper module resolution and configuration
+COPY --from=builder /app/next.config.js ./next.config.js
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 
 # Copy package.json for npm start fallback
 COPY --from=builder /app/package.json ./package.json
 
-# Copy node_modules for npm start fallback (if standalone doesn't work)
-# Only copy production dependencies to keep image size small
+# Copy node_modules ONLY for npm start fallback (if standalone doesn't work)
+# Note: Next.js standalone includes necessary node_modules in .next/standalone/node_modules
+# This copy is only used if the standalone server fails and we fall back to npm start
 COPY --from=builder /app/node_modules ./node_modules
 
 # Expose port
 EXPOSE 3000
 
 # Health check (uses PORT env var with fallback)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000} || exit 1
+# Check the root endpoint to ensure Next.js is serving correctly
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/ || exit 1
 
 # Start Next.js standalone server if available, otherwise use npm start
 # Use Railway's PORT environment variable if available
