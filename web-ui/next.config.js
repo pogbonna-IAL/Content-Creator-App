@@ -113,31 +113,64 @@ const nextConfig = {
   webpack: (config, { dev, isServer, webpack }) => {
     const projectRoot = path.resolve(__dirname)
     
-    // CRITICAL: Set alias directly - this is the primary method
-    // Next.js should read from tsconfig.json, but we ensure it's set
+    // CRITICAL: Set alias directly - preserve Next.js's automatic aliases first
+    // Next.js automatically reads aliases from tsconfig.json, but we ensure @ is set
     config.resolve = config.resolve || {}
+    
+    // Preserve existing aliases (Next.js sets these from tsconfig.json)
+    const existingAliases = config.resolve.alias || {}
+    
+    // CRITICAL: Ensure @ alias is set, but preserve all existing aliases
+    // This ensures Next.js's automatic alias resolution still works
     config.resolve.alias = {
-      ...(config.resolve.alias || {}),
-      '@': projectRoot,
+      ...existingAliases,  // Preserve Next.js's automatic aliases
+      '@': projectRoot,    // Set our explicit alias (may override if Next.js already set it)
     }
     
-    // Ensure module resolution includes project root
+    // Debug: Log all aliases to see what Next.js set
+    console.log('[WEBPACK] Existing aliases:', Object.keys(existingAliases))
+    console.log('[WEBPACK] Final aliases:', Object.keys(config.resolve.alias))
+    
+    // CRITICAL: Ensure module resolution includes project root FIRST
+    // Webpack resolves modules in order, so project root must come before node_modules
     config.resolve.modules = config.resolve.modules || []
-    if (!config.resolve.modules.includes(projectRoot)) {
-      config.resolve.modules.unshift(projectRoot)
+    // Remove projectRoot if it exists anywhere
+    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot)
+    // Add project root FIRST (before node_modules)
+    config.resolve.modules.unshift(projectRoot)
+    // Ensure node_modules is at the end
+    const nodeModulesIndex = config.resolve.modules.indexOf('node_modules')
+    if (nodeModulesIndex !== -1 && nodeModulesIndex !== config.resolve.modules.length - 1) {
+      config.resolve.modules.splice(nodeModulesIndex, 1)
+      config.resolve.modules.push('node_modules')
+    } else if (nodeModulesIndex === -1) {
+      config.resolve.modules.push('node_modules')
     }
     
     // Ensure TypeScript extensions are included and in correct order
     if (!config.resolve.extensions) {
       config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
     } else {
-      // Ensure .ts and .tsx come before .js
+      // Ensure .ts and .tsx come before .js - reorder if needed
       const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      const currentExts = [...config.resolve.extensions]
+      const orderedExts = []
+      
+      // Add TypeScript extensions first
       extensions.forEach(ext => {
-        if (!config.resolve.extensions.includes(ext)) {
-          config.resolve.extensions.push(ext)
+        if (currentExts.includes(ext)) {
+          orderedExts.push(ext)
         }
       })
+      
+      // Add any other extensions that aren't in our list
+      currentExts.forEach(ext => {
+        if (!extensions.includes(ext) && !orderedExts.includes(ext)) {
+          orderedExts.push(ext)
+        }
+      })
+      
+      config.resolve.extensions = orderedExts.length > 0 ? orderedExts : config.resolve.extensions
     }
     
     // Debug logging
@@ -145,8 +178,11 @@ const nextConfig = {
     console.log('[WEBPACK CONFIG] Applied!')
     console.log('[WEBPACK CONFIG] Project root:', projectRoot)
     console.log('[WEBPACK CONFIG] @ alias:', config.resolve.alias['@'])
+    console.log('[WEBPACK CONFIG] All aliases:', Object.keys(config.resolve.alias))
     console.log('[WEBPACK CONFIG] Extensions:', config.resolve.extensions.slice(0, 5))
-    console.log('[WEBPACK CONFIG] Modules:', config.resolve.modules.slice(0, 3))
+    console.log('[WEBPACK CONFIG] Modules (full):', config.resolve.modules)
+    console.log('[WEBPACK CONFIG] Project root index:', config.resolve.modules.indexOf(projectRoot))
+    console.log('[WEBPACK CONFIG] node_modules index:', config.resolve.modules.indexOf('node_modules'))
     console.log('='.repeat(60))
     
     if (dev && !isServer) {
@@ -207,22 +243,44 @@ if (configWithPWA.webpack) {
       '@': projectRoot,
     }
     
-    // Ensure module resolution includes project root
+    // CRITICAL: Ensure module resolution includes project root FIRST
     result.resolve.modules = result.resolve.modules || []
-    if (!result.resolve.modules.includes(projectRoot)) {
-      result.resolve.modules.unshift(projectRoot)
+    // Remove projectRoot if it exists anywhere
+    result.resolve.modules = result.resolve.modules.filter(m => m !== projectRoot)
+    // Add project root FIRST (before node_modules)
+    result.resolve.modules.unshift(projectRoot)
+    // Ensure node_modules is at the end
+    const nodeModulesIndex = result.resolve.modules.indexOf('node_modules')
+    if (nodeModulesIndex !== -1 && nodeModulesIndex !== result.resolve.modules.length - 1) {
+      result.resolve.modules.splice(nodeModulesIndex, 1)
+      result.resolve.modules.push('node_modules')
+    } else if (nodeModulesIndex === -1) {
+      result.resolve.modules.push('node_modules')
     }
     
-    // Ensure TypeScript extensions are included
+    // Ensure TypeScript extensions are included and in correct order
     if (!result.resolve.extensions) {
       result.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
     } else {
       const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      const currentExts = [...result.resolve.extensions]
+      const orderedExts = []
+      
+      // Add TypeScript extensions first
       extensions.forEach(ext => {
-        if (!result.resolve.extensions.includes(ext)) {
-          result.resolve.extensions.push(ext)
+        if (currentExts.includes(ext)) {
+          orderedExts.push(ext)
         }
       })
+      
+      // Add any other extensions
+      currentExts.forEach(ext => {
+        if (!extensions.includes(ext) && !orderedExts.includes(ext)) {
+          orderedExts.push(ext)
+        }
+      })
+      
+      result.resolve.extensions = orderedExts.length > 0 ? orderedExts : result.resolve.extensions
     }
     
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
@@ -241,9 +299,17 @@ if (configWithPWA.webpack) {
       '@': projectRoot,
     }
     
+    // CRITICAL: Ensure module resolution includes project root FIRST
     config.resolve.modules = config.resolve.modules || []
-    if (!config.resolve.modules.includes(projectRoot)) {
-      config.resolve.modules.unshift(projectRoot)
+    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot)
+    config.resolve.modules.unshift(projectRoot)
+    
+    const nodeModulesIndex = config.resolve.modules.indexOf('node_modules')
+    if (nodeModulesIndex !== -1 && nodeModulesIndex !== config.resolve.modules.length - 1) {
+      config.resolve.modules.splice(nodeModulesIndex, 1)
+      config.resolve.modules.push('node_modules')
+    } else if (nodeModulesIndex === -1) {
+      config.resolve.modules.push('node_modules')
     }
     
     if (!config.resolve.extensions) {
