@@ -110,23 +110,59 @@ const nextConfig = {
   // Enable standalone output for Docker
   output: 'standalone',
   // Suppress React DevTools hook warnings
-  webpack: (config, { dev, isServer }) => {
+  webpack: (config, { dev, isServer, webpack }) => {
     // Configure path aliases for webpack (matches tsconfig.json)
-    // Next.js should auto-detect from tsconfig.json, but ensure @ alias is set
-    // Preserve existing aliases that Next.js might have set
-    if (!config.resolve.alias) {
-      config.resolve.alias = {}
-    }
-    // Set @ alias to project root (where tsconfig.json is)
-    config.resolve.alias['@'] = path.resolve(__dirname)
+    // CRITICAL: Explicitly set @ alias to ensure @/lib/env resolves during Docker build
+    // Next.js should auto-detect from tsconfig.json, but explicitly set for reliability
+    const projectRoot = path.resolve(__dirname)
     
-    // Ensure proper module resolution
+    // CRITICAL: Ensure @ alias is set to project root
+    // This must be done before any other alias processing
+    // Use Object.assign to ensure the alias is set even if Next.js/PWA plugin modifies it
+    config.resolve = config.resolve || {}
+    config.resolve.alias = Object.assign({}, config.resolve.alias || {}, {
+      '@': projectRoot,
+    })
+    
+    // Ensure proper module resolution - project root must be first
     if (!config.resolve.modules) {
       config.resolve.modules = []
     }
-    // Add project root to module resolution path
-    if (!config.resolve.modules.includes(path.resolve(__dirname))) {
-      config.resolve.modules.unshift(path.resolve(__dirname))
+    // Remove projectRoot if it exists, then add it first
+    config.resolve.modules = config.resolve.modules.filter(m => m !== projectRoot)
+    config.resolve.modules.unshift(projectRoot)
+    // Ensure node_modules is at the end
+    if (!config.resolve.modules.includes('node_modules')) {
+      config.resolve.modules.push('node_modules')
+    }
+    
+    // Ensure extensions include TypeScript (order matters - check .ts before .js)
+    if (!config.resolve.extensions) {
+      config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    } else {
+      // Ensure TypeScript extensions are present and in correct order
+      const extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      extensions.forEach(ext => {
+        if (!config.resolve.extensions.includes(ext)) {
+          config.resolve.extensions.push(ext)
+        }
+      })
+      // Reorder to ensure .ts comes before .js
+      const ordered = ['.tsx', '.ts', '.jsx', '.js', '.json']
+      config.resolve.extensions = [
+        ...ordered.filter(ext => config.resolve.extensions.includes(ext)),
+        ...config.resolve.extensions.filter(ext => !ordered.includes(ext))
+      ]
+    }
+    
+    // Debug logging (always log in Docker builds to help diagnose)
+    const isDockerBuild = process.env.DOCKER_BUILD === 'true' || process.env.CI === 'true'
+    if (dev || isDockerBuild) {
+      console.log('Webpack resolve config:')
+      console.log('  Project root:', projectRoot)
+      console.log('  @ alias:', config.resolve.alias['@'])
+      console.log('  Modules:', config.resolve.modules.slice(0, 3), '...')
+      console.log('  Extensions:', config.resolve.extensions.slice(0, 5), '...')
     }
     
     if (dev && !isServer) {
