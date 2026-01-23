@@ -1,3 +1,5 @@
+const path = require('path')
+
 const withPWA = require('next-pwa')({
   dest: 'public',
   register: true,
@@ -110,9 +112,21 @@ const nextConfig = {
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer }) => {
     // Configure path aliases for webpack (matches tsconfig.json)
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      '@': require('path').resolve(__dirname),
+    // Next.js should auto-detect from tsconfig.json, but ensure @ alias is set
+    // Preserve existing aliases that Next.js might have set
+    if (!config.resolve.alias) {
+      config.resolve.alias = {}
+    }
+    // Set @ alias to project root (where tsconfig.json is)
+    config.resolve.alias['@'] = path.resolve(__dirname)
+    
+    // Ensure proper module resolution
+    if (!config.resolve.modules) {
+      config.resolve.modules = []
+    }
+    // Add project root to module resolution path
+    if (!config.resolve.modules.includes(path.resolve(__dirname))) {
+      config.resolve.modules.unshift(path.resolve(__dirname))
     }
     
     if (dev && !isServer) {
