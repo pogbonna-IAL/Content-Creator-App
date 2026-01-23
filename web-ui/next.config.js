@@ -111,30 +111,45 @@ const nextConfig = {
   output: 'standalone',
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer, webpack }) => {
-    // CRITICAL: Preserve Next.js's automatic aliases from tsconfig.json
-    // Next.js automatically reads path aliases, but we need to ensure they're preserved
     const projectRoot = path.resolve(__dirname)
     
-    // Preserve existing aliases (Next.js sets these automatically from tsconfig.json)
-    const existingAliases = config.resolve?.alias || {}
+    // CRITICAL: Use webpack's NormalModuleReplacementPlugin as a fallback
+    // This ensures @/lib/env resolves even if alias doesn't work
+    config.plugins = config.plugins || []
     
-    // CRITICAL: Ensure @ alias is set, but preserve Next.js's automatic aliases
+    // Add a plugin to handle @ alias resolution
+    config.plugins.push(
+      new webpack.NormalModuleReplacementPlugin(
+        /^@\/(.*)$/,
+        (resource) => {
+          const match = resource.request.match(/^@\/(.*)$/)
+          if (match) {
+            resource.request = path.resolve(projectRoot, match[1])
+          }
+        }
+      )
+    )
+    
+    // Also set alias directly (preserve existing)
     config.resolve = config.resolve || {}
     config.resolve.alias = {
-      ...existingAliases, // Preserve Next.js's automatic aliases first
-      '@': projectRoot,   // Then set our explicit alias
+      ...(config.resolve.alias || {}),
+      '@': projectRoot,
     }
     
-    // Ensure proper module resolution
+    // Ensure module resolution includes project root
     config.resolve.modules = config.resolve.modules || []
     if (!config.resolve.modules.includes(projectRoot)) {
       config.resolve.modules.unshift(projectRoot)
     }
     
     // Debug logging
-    console.log('[WEBPACK] Project root:', projectRoot)
-    console.log('[WEBPACK] @ alias:', config.resolve.alias['@'])
-    console.log('[WEBPACK] All aliases:', Object.keys(config.resolve.alias))
+    console.log('='.repeat(60))
+    console.log('[WEBPACK CONFIG] Applied!')
+    console.log('[WEBPACK CONFIG] Project root:', projectRoot)
+    console.log('[WEBPACK CONFIG] @ alias:', config.resolve.alias['@'])
+    console.log('[WEBPACK CONFIG] Plugins count:', config.plugins.length)
+    console.log('='.repeat(60))
     
     if (dev && !isServer) {
       config.resolve.fallback = {
@@ -183,8 +198,24 @@ if (configWithPWA.webpack) {
     // First apply PWA's webpack config
     const result = pwaWebpack(config, options) || config
     
-    // Then ensure @ alias is set (preserve existing aliases)
     const projectRoot = path.resolve(__dirname)
+    
+    // Add NormalModuleReplacementPlugin as fallback for @ alias
+    result.plugins = result.plugins || []
+    result.plugins.push(
+      new options.webpack.NormalModuleReplacementPlugin(
+        /^@\/(.*)$/,
+        (resource) => {
+          const match = resource.request.match(/^@\/(.*)$/)
+          if (match) {
+            resource.request = path.resolve(projectRoot, match[1])
+            console.log('[PLUGIN] Resolved @/' + match[1] + ' to:', resource.request)
+          }
+        }
+      )
+    )
+    
+    // Then ensure @ alias is set (preserve existing aliases)
     const existingAliases = result.resolve?.alias || {}
     
     result.resolve = result.resolve || {}
@@ -193,9 +224,42 @@ if (configWithPWA.webpack) {
       '@': projectRoot,
     }
     
+    // Ensure module resolution includes project root
+    result.resolve.modules = result.resolve.modules || []
+    if (!result.resolve.modules.includes(projectRoot)) {
+      result.resolve.modules.unshift(projectRoot)
+    }
+    
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
+    console.log('[WEBPACK AFTER PWA] Plugins count:', result.plugins.length)
     
     return result
+  }
+} else {
+  // If PWA removed webpack config, add it back with plugin
+  configWithPWA.webpack = (config, options) => {
+    const projectRoot = path.resolve(__dirname)
+    
+    config.plugins = config.plugins || []
+    config.plugins.push(
+      new options.webpack.NormalModuleReplacementPlugin(
+        /^@\/(.*)$/,
+        (resource) => {
+          const match = resource.request.match(/^@\/(.*)$/)
+          if (match) {
+            resource.request = path.resolve(projectRoot, match[1])
+          }
+        }
+      )
+    )
+    
+    config.resolve = config.resolve || {}
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      '@': projectRoot,
+    }
+    
+    return config
   }
 }
 
