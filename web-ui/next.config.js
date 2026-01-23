@@ -109,6 +109,16 @@ const nextConfig = {
   reactStrictMode: true,
   // Enable standalone output for Docker
   output: 'standalone',
+  // CRITICAL: Ensure TypeScript paths are read correctly
+  // Next.js should auto-detect from tsconfig.json, but we ensure it's configured
+  typescript: {
+    // TypeScript errors won't block build, but paths should still work
+  },
+  // Ensure experimental features don't interfere with path resolution
+  experimental: {
+    // Increase timeout for API routes (30 minutes)
+    serverComponentsExternalPackages: [],
+  },
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer, webpack }) => {
     const projectRoot = path.resolve(__dirname)
@@ -117,20 +127,22 @@ const nextConfig = {
     // This ensures the alias is set before Next.js processes imports
     config.resolve = config.resolve || {}
     
-    // CRITICAL: Set @ alias FIRST, before preserving existing aliases
-    // This ensures our alias takes precedence
+    // CRITICAL: Get existing aliases BEFORE modifying
     const existingAliases = config.resolve.alias || {}
     
-    // Force set @ alias - this is the key fix
+    // CRITICAL: Force set @ alias FIRST - this must come before other aliases
+    // Next.js should set this from tsconfig.json, but we ensure it's correct
     config.resolve.alias = {
-      '@': projectRoot,    // Set FIRST - this is critical
-      ...existingAliases,  // Then preserve other aliases
+      '@': projectRoot,    // Base alias - MUST be first
+      ...existingAliases,  // Then preserve other aliases (but @ takes precedence)
     }
     
-    // CRITICAL: Also set explicit path for lib directory
-    // This provides a fallback if the @ alias doesn't work
+    // CRITICAL: Also set explicit paths as fallbacks
+    // These provide direct resolution paths if the @ alias doesn't work
     config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
     config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env.ts')
+    config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
+    config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
     
     // CRITICAL: Ensure module resolution includes project root FIRST
     config.resolve.modules = config.resolve.modules || []
@@ -213,11 +225,6 @@ const nextConfig = {
         destination: '/api/devtools-config',
       },
     ]
-  },
-  // Increase API route timeout for long-running requests
-  experimental: {
-    // Increase timeout for API routes (30 minutes)
-    serverComponentsExternalPackages: [],
   },
 }
 
