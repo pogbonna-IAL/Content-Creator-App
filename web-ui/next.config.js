@@ -109,6 +109,12 @@ const nextConfig = {
   output: 'standalone',
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer }) => {
+    // Configure path aliases for webpack (matches tsconfig.json)
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      '@': require('path').resolve(__dirname),
+    }
+    
     if (dev && !isServer) {
       // Suppress installhook.js errors in development
       config.resolve.fallback = {
