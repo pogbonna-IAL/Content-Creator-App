@@ -68,9 +68,15 @@ The server should be running at: ${API_URL}`
           {/* Authentication Form */}
           <div className="glass-effect neon-border rounded-2xl p-8">
             <div className="mb-6 text-center">
-              <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center mx-auto mb-4 glow-text">
-                <span className="text-3xl font-bold">C</span>
-              </div>
+              <button
+                onClick={() => router.push('/')}
+                className="flex items-center justify-center mx-auto mb-4 hover:opacity-80 transition-opacity cursor-pointer"
+                aria-label="Go to home page"
+              >
+                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center glow-text">
+                  <span className="text-3xl font-bold">C</span>
+                </div>
+              </button>
               <h1 className="text-3xl font-bold text-gradient mb-2">
                 {isSignUp ? 'Create Account' : 'Welcome Back'}
               </h1>

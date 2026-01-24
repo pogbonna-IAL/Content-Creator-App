@@ -15,24 +15,53 @@ export async function POST(request: NextRequest) {
     const cookieHeader = request.headers.get('cookie') || ''
     
     // Extract auth_token from cookies if present
-    // Handle both URL-encoded and plain cookies
+    // Handle both URL-encoded and plain cookies, and various cookie formats
     let token: string | null = null
-    const tokenMatch = cookieHeader.match(/auth_token=([^;]+)/)
-    if (tokenMatch) {
+    
+    // Try multiple extraction methods
+    // Method 1: Regex match from cookie header string
+    const tokenMatch = cookieHeader.match(/auth_token=([^;,\s]+)/)
+    if (tokenMatch && tokenMatch[1]) {
       try {
         // Try decoding URL-encoded value
-        token = decodeURIComponent(tokenMatch[1])
+        token = decodeURIComponent(tokenMatch[1].trim())
       } catch {
-        // If decoding fails, use the raw value
-        token = tokenMatch[1]
+        // If decoding fails, use the raw value (might already be decoded)
+        token = tokenMatch[1].trim()
       }
     }
     
-    // Fallback: try reading from Next.js cookies API (might work if same domain)
+    // Method 2: Try reading from Next.js cookies API (might work if same domain)
     if (!token) {
       const cookieToken = request.cookies.get('auth_token')?.value
       if (cookieToken) {
-        token = cookieToken
+        token = cookieToken.trim()
+      }
+    }
+    
+    // Method 3: Try parsing all cookies manually
+    if (!token && cookieHeader) {
+      const cookies = cookieHeader.split(';').map(c => c.trim())
+      for (const cookie of cookies) {
+        if (cookie.startsWith('auth_token=')) {
+          const value = cookie.substring('auth_token='.length).trim()
+          try {
+            token = decodeURIComponent(value)
+          } catch {
+            token = value
+          }
+          break
+        }
+      }
+    }
+    
+    // Validate token format (JWT tokens have 3 parts separated by dots)
+    if (token) {
+      const parts = token.split('.')
+      if (parts.length !== 3) {
+        console.warn('Token format invalid - expected JWT format (3 parts), got:', parts.length, 'parts')
+        console.warn('Token preview:', token.substring(0, 50) + '...')
+        // Don't reject it, but log a warning - might be a different token format
       }
     }
 
@@ -55,6 +84,7 @@ export async function POST(request: NextRequest) {
     }
     
     console.log('Auth token found, length:', token.length)
+    console.log('Auth token first 20 chars:', token.substring(0, 20) + '...')
 
     console.log('Next.js API route received topic:', topic)
 
@@ -65,23 +95,50 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log('Step 1: Creating job at:', getApiUrl('v1/content/generate'))
+    const backendUrl = getApiUrl('v1/content/generate')
+    console.log('Step 1: Creating job at:', backendUrl)
+    
+    // Prepare headers with Authorization
+    const authHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    }
+    
+    // Forward cookies to backend (in case backend also checks cookies)
+    if (cookieHeader) {
+      authHeaders['Cookie'] = cookieHeader
+    }
+    
+    console.log('Request headers:', {
+      'Content-Type': authHeaders['Content-Type'],
+      'Authorization': `Bearer ${token.substring(0, 20)}...`,
+      'Cookie': cookieHeader ? 'present' : 'missing',
+    })
 
     // Step 1: Create the job first
-    const createJobResponse = await fetch(getApiUrl('v1/content/generate'), {
+    const createJobResponse = await fetch(backendUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        // Forward cookies to backend (in case backend also checks cookies)
-        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
-      },
+      headers: authHeaders,
       body: JSON.stringify({ topic }),
     })
 
     if (!createJobResponse.ok) {
       const errorText = await createJobResponse.text()
-      console.error('Failed to create job:', errorText)
+      console.error('Failed to create job:', createJobResponse.status, errorText)
+      console.error('Response headers:', Object.fromEntries(createJobResponse.headers.entries()))
+      
+      // If it's a 401, the token might be invalid or missing
+      if (createJobResponse.status === 401) {
+        return new Response(
+          JSON.stringify({ 
+            error: 'Authentication failed', 
+            detail: 'Please log in again',
+            hint: 'The authentication token may have expired or is invalid'
+          }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      
       return new Response(
         JSON.stringify({ error: 'Failed to create generation job', detail: errorText }),
         { status: createJobResponse.status, headers: { 'Content-Type': 'application/json' } }
@@ -109,14 +166,24 @@ export async function POST(request: NextRequest) {
           // Configure fetch with extended timeout for streaming
           // Node.js fetch uses undici which has a default body timeout
           // We need to ensure the connection stays alive
+          const streamHeaders: Record<string, string> = {
+            'Connection': 'keep-alive',
+            'Authorization': `Bearer ${token}`,
+          }
+          
+          // Forward cookies to backend (in case backend also checks cookies)
+          if (cookieHeader) {
+            streamHeaders['Cookie'] = cookieHeader
+          }
+          
+          console.log('Stream request headers:', {
+            'Authorization': `Bearer ${token.substring(0, 20)}...`,
+            'Cookie': cookieHeader ? 'present' : 'missing',
+          })
+          
           const fetchOptions: RequestInit = {
             method: 'GET',
-            headers: {
-              'Connection': 'keep-alive',
-              'Authorization': `Bearer ${token}`,
-              // Forward cookies to backend (in case backend also checks cookies)
-              ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
-            },
+            headers: streamHeaders,
             signal: abortController.signal,
           }
 
