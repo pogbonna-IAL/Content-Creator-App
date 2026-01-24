@@ -65,7 +65,35 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log('Calling FastAPI streaming endpoint at:', getApiUrl('api/generate'))
+    console.log('Step 1: Creating job at:', getApiUrl('v1/content/generate'))
+
+    // Step 1: Create the job first
+    const createJobResponse = await fetch(getApiUrl('v1/content/generate'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        // Forward cookies to backend (in case backend also checks cookies)
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+      },
+      body: JSON.stringify({ topic }),
+    })
+
+    if (!createJobResponse.ok) {
+      const errorText = await createJobResponse.text()
+      console.error('Failed to create job:', errorText)
+      return new Response(
+        JSON.stringify({ error: 'Failed to create generation job', detail: errorText }),
+        { status: createJobResponse.status, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const jobData = await createJobResponse.json()
+    const jobId = jobData.id
+    console.log('Job created with ID:', jobId)
+
+    // Step 2: Stream job progress
+    console.log('Step 2: Streaming job progress at:', getApiUrl(`v1/content/jobs/${jobId}/stream`))
 
     // Create a streaming response that proxies the SSE stream from FastAPI
     const encoder = new TextEncoder()
@@ -82,15 +110,13 @@ export async function POST(request: NextRequest) {
           // Node.js fetch uses undici which has a default body timeout
           // We need to ensure the connection stays alive
           const fetchOptions: RequestInit = {
-            method: 'POST',
+            method: 'GET',
             headers: {
-              'Content-Type': 'application/json',
               'Connection': 'keep-alive',
               'Authorization': `Bearer ${token}`,
               // Forward cookies to backend (in case backend also checks cookies)
               ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
             },
-            body: JSON.stringify({ topic }),
             signal: abortController.signal,
           }
 
@@ -100,7 +126,7 @@ export async function POST(request: NextRequest) {
             fetchOptions.keepalive = true
           }
 
-          const response = await fetch(getApiUrl('api/generate'), fetchOptions).finally(() => {
+          const response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions).finally(() => {
             clearTimeout(timeoutId)
           })
 
