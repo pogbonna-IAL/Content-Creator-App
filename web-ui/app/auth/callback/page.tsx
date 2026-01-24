@@ -35,7 +35,8 @@ function AuthCallbackContent() {
           // setAuthToken is deprecated but kept for compatibility
           // Backend already set httpOnly cookie
           setAuthToken(token, user)
-          router.push('/')
+          // Use window.location.href for a hard redirect to ensure auth state is refreshed
+          window.location.href = '/'
         })
         .catch((err) => {
           console.error('Error fetching user info:', err)
@@ -55,7 +56,8 @@ function AuthCallbackContent() {
         })
         .then((user) => {
           setAuthToken('', user)  // Token in cookie
-          router.push('/')
+          // Use window.location.href for a hard redirect to ensure auth state is refreshed
+          window.location.href = '/'
         })
         .catch(() => {
           setError('No token received from OAuth provider')

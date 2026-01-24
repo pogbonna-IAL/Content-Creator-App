@@ -32,7 +32,10 @@ export default function AuthPage() {
         await login(email, password)
         console.log('Login successful, redirecting...')
       }
-      router.push('/')
+      
+      // Use window.location.href for a hard redirect to ensure auth state is refreshed
+      // This forces a full page reload, which will properly check auth cookies
+      window.location.href = '/'
     } catch (err) {
       console.error('Authentication error:', err)
       let errorMessage = err instanceof Error ? err.message : 'Authentication failed'
