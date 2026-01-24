@@ -10,15 +10,51 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { topic } = body
 
-    // Get auth token from cookies
-    const token = request.cookies.get('auth_token')?.value
+    // Forward cookies from client request to backend
+    // The auth_token cookie is set by the backend and needs to be forwarded
+    const cookieHeader = request.headers.get('cookie') || ''
+    
+    // Extract auth_token from cookies if present
+    // Handle both URL-encoded and plain cookies
+    let token: string | null = null
+    const tokenMatch = cookieHeader.match(/auth_token=([^;]+)/)
+    if (tokenMatch) {
+      try {
+        // Try decoding URL-encoded value
+        token = decodeURIComponent(tokenMatch[1])
+      } catch {
+        // If decoding fails, use the raw value
+        token = tokenMatch[1]
+      }
+    }
+    
+    // Fallback: try reading from Next.js cookies API (might work if same domain)
+    if (!token) {
+      const cookieToken = request.cookies.get('auth_token')?.value
+      if (cookieToken) {
+        token = cookieToken
+      }
+    }
 
     if (!token) {
+      console.warn('No auth token found in cookies.')
+      console.warn('Cookie header present:', !!cookieHeader)
+      console.warn('Cookie header length:', cookieHeader.length)
+      // Don't log the full cookie header for security, but log if it exists
+      if (cookieHeader) {
+        console.warn('Cookie header contains auth_token:', cookieHeader.includes('auth_token'))
+      }
       return new Response(
-        JSON.stringify({ error: 'Authentication required' }),
+        JSON.stringify({ 
+          error: 'Authentication required', 
+          detail: 'Please log in to generate content',
+          hint: 'Make sure you are logged in and cookies are enabled'
+        }),
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       )
     }
+    
+    console.log('Auth token found, length:', token.length)
 
     console.log('Next.js API route received topic:', topic)
 
@@ -51,6 +87,8 @@ export async function POST(request: NextRequest) {
               'Content-Type': 'application/json',
               'Connection': 'keep-alive',
               'Authorization': `Bearer ${token}`,
+              // Forward cookies to backend (in case backend also checks cookies)
+              ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
             },
             body: JSON.stringify({ topic }),
             signal: abortController.signal,
