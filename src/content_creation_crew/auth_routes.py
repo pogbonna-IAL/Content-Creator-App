@@ -1,7 +1,7 @@
 """
 Authentication API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
@@ -22,6 +22,22 @@ from .services.gdpr_export_service import GDPRExportService
 from .services.gdpr_deletion_service import GDPRDeletionService
 from .services.password_validator import get_password_validator
 from .middleware.auth_rate_limit import get_auth_rate_limiter
+
+
+def get_cookie_domain(request: Optional[Request] = None) -> Optional[str]:
+    """
+    Determine the cookie domain based on the request host.
+    For Railway subdomains, use the parent domain (.up.railway.app) to share cookies.
+    """
+    if request:
+        host = request.headers.get("host", "")
+        # Check if we're on Railway
+        if ".up.railway.app" in host:
+            # Extract the parent domain (e.g., .up.railway.app)
+            # This allows cookies to be shared across subdomains
+            return ".up.railway.app"
+        # For other cases, don't set domain (cookies will be domain-specific)
+    return None
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -81,7 +97,7 @@ async def get_password_requirements():
 
 
 @router.post("/signup", response_model=Token, dependencies=[Depends(get_auth_rate_limiter())])
-async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
+async def signup(user_data: UserSignup, request: Request, db: Session = Depends(get_db)):
     """
     Register a new user with email and password
     
@@ -202,6 +218,7 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
         
         # Set httpOnly cookie for token (secure in production)
         cookie_max_age = int(access_token_expires.total_seconds())
+        cookie_domain = get_cookie_domain(request)
         response.set_cookie(
             key="auth_token",
             value=access_token,
@@ -209,7 +226,8 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
             httponly=True,
             secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
             samesite="lax",  # CSRF protection
-            path="/"
+            path="/",
+            domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
         )
         
         # Set user info cookie (not sensitive, can be readable)
@@ -221,7 +239,8 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
             httponly=False,  # Can be read by frontend for display
             secure=config.ENV in ["staging", "prod"],
             samesite="lax",
-            path="/"
+            path="/",
+            domain=cookie_domain  # Set domain for cross-subdomain sharing
         )
         
         return response
@@ -237,7 +256,10 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token, dependencies=[Depends(get_auth_rate_limiter())])
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None, db: Session = Depends(get_db)):
+    """Login with email and password"""
+    # FastAPI will inject Request automatically when it's a parameter
+    # We use = None as default to make it optional, but FastAPI will still inject it
     """Login with email and password"""
     # Find user by email (username field in OAuth2PasswordRequestForm)
     user = db.query(User).filter(User.email == form_data.username).first()
@@ -298,6 +320,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     
     # Set httpOnly cookie for token (secure in production)
     cookie_max_age = int(access_token_expires.total_seconds())
+    cookie_domain = get_cookie_domain(request)
     response.set_cookie(
         key="auth_token",
         value=access_token,
@@ -305,7 +328,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         httponly=True,
         secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
         samesite="lax",  # CSRF protection
-        path="/"
+        path="/",
+        domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
     )
     
     # Set user info cookie (not sensitive, can be readable)
@@ -317,7 +341,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         httponly=False,  # Can be read by frontend for display
         secure=config.ENV in ["staging", "prod"],
         samesite="lax",
-        path="/"
+        path="/",
+        domain=cookie_domain  # Set domain for cross-subdomain sharing
     )
     
     return response
@@ -339,24 +364,29 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
+async def logout(request: Request, current_user: User = Depends(get_current_user)):
     """Logout user and clear httpOnly cookie"""
     from fastapi.responses import JSONResponse
     
     # Create response
     response = JSONResponse(content={"message": "Logged out successfully"})
     
+    # Get cookie domain for deletion (must match the domain used when setting)
+    cookie_domain = get_cookie_domain(request)
+    
     # Clear httpOnly cookie
     response.delete_cookie(
         key="auth_token",
         path="/",
         samesite="lax",
-        httponly=True
+        httponly=True,
+        domain=cookie_domain  # Must match domain used when setting cookie
     )
     response.delete_cookie(
         key="auth_user",
         path="/",
-        samesite="lax"
+        samesite="lax",
+        domain=cookie_domain  # Must match domain used when setting cookie
     )
     
     return response
