@@ -326,16 +326,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current authenticated user information"""
-        return {
-            "id": current_user.id,
-            "email": current_user.email,
-            "full_name": current_user.full_name,
-            "is_active": current_user.is_active,
-            "is_verified": current_user.is_verified,
-            "is_admin": current_user.is_admin,
-            "email_verified": current_user.email_verified,
-            "provider": current_user.provider
-        }
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "is_active": current_user.is_active,
+        "is_verified": current_user.is_verified,
+        "is_admin": current_user.is_admin,
+        "email_verified": current_user.email_verified,
+        "provider": current_user.provider
+    }
 
 
 @router.post("/logout")
