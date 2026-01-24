@@ -14,29 +14,64 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Handle both build contexts (web-ui/ or repo root)
-# Railway may build from repo root despite buildContext setting
-COPY . .
+# CRITICAL: Railway builds from repo root, so web-ui/lib/ must be explicitly copied
+# The root .dockerignore excludes /lib/ but should include web-ui/lib/ via !web-ui/lib/
+# However, to be safe, we'll copy web-ui/lib/ explicitly first
+COPY web-ui/lib/ ./lib/
+COPY web-ui/app/ ./app/
+COPY web-ui/contexts/ ./contexts/
+COPY web-ui/public/ ./public/
+COPY web-ui/components/ ./components/ 2>/dev/null || RUN mkdir -p ./components || true
+COPY web-ui/*.json ./
+COPY web-ui/*.js ./
+COPY web-ui/*.ts ./
+COPY web-ui/*.config.* ./
+
+# Diagnostic: Check what was actually copied
+# #region agent log
+RUN echo "=== Build Context Diagnostic ===" && \
+    echo "Current directory:" && pwd && \
+    echo "Contents of /app:" && ls -la /app/ | head -30 && \
+    echo "" && \
+    echo "Checking for web-ui/ directory:" && \
+    (test -d "web-ui" && echo "✓ web-ui/ exists" || echo "✗ web-ui/ does NOT exist") && \
+    echo "" && \
+    echo "Checking for web-ui/lib/ directory:" && \
+    (test -d "web-ui/lib" && echo "✓ web-ui/lib/ exists" || echo "✗ web-ui/lib/ does NOT exist") && \
+    echo "" && \
+    echo "Checking for web-ui/lib/env.ts:" && \
+    (test -f "web-ui/lib/env.ts" && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
+    echo "" && \
+    echo "Contents of web-ui/lib/ (if exists):" && \
+    (ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ does not exist") && \
+    echo "" && \
+    echo "Checking for lib/env.ts:" && \
+    (test -f "lib/env.ts" && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+    echo "" && \
+    echo "Searching for all env.ts files:" && \
+    find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+    echo "=== End Build Context Diagnostic ==="
+# #endregion
 
 # If building from repo root, copy web-ui/lib/ to lib/
 # #region agent log
-RUN echo "=== Build Context Detection ===" && \
-    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
+RUN echo "=== Copying lib/env.ts ===" && \
+    if [ -f "web-ui/lib/env.ts" ]; then \
+      echo "Found web-ui/lib/env.ts - copying to lib/" && \
       mkdir -p ./lib && \
       cp -r web-ui/lib/* ./lib/ && \
-      echo "✓ lib/env.ts copied from web-ui/lib/"; \
+      echo "✓ lib/env.ts copied from web-ui/lib/" && \
+      ls -la lib/; \
     elif [ -f "lib/env.ts" ]; then \
-      echo "Building from web-ui/ - lib/env.ts already exists"; \
+      echo "✓ lib/env.ts already exists in root"; \
     else \
-      echo "✗ ERROR: lib/env.ts not found!" && \
-      echo "Searched locations: web-ui/lib/env.ts, lib/env.ts" && \
-      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      echo "✗ ERROR: lib/env.ts not found in either location!" && \
+      echo "This means web-ui/lib/ was excluded by .dockerignore" && \
       exit 1; \
     fi && \
     echo "Verifying lib/env.ts exists:" && \
     (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
-    echo "=== End Build Context Detection ==="
+    echo "=== End Copying lib/env.ts ==="
 # #endregion
 
 # Verify critical files exist (this will fail the build if lib/env.ts is missing)
