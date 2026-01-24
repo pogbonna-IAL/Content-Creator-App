@@ -21,7 +21,11 @@ COPY web-ui/lib/ ./lib/
 COPY web-ui/app/ ./app/
 COPY web-ui/contexts/ ./contexts/
 COPY web-ui/public/ ./public/
-COPY web-ui/components/ ./components/ 2>/dev/null || RUN mkdir -p ./components || true
+# Copy components directory (optional - create empty directory if it doesn't exist)
+RUN mkdir -p ./components && \
+    if [ -d "web-ui/components" ] && [ "$(ls -A web-ui/components 2>/dev/null)" ]; then \
+      cp -r web-ui/components/* ./components/; \
+    fi
 COPY web-ui/*.json ./
 COPY web-ui/*.js ./
 COPY web-ui/*.ts ./
