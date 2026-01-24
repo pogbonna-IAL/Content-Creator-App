@@ -279,18 +279,21 @@ const nextConfig = {
           }
         })
         
-        // Also try the 'afterResolve' hook
-        resolver.hooks.afterResolve.tapAsync('DebugResolverAfterResolve', (request, resolveContext, callback) => {
-          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
-            console.log('[DEBUG HYP-D] Resolver AFTER RESOLVE:', {
-              request: request.request,
-              path: request.path,
-              context: request.context?.path,
-              isServer
-            })
-          }
-          callback()
-        })
+        // Note: afterResolve hook may not be available in all webpack versions
+        // Only use it if it exists and has the tapAsync method
+        if (resolver.hooks.afterResolve && typeof resolver.hooks.afterResolve.tapAsync === 'function') {
+          resolver.hooks.afterResolve.tapAsync('DebugResolverAfterResolve', (request, resolveContext, callback) => {
+            if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
+              console.log('[DEBUG HYP-D] Resolver AFTER RESOLVE:', {
+                request: request.request,
+                path: request.path,
+                context: request.context?.path,
+                isServer
+              })
+            }
+            callback()
+          })
+        }
         
         // Log failed resolutions
         resolver.hooks.noResolve.tap('DebugResolverNoResolve', (request, error) => {

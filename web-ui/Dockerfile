@@ -14,7 +14,29 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
+# CRITICAL: Use COPY . . but ensure lib/env.ts is explicitly verified
+# This is more reliable than individual COPY commands which may fail if directories don't exist
 COPY . .
+
+# Diagnostic: List build context to understand what files are available
+# #region agent log
+RUN echo "=== Build Context Diagnostic ===" && \
+    echo "Current directory:" && pwd && \
+    echo "Contents of root:" && ls -la /app/ | head -20 && \
+    echo "Contents of lib/ directory:" && (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
+    echo "Looking for lib/env.ts:" && (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+    echo "Checking for web-ui/lib/env.ts (if building from repo root):" && (test -f web-ui/lib/env.ts && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
+    echo "=== End Diagnostic ==="
+# #endregion
+
+# Verify critical files exist (this will fail the build if lib/env.ts is missing)
+# Try both possible locations (if building from web-ui/ or from repo root)
+RUN (test -f lib/env.ts || test -f web-ui/lib/env.ts) || \
+    (echo "ERROR: lib/env.ts not found in build context!" && \
+     echo "Searched locations: /app/lib/env.ts, /app/web-ui/lib/env.ts" && \
+     ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!" && \
+     ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ directory does not exist!" && \
+     exit 1)
 
 # Set environment variables for build
 # CRITICAL: Set DOCKER_BUILD=true to skip strict validation during Docker builds
