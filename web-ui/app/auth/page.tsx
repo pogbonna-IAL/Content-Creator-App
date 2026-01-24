@@ -26,16 +26,44 @@ export default function AuthPage() {
       if (isSignUp) {
         console.log('Calling signup...')
         await signup(email, password, fullName)
-        console.log('Signup successful, redirecting...')
+        console.log('Signup successful')
       } else {
         console.log('Calling login...')
         await login(email, password)
-        console.log('Login successful, redirecting...')
+        console.log('Login successful')
       }
       
-      // Use window.location.href for a hard redirect to ensure auth state is refreshed
-      // This forces a full page reload, which will properly check auth cookies
-      window.location.href = '/'
+      // Wait a brief moment for cookies to be set by the backend
+      // Backend sets httpOnly cookies, which need a moment to be available
+      await new Promise(resolve => setTimeout(resolve, 200))
+      
+      // Verify auth status by checking /api/auth/me before redirecting
+      // This ensures cookies are set and auth is working
+      try {
+        const verifyResponse = await fetch(getApiUrl('api/auth/me'), {
+          method: 'GET',
+          credentials: 'include',
+        })
+        
+        if (verifyResponse.ok) {
+          const userData = await verifyResponse.json()
+          console.log('Auth verified successfully, redirecting to dashboard...', userData.email)
+          // Use window.location.href for a hard redirect to ensure auth state is refreshed
+          // This forces a full page reload, which will properly check auth cookies
+          window.location.href = '/'
+        } else {
+          const errorText = await verifyResponse.text()
+          console.error('Auth verification failed after login:', verifyResponse.status, errorText)
+          // Still redirect - the page will verify auth on load and show appropriate content
+          // This handles edge cases where verification fails but cookies are actually set
+          window.location.href = '/'
+        }
+      } catch (verifyError) {
+        console.error('Error verifying auth after login:', verifyError)
+        // Still redirect - the page will verify auth on load
+        // This handles network errors or other issues
+        window.location.href = '/'
+      }
     } catch (err) {
       console.error('Authentication error:', err)
       let errorMessage = err instanceof Error ? err.message : 'Authentication failed'

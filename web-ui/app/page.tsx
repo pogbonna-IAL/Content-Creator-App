@@ -33,6 +33,7 @@ export default function Home() {
   // REMOVED: Redirect to /auth - now show marketing page instead
 
   // Conditional returns AFTER all hooks
+  // Show loading spinner while auth is being verified
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -41,8 +42,9 @@ export default function Home() {
     )
   }
 
-  // Show marketing page if user is not authenticated
-  if (!user) {
+  // Show marketing page if user is not authenticated (only after loading is complete)
+  // This ensures we don't show marketing page while auth is still being verified
+  if (!user && !authLoading) {
     return (
       <main className="min-h-screen flex flex-col">
         <Navbar selectedFeature={selectedFeature} onFeatureSelect={setSelectedFeature} />
