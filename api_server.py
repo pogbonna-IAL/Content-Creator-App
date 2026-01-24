@@ -356,6 +356,42 @@ app.add_middleware(
     max_age=86400,  # Cache preflight requests for 24 hours (86400 seconds)
 )
 
+# #region agent log
+# Add middleware to log CORS headers
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+import json as json_module
+import time
+
+class CORSDebugMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cors-headers",
+                    "hypothesisId": "D",
+                    "location": "api_server.py:360",
+                    "message": "CORS response headers",
+                    "data": {
+                        "access_control_allow_origin": response.headers.get("access-control-allow-origin", "NOT_SET"),
+                        "access_control_allow_credentials": response.headers.get("access-control-allow-credentials", "NOT_SET"),
+                        "access_control_allow_methods": response.headers.get("access-control-allow-methods", "NOT_SET"),
+                        "request_origin": request.headers.get("origin", "NOT_SET"),
+                        "request_method": request.method,
+                        "request_path": str(request.url.path)
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        return response
+
+app.add_middleware(CORSDebugMiddleware)
+# #endregion
+
 logger.info(f"✓ CORS configured with preflight caching (max_age: 86400s / 24h)")
 
 # Request size limit middleware (M4)

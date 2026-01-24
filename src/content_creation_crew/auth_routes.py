@@ -231,16 +231,66 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         # For cross-origin requests (different subdomains), use "none" for SameSite
         # This requires secure=True, which we already have in staging/prod
         samesite_value = "none" if cookie_domain else "lax"
+        secure_flag = config.ENV in ["staging", "prod"]
+        
+        # #region agent log
+        import json as json_module
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-set-signup",
+                    "hypothesisId": "A",
+                    "location": "auth_routes.py:234",
+                    "message": "Setting auth_token cookie in signup",
+                    "data": {
+                        "cookie_domain": cookie_domain,
+                        "samesite": samesite_value,
+                        "secure": secure_flag,
+                        "httponly": True,
+                        "path": "/",
+                        "env": config.ENV,
+                        "host": request.headers.get("host", "") if request else None,
+                        "origin": request.headers.get("origin", "") if request else None
+                    },
+                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
+        
         response.set_cookie(
             key="auth_token",
             value=access_token,
             max_age=cookie_max_age,
             httponly=True,
-            secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod (required for samesite=none)
+            secure=secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
             samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
             path="/",
             domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
         )
+        
+        # #region agent log
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-set-signup",
+                    "hypothesisId": "A",
+                    "location": "auth_routes.py:260",
+                    "message": "Cookie set - checking Set-Cookie header",
+                    "data": {
+                        "set_cookie_header": response.headers.get("set-cookie", "NOT_FOUND"),
+                        "cookie_domain": cookie_domain,
+                        "samesite": samesite_value
+                    },
+                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         # Set user info cookie (not sensitive, can be readable)
         import json
@@ -336,16 +386,66 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
     # For cross-origin requests (different subdomains), use "none" for SameSite
     # This requires secure=True, which we already have in staging/prod
     samesite_value = "none" if cookie_domain else "lax"
+    secure_flag = config.ENV in ["staging", "prod"]
+    
+    # #region agent log
+    import json as json_module
+    try:
+        with open('.cursor/debug.log', 'a') as f:
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "cookie-set-login",
+                "hypothesisId": "A",
+                "location": "auth_routes.py:330",
+                "message": "Setting auth_token cookie in login",
+                "data": {
+                    "cookie_domain": cookie_domain,
+                    "samesite": samesite_value,
+                    "secure": secure_flag,
+                    "httponly": True,
+                    "path": "/",
+                    "env": config.ENV,
+                    "host": request.headers.get("host", "") if request else None,
+                    "origin": request.headers.get("origin", "") if request else None
+                },
+                "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            }
+            f.write(json_module.dumps(log_entry) + '\n')
+    except Exception:
+        pass
+    # #endregion
+    
     response.set_cookie(
         key="auth_token",
         value=access_token,
         max_age=cookie_max_age,
         httponly=True,
-        secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod (required for samesite=none)
+        secure=secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
         samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
         path="/",
         domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
     )
+    
+    # #region agent log
+    try:
+        with open('.cursor/debug.log', 'a') as f:
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "cookie-set-login",
+                "hypothesisId": "A",
+                "location": "auth_routes.py:356",
+                "message": "Cookie set - checking Set-Cookie header",
+                "data": {
+                    "set_cookie_header": response.headers.get("set-cookie", "NOT_FOUND"),
+                    "cookie_domain": cookie_domain,
+                    "samesite": samesite_value
+                },
+                "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            }
+            f.write(json_module.dumps(log_entry) + '\n')
+    except Exception:
+        pass
+    # #endregion
     
     # Set user info cookie (not sensitive, can be readable)
     import json

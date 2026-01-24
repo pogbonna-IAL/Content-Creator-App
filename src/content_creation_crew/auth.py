@@ -186,9 +186,52 @@ def get_auth_token(
     
     # Fallback to cookie
     try:
+        # #region agent log
+        import json as json_module
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-read",
+                    "hypothesisId": "B",
+                    "location": "auth.py:189",
+                    "message": "Attempting to read auth_token cookie",
+                    "data": {
+                        "request_url": str(request.url),
+                        "request_host": request.headers.get("host", ""),
+                        "request_origin": request.headers.get("origin", ""),
+                        "cookie_header": request.headers.get("cookie", "NOT_FOUND"),
+                        "all_cookies": list(request.cookies.keys()),
+                        "cookie_count": len(request.cookies)
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
+        
         cookie_token = request.cookies.get("auth_token")
         if cookie_token:
             logger.info("Using token from cookie (no Authorization header present)")
+            # #region agent log
+            try:
+                with open('.cursor/debug.log', 'a') as f:
+                    log_entry = {
+                        "sessionId": "debug-session",
+                        "runId": "cookie-read",
+                        "hypothesisId": "B",
+                        "location": "auth.py:195",
+                        "message": "Cookie found successfully",
+                        "data": {
+                            "token_length": len(cookie_token) if cookie_token else 0
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }
+                    f.write(json_module.dumps(log_entry) + '\n')
+            except Exception:
+                pass
+            # #endregion
             return cookie_token
         else:
             # Log for debugging - check what cookies are available
@@ -201,10 +244,72 @@ def get_auth_token(
                 f"Request URL: {request.url}, "
                 f"Request headers: {dict(request.headers)}"
             )
+            # #region agent log
+            try:
+                with open('.cursor/debug.log', 'a') as f:
+                    log_entry = {
+                        "sessionId": "debug-session",
+                        "runId": "cookie-read",
+                        "hypothesisId": "B",
+                        "location": "auth.py:210",
+                        "message": "Cookie NOT found - analyzing why",
+                        "data": {
+                            "cookie_count": cookie_count,
+                            "cookie_names": all_cookies,
+                            "cookie_header_raw": request.headers.get("cookie", ""),
+                            "request_url": str(request.url),
+                            "request_host": request.headers.get("host", ""),
+                            "request_origin": request.headers.get("origin", "")
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }
+                    f.write(json_module.dumps(log_entry) + '\n')
+            except Exception:
+                pass
+            # #endregion
     except AttributeError as e:
         logger.error(f"Request object missing cookies attribute: {e}, Request type: {type(request)}")
+        # #region agent log
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-read",
+                    "hypothesisId": "C",
+                    "location": "auth.py:225",
+                    "message": "Request object missing cookies attribute",
+                    "data": {
+                        "error": str(e),
+                        "request_type": str(type(request))
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
     except Exception as e:
         logger.error(f"Error accessing request.cookies: {e}, Request type: {type(request)}")
+        # #region agent log
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-read",
+                    "hypothesisId": "C",
+                    "location": "auth.py:235",
+                    "message": "Exception accessing cookies",
+                    "data": {
+                        "error": str(e),
+                        "error_type": str(type(e).__name__),
+                        "request_type": str(type(request))
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
     
     return None
 
