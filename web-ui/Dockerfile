@@ -14,20 +14,33 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway builds from repo root, and root .dockerignore excludes /lib/
-# To bypass .dockerignore, we MUST copy web-ui/lib/ explicitly BEFORE COPY . .
-# Explicit COPY commands ignore .dockerignore patterns
-COPY web-ui/lib/ ./lib/
-COPY web-ui/app/ ./app/
-COPY web-ui/contexts/ ./contexts/
-COPY web-ui/public/ ./public/
-# Components directory is optional - will be handled after COPY . .
-COPY web-ui/*.json ./
-COPY web-ui/*.js ./
-COPY web-ui/*.ts ./
-COPY web-ui/*.config.* ./
-# Then copy everything else (this respects .dockerignore for other files)
+# CRITICAL: Railway's buildContext: "." means it builds from web-ui/ directory
+# So files are directly in the build context (not in web-ui/ subdirectory)
+# Copy everything first, then ensure lib/env.ts exists
 COPY . .
+
+# Ensure lib/env.ts exists - copy from web-ui/lib/ if building from repo root
+# #region agent log
+RUN echo "=== Ensuring lib/env.ts exists ===" && \
+    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
+      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
+      mkdir -p ./lib && \
+      cp -r web-ui/lib/* ./lib/ && \
+      echo "✓ lib/env.ts copied from web-ui/lib/"; \
+    elif [ -f "lib/env.ts" ]; then \
+      echo "Building from web-ui/ directory - lib/env.ts already exists"; \
+    else \
+      echo "✗ ERROR: lib/env.ts not found!" && \
+      echo "Build context contents:" && \
+      ls -la /app/ | head -20 && \
+      echo "Searching for env.ts:" && \
+      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      exit 1; \
+    fi && \
+    echo "Verifying lib/env.ts:" && \
+    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts missing!" && exit 1)) && \
+    echo "=== End Ensuring lib/env.ts ==="
+# #endregion
 
 # Diagnostic: Check what was actually copied
 # #region agent log
