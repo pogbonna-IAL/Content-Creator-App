@@ -170,11 +170,25 @@ const nextConfig = {
     const libEnvPath = path.resolve(projectRoot, 'lib/env')
     const appLibEnvPath = path.resolve(projectRoot, 'app/lib/env')
     
+    // Ensure lib/env.ts exists - if not, create a fallback
+    const libEnvTsPath = libEnvPath + '.ts'
+    if (!fs.existsSync(libEnvTsPath)) {
+      console.warn(`[WEBPACK] Warning: ${libEnvTsPath} does not exist!`)
+    }
+    
     config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
+    // CRITICAL: Set alias to the directory, not the file (webpack will resolve with extensions)
     config.resolve.alias['@/lib/env'] = libEnvPath
     config.resolve.alias['@/app/lib/env'] = appLibEnvPath
     config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
     config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
+    
+    // CRITICAL: Ensure resolve.extensions includes .ts and .tsx
+    if (!config.resolve.extensions) {
+      config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    } else if (!config.resolve.extensions.includes('.ts')) {
+      config.resolve.extensions.unshift('.ts', '.tsx')
+    }
     
     // #region agent log
     console.log('[DEBUG HYP-D] Main webpack - Alias set:', {
@@ -314,6 +328,28 @@ const nextConfig = {
       }
     }
     config.resolve.plugins.push(new DebugResolverPlugin())
+    
+    // CRITICAL: Add NormalModuleReplacementPlugin to handle @/lib/env resolution
+    // This ensures webpack can resolve @/lib/env even when the alias doesn't work
+    if (!config.plugins) {
+      config.plugins = []
+    }
+    
+    // Only add if lib/env.ts exists
+    if (fs.existsSync(libEnvTsPath)) {
+      config.plugins.push(
+        new webpackInstance.NormalModuleReplacementPlugin(
+          /^@\/lib\/env$/,
+          (resource) => {
+            // Replace the request with the absolute path to lib/env.ts
+            resource.request = libEnvTsPath
+            console.log('[WEBPACK] NormalModuleReplacementPlugin: Resolving @/lib/env to', libEnvTsPath)
+          }
+        )
+      )
+    } else {
+      console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath, '- NormalModuleReplacementPlugin not added')
+    }
     
     // Also add webpack error handling to catch module resolution failures
     // #region agent log

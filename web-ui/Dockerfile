@@ -39,7 +39,7 @@ RUN mkdir -p ./lib && \
       echo "                    process.env.NEXT_PHASE === \"phase-development-build\" ||" >> ./lib/env.ts && \
       echo "                    typeof window === \"undefined\" && !process.env.NEXT_RUNTIME" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
-      echo "let apiUrl = process.env.NEXT_PUBLIC_API_URL" >> ./lib/env.ts && \
+      echo "let apiUrl: string | undefined = process.env.NEXT_PUBLIC_API_URL" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
       echo "// Normalize: trim whitespace and handle empty strings" >> ./lib/env.ts && \
       echo "if (apiUrl) {" >> ./lib/env.ts && \
@@ -48,7 +48,7 @@ RUN mkdir -p ./lib && \
       echo "  apiUrl = apiUrl.replace(/\/+$/, '')" >> ./lib/env.ts && \
       echo "  // Handle case where API_URL is just '/' or empty after normalization" >> ./lib/env.ts && \
       echo "  if (apiUrl === '' || apiUrl === '/') {" >> ./lib/env.ts && \
-      echo "    apiUrl = null" >> ./lib/env.ts && \
+      echo "    apiUrl = undefined" >> ./lib/env.ts && \
       echo "  }" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
@@ -69,7 +69,7 @@ RUN mkdir -p ./lib && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
       echo "// Final fallback: ensure API_URL is never undefined (but can be empty string for relative URLs)" >> ./lib/env.ts && \
-      echo "if (apiUrl === undefined || apiUrl === null) {" >> ./lib/env.ts && \
+      echo "if (apiUrl === undefined) {" >> ./lib/env.ts && \
       echo "  apiUrl = 'http://localhost:8000'" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
