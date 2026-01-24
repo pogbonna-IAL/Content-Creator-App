@@ -20,6 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from .config import config
 from .services.gdpr_export_service import GDPRExportService
 from .services.gdpr_deletion_service import GDPRDeletionService
+from .services.password_validator import get_password_validator
 from .middleware.auth_rate_limit import get_auth_rate_limiter
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
@@ -69,8 +70,6 @@ async def get_password_requirements():
     Returns the current password policy requirements.
     Use this to show requirements on the signup form.
     """
-    from .services.password_validator import get_password_validator
-    
     validator = get_password_validator()
     
     return {
@@ -111,8 +110,6 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
             )
         
         # Validate password strength
-        from .services.password_validator import get_password_validator
-        
         validator = get_password_validator()
         is_valid, error_message = validator.validate(user_data.password)
         

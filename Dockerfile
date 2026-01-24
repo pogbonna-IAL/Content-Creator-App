@@ -83,6 +83,12 @@ COPY src ./src/
 # Verify src directory was copied correctly
 RUN test -d ./src && echo "✓ src directory copied successfully" || (echo "✗ ERROR: src directory not found after COPY" && echo "Build context contents:" && ls -la / && exit 1)
 
+# Verify services directory exists
+RUN test -d ./src/content_creation_crew/services && echo "✓ services directory found" || (echo "✗ ERROR: services directory not found" && echo "src contents:" && ls -la ./src/content_creation_crew/ 2>/dev/null || echo "content_creation_crew directory not found" && exit 1)
+
+# Verify password_validator module exists
+RUN test -f ./src/content_creation_crew/services/password_validator.py && echo "✓ password_validator.py found" || (echo "✗ ERROR: password_validator.py not found" && echo "services contents:" && ls -la ./src/content_creation_crew/services/ 2>/dev/null || echo "services directory not found" && exit 1)
+
 # Install hatchling build backend (required for package imports)
 RUN pip install --no-cache-dir hatchling setuptools wheel
 
@@ -93,6 +99,14 @@ RUN pip install -e . || echo "Package install failed, will use PYTHONPATH"
 RUN python -c "import content_creation_crew; print('✓ content_creation_crew imported successfully')" || \
     (echo "⚠ Warning: Package import test failed" && \
      echo "Continuing anyway - PYTHONPATH should handle imports at runtime")
+
+# Verify password_validator can be imported
+RUN python -c "from content_creation_crew.services.password_validator import get_password_validator; print('✓ password_validator imported successfully')" || \
+    (echo "✗ ERROR: password_validator import failed" && \
+     echo "PYTHONPATH:" && echo $PYTHONPATH && \
+     echo "Python path:" && python -c "import sys; print('\n'.join(sys.path))" && \
+     echo "Checking for file:" && ls -la ./src/content_creation_crew/services/password_validator.py 2>&1 && \
+     exit 1)
 
 # Create directory for database and data
 RUN mkdir -p /app/data

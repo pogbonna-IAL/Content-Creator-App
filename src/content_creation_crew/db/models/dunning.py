@@ -148,7 +148,10 @@ class DunningProcess(Base):
     subscription = relationship("Subscription", backref="dunning_processes")
     organization = relationship("Organization", backref="dunning_processes")
     payment_attempts = relationship("PaymentAttempt", back_populates="dunning_process", order_by="PaymentAttempt.created_at")
-    notifications = relationship("DunningNotification", back_populates="dunning_process", order_by="DunningNotification.created_at")
+    # Note: order_by temporarily removed until migration 0607bc5b8545 adds created_at column
+    # After migration runs successfully, change this back to:
+    # notifications = relationship("DunningNotification", back_populates="dunning_process", order_by="DunningNotification.created_at")
+    notifications = relationship("DunningNotification", back_populates="dunning_process")
     
     # Indexes
     __table_args__ = (
