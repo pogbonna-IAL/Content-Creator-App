@@ -14,91 +14,25 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway builds from repo root, so copy web-ui/ contents
-# Use COPY . . first to get everything, then handle lib/ specifically
+# CRITICAL: Build context is web-ui/ directory (not repo root)
+# This means COPY . . copies web-ui/ contents directly to /app
 COPY . .
 
-# CRITICAL: Ensure lib/env.ts exists - copy from web-ui/lib/ if building from repo root
+# Verify critical files exist
 # #region agent log
-RUN echo "=== Ensuring lib/env.ts exists ===" && \
-    if [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Found web-ui/lib/env.ts - copying to lib/" && \
-      mkdir -p ./lib && \
-      cp web-ui/lib/env.ts ./lib/env.ts && \
-      cp web-ui/lib/api.ts ./lib/api.ts 2>/dev/null || true && \
-      echo "✓ lib/env.ts copied successfully"; \
-    elif [ -f "lib/env.ts" ]; then \
-      echo "✓ lib/env.ts already exists in root"; \
-    else \
-      echo "✗ ERROR: lib/env.ts not found in web-ui/lib/ or lib/" && \
-      echo "Searching for env.ts files:" && \
-      find /app -name "env.ts" -type f 2>/dev/null && \
-      exit 1; \
-    fi && \
-    echo "=== lib/env.ts check complete ==="
-# #endregion
-
-# Diagnostic: Check what was actually copied BEFORE moving files
-# #region agent log
-RUN echo "=== BEFORE MOVE: Build Context Diagnostic ===" && \
+RUN echo "=== Build Context Verification ===" && \
     echo "Current directory:" && pwd && \
-    echo "Contents of root:" && ls -la /app/ | head -30 && \
-    echo "" && \
-    echo "Checking for web-ui/ directory:" && \
-    (test -d "web-ui" && echo "✓ web-ui/ directory exists" || echo "✗ web-ui/ directory does NOT exist") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/ directory:" && \
-    (test -d "web-ui/lib" && echo "✓ web-ui/lib/ directory exists" || echo "✗ web-ui/lib/ directory does NOT exist") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/env.ts:" && \
-    (test -f "web-ui/lib/env.ts" && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
-    echo "" && \
-    echo "Contents of web-ui/lib/ (if exists):" && \
-    (ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ directory does not exist!") && \
-    echo "" && \
-    echo "Searching for all env.ts files:" && \
-    find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
-    echo "=== End BEFORE MOVE Diagnostic ==="
-# #endregion
-
-# If building from repo root, move web-ui files to root
-RUN if [ -d "web-ui" ]; then \
-      echo "Building from repo root - web-ui/ directory exists" && \
-      echo "Moving web-ui files to root..." && \
-      cp -r web-ui/* . && \
-      cp -r web-ui/.* . 2>/dev/null || true && \
-      echo "Files moved. Checking lib/env.ts:" && \
-      (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-      ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!"; \
-    else \
-      echo "Building from web-ui/ directory - web-ui/ does not exist" && \
-      echo "Checking lib/env.ts:" && \
-      (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-      ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!"; \
-    fi
-
-# Diagnostic: List build context to understand what files are available
-# #region agent log
-RUN echo "=== Build Context Diagnostic ===" && \
-    echo "Current directory:" && pwd && \
-    echo "Contents of root:" && ls -la /app/ | head -30 && \
-    echo "" && \
-    echo "Directories in root:" && find /app -maxdepth 1 -type d | head -20 && \
-    echo "" && \
-    echo "Looking for lib/env.ts:" && (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-    echo "Contents of lib/ directory:" && (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/env.ts (if building from repo root):" && (test -f web-ui/lib/env.ts && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
-    echo "Contents of web-ui/lib/ directory:" && (ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ directory does not exist!") && \
-    echo "" && \
-    echo "Searching for env.ts files:" && find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
-    echo "=== End Diagnostic ==="
+    echo "Checking for lib/env.ts:" && \
+    (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+    echo "Contents of lib/ directory:" && \
+    (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
+    echo "=== End Build Context Verification ==="
 # #endregion
 
 # Verify critical files exist (this will fail the build if lib/env.ts is missing)
-# This should pass because we ensured lib/env.ts exists in the previous step
 RUN test -f lib/env.ts || \
-    (echo "ERROR: lib/env.ts still not found after copy/move operations!" && \
+    (echo "ERROR: lib/env.ts not found in build context!" && \
+     echo "Build context should be web-ui/ directory" && \
      echo "Current directory:" && pwd && \
      echo "Contents of /app:" && ls -la /app/ | head -20 && \
      echo "Searching for env.ts files:" && \
