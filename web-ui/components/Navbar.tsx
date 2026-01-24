@@ -60,6 +60,14 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
                 >
                   Contact
                 </button>
+                {user.is_admin && (
+                  <button
+                    onClick={() => router.push('/admin')}
+                    className="text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer font-semibold"
+                  >
+                    Admin
+                  </button>
+                )}
               </div>
             )}
             

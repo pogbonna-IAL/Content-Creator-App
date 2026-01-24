@@ -463,3 +463,197 @@ async def list_admin_users(
         ]
     }
 
+
+# ============================================================================
+# Dunning Process Management Endpoints
+# ============================================================================
+
+@router.get("/dunning/processes")
+async def list_dunning_processes(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    List dunning processes (admin only)
+    
+    View all payment recovery processes with filtering options.
+    
+    **Admin Access Required**
+    """
+    from .db.models.dunning import DunningProcess
+    
+    query = db.query(DunningProcess)
+    
+    if status:
+        query = query.filter(DunningProcess.status == status)
+    
+    total = query.count()
+    processes = query.order_by(DunningProcess.created_at.desc()).limit(limit).offset(offset).all()
+    
+    return {
+        "status": "success",
+        "count": len(processes),
+        "total": total,
+        "processes": [
+            {
+                "id": p.id,
+                "subscription_id": p.subscription_id,
+                "organization_id": p.organization_id,
+                "status": p.status,
+                "amount_due": float(p.amount_due) if p.amount_due else 0.0,
+                "amount_recovered": float(p.amount_recovered) if p.amount_recovered else 0.0,
+                "currency": p.currency,
+                "total_attempts": p.total_attempts,
+                "total_emails_sent": p.total_emails_sent,
+                "current_stage": p.current_stage,
+                "started_at": p.started_at.isoformat() if p.started_at else None,
+                "next_action_at": p.next_action_at.isoformat() if p.next_action_at else None,
+                "grace_period_ends_at": p.grace_period_ends_at.isoformat() if p.grace_period_ends_at else None,
+                "will_cancel_at": p.will_cancel_at.isoformat() if p.will_cancel_at else None,
+                "resolved_at": p.resolved_at.isoformat() if p.resolved_at else None,
+                "cancelled_at": p.cancelled_at.isoformat() if p.cancelled_at else None,
+                "cancellation_reason": p.cancellation_reason,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in processes
+        ]
+    }
+
+
+@router.get("/dunning/processes/{process_id}")
+async def get_dunning_process(
+    process_id: int,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get detailed dunning process information (admin only)
+    
+    Includes payment attempts and notifications.
+    
+    **Admin Access Required**
+    """
+    from .db.models.dunning import DunningProcess, PaymentAttempt, DunningNotification
+    
+    process = db.query(DunningProcess).filter(DunningProcess.id == process_id).first()
+    
+    if not process:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dunning process {process_id} not found"
+        )
+    
+    # Get payment attempts
+    payment_attempts = db.query(PaymentAttempt).filter(
+        PaymentAttempt.dunning_process_id == process_id
+    ).order_by(PaymentAttempt.created_at.desc()).all()
+    
+    # Get notifications
+    notifications = db.query(DunningNotification).filter(
+        DunningNotification.dunning_process_id == process_id
+    ).order_by(DunningNotification.created_at.desc()).all()
+    
+    return {
+        "status": "success",
+        "process": {
+            "id": process.id,
+            "subscription_id": process.subscription_id,
+            "organization_id": process.organization_id,
+            "status": process.status,
+            "amount_due": float(process.amount_due) if process.amount_due else 0.0,
+            "amount_recovered": float(process.amount_recovered) if process.amount_recovered else 0.0,
+            "currency": process.currency,
+            "total_attempts": process.total_attempts,
+            "total_emails_sent": process.total_emails_sent,
+            "current_stage": process.current_stage,
+            "started_at": process.started_at.isoformat() if process.started_at else None,
+            "next_action_at": process.next_action_at.isoformat() if process.next_action_at else None,
+            "grace_period_ends_at": process.grace_period_ends_at.isoformat() if process.grace_period_ends_at else None,
+            "will_cancel_at": process.will_cancel_at.isoformat() if process.will_cancel_at else None,
+            "resolved_at": process.resolved_at.isoformat() if process.resolved_at else None,
+            "cancelled_at": process.cancelled_at.isoformat() if process.cancelled_at else None,
+            "cancellation_reason": process.cancellation_reason,
+            "created_at": process.created_at.isoformat() if process.created_at else None,
+        },
+        "payment_attempts": [
+            {
+                "id": pa.id,
+                "amount": float(pa.amount) if pa.amount else 0.0,
+                "currency": pa.currency,
+                "status": pa.status,
+                "attempt_number": pa.attempt_number,
+                "is_automatic": pa.is_automatic,
+                "provider": pa.provider,
+                "failure_code": pa.failure_code,
+                "failure_message": pa.failure_message,
+                "failure_reason": pa.failure_reason,
+                "attempted_at": pa.attempted_at.isoformat() if pa.attempted_at else None,
+                "succeeded_at": pa.succeeded_at.isoformat() if pa.succeeded_at else None,
+                "failed_at": pa.failed_at.isoformat() if pa.failed_at else None,
+            }
+            for pa in payment_attempts
+        ],
+        "notifications": [
+            {
+                "id": n.id,
+                "notification_type": n.notification_type,
+                "sent_to": n.sent_to,
+                "subject": n.subject,
+                "sent_at": n.sent_at.isoformat() if n.sent_at else None,
+                "delivered": n.delivered,
+                "opened": n.opened,
+                "clicked": n.clicked,
+            }
+            for n in notifications
+        ]
+    }
+
+
+@router.get("/dunning/stats")
+async def get_dunning_stats(
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get dunning process statistics (admin only)
+    
+    Returns summary statistics about payment recovery processes.
+    
+    **Admin Access Required**
+    """
+    from .db.models.dunning import DunningProcess, DunningStatus
+    
+    total = db.query(DunningProcess).count()
+    active = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.ACTIVE.value).count()
+    grace_period = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.GRACE_PERIOD.value).count()
+    recovering = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.RECOVERING.value).count()
+    recovered = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.RECOVERED.value).count()
+    cancelled = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.CANCELLED.value).count()
+    exhausted = db.query(DunningProcess).filter(DunningProcess.status == DunningStatus.EXHAUSTED.value).count()
+    
+    # Calculate total amount due and recovered
+    from sqlalchemy import func
+    total_due_result = db.query(func.sum(DunningProcess.amount_due)).scalar() or 0
+    total_recovered_result = db.query(func.sum(DunningProcess.amount_recovered)).scalar() or 0
+    
+    return {
+        "status": "success",
+        "stats": {
+            "total": total,
+            "by_status": {
+                "active": active,
+                "grace_period": grace_period,
+                "recovering": recovering,
+                "recovered": recovered,
+                "cancelled": cancelled,
+                "exhausted": exhausted,
+            },
+            "total_amount_due": float(total_due_result) if total_due_result else 0.0,
+            "total_amount_recovered": float(total_recovered_result) if total_recovered_result else 0.0,
+            "recovery_rate": float(total_recovered_result / total_due_result * 100) if total_due_result > 0 else 0.0,
+        }
+    }
+
