@@ -20,42 +20,41 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 COPY . .
 
 # Ensure lib/env.ts exists - handle both build contexts
-RUN if [ -f "lib/env.ts" ]; then \
-      echo "✓ lib/env.ts exists in build context"; \
+# Use a simple approach: copy from source if available, otherwise create it
+RUN mkdir -p ./lib && \
+    if [ -f "lib/env.ts" ]; then \
+      echo "✓ lib/env.ts exists"; \
     elif [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
-      mkdir -p ./lib && \
       cp -r web-ui/lib/* ./lib/ && \
       echo "✓ lib/env.ts copied from web-ui/lib/"; \
     else \
-      echo "✗ lib/env.ts NOT found - creating it from source" && \
-      mkdir -p ./lib && \
-      printf '%s\n' \
-        '/**' \
-        ' * Environment variable validation and configuration' \
-        ' * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app' \
-        ' */' \
-        '' \
-        'const isDockerBuild = process.env.DOCKER_BUILD === "true" || process.env.CI === "true"' \
-        'const isProduction = process.env.NODE_ENV === "production"' \
-        'const isBuildTime = process.env.NEXT_PHASE === "phase-production-build" ||' \
-        '                    process.env.NEXT_PHASE === "phase-development-build" ||' \
-        '                    typeof window === "undefined" && !process.env.NEXT_RUNTIME' \
-        '' \
-        'let apiUrl = process.env.NEXT_PUBLIC_API_URL' \
-        '' \
-        'if (isDockerBuild || isBuildTime) {' \
-        '  apiUrl = apiUrl || "http://localhost:8000"' \
-        '} else {' \
-        '  if (isProduction && !apiUrl) {' \
-        '    apiUrl = "http://localhost:8000"' \
-        '  }' \
-        '  if (!apiUrl) {' \
-        '    apiUrl = "http://localhost:8000"' \
-        '  }' \
-        '}' \
-        '' \
-        'export const API_URL = apiUrl' > ./lib/env.ts && \
+      cat > ./lib/env.ts <<'EOF'
+/**
+ * Environment variable validation and configuration
+ * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app
+ */
+
+const isDockerBuild = process.env.DOCKER_BUILD === "true" || process.env.CI === "true"
+const isProduction = process.env.NODE_ENV === "production"
+const isBuildTime = process.env.NEXT_PHASE === "phase-production-build" || 
+                    process.env.NEXT_PHASE === "phase-development-build" ||
+                    typeof window === "undefined" && !process.env.NEXT_RUNTIME
+
+let apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+if (isDockerBuild || isBuildTime) {
+  apiUrl = apiUrl || "http://localhost:8000"
+} else {
+  if (isProduction && !apiUrl) {
+    apiUrl = "http://localhost:8000"
+  }
+  if (!apiUrl) {
+    apiUrl = "http://localhost:8000"
+  }
+}
+
+export const API_URL = apiUrl
+EOF
       echo "✓ lib/env.ts created"; \
     fi && \
     test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1)
