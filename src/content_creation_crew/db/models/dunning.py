@@ -189,6 +189,10 @@ class DunningNotification(Base):
     email_provider = Column(String(50), nullable=True)
     provider_message_id = Column(String(200), nullable=True)
     
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
     # Metadata (renamed from 'metadata' - reserved in SQLAlchemy)
     extra_metadata = Column(JSONB, nullable=True)
     

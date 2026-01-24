@@ -105,6 +105,8 @@ def upgrade():
         sa.Column('clicked', sa.Boolean(), nullable=True),
         sa.Column('email_provider', sa.String(length=50), nullable=True),
         sa.Column('provider_message_id', sa.String(length=200), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.Column('metadata', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.PrimaryKeyConstraint('id'),
         sa.ForeignKeyConstraint(['dunning_process_id'], ['dunning_processes.id'], ),
