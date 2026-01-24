@@ -323,11 +323,17 @@ if (configWithPWA.webpack) {
     // Remove NormalModuleReplacementPlugin - it was causing absolute path issues
     // Instead, rely on the alias which should work correctly
     const envPath = path.resolve(projectRoot, 'app/lib/env')
+    const libEnvPath = path.resolve(projectRoot, 'lib/env')
+    
     result.resolve.alias['@/app/lib/env'] = envPath
+    result.resolve.alias['@/lib/env'] = libEnvPath
     
     // Ensure the alias is set and not overridden
     if (!result.resolve.alias['@/app/lib/env']) {
       result.resolve.alias['@/app/lib/env'] = envPath
+    }
+    if (!result.resolve.alias['@/lib/env']) {
+      result.resolve.alias['@/lib/env'] = libEnvPath
     }
     
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
