@@ -259,6 +259,9 @@ if (configWithPWA.webpack) {
       '@': projectRoot,                    // Base alias
       '@/lib': path.resolve(projectRoot, 'lib'),  // Explicit lib alias
       '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),  // Explicit env alias
+      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),  // Explicit app/lib/env alias
+      '@/contexts': path.resolve(projectRoot, 'contexts'),  // Explicit contexts alias
+      '@/components': path.resolve(projectRoot, 'components'),  // Explicit components alias
       ...existingAliases,                  // Then preserve other aliases
     }
     
@@ -305,6 +308,7 @@ if (configWithPWA.webpack) {
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
     console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
     console.log('[WEBPACK AFTER PWA] @/lib/env alias:', result.resolve.alias['@/lib/env'])
+    console.log('[WEBPACK AFTER PWA] @/app/lib/env alias:', result.resolve.alias['@/app/lib/env'])
     console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
     return result
