@@ -15,31 +15,50 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
 # CRITICAL: Railway's buildContext: "." means it builds from web-ui/ directory
-# So we copy directly from web-ui/ subdirectories (not web-ui/web-ui/)
-# However, Railway may build from repo root, so we handle both cases with RUN commands
+# However, Railway may build from repo root, so we handle both cases
 COPY . .
+
+# Diagnostic: Check what was actually copied
+# #region agent log
+RUN echo "=== Build Context Diagnostic ===" && \
+    echo "Current directory:" && pwd && \
+    echo "Contents of /app:" && ls -la /app/ | head -30 && \
+    echo "" && \
+    echo "Checking for web-ui/ directory:" && \
+    (test -d "web-ui" && echo "✓ web-ui/ exists" || echo "✗ web-ui/ does NOT exist") && \
+    echo "" && \
+    echo "Checking for web-ui/lib/env.ts:" && \
+    (test -f "web-ui/lib/env.ts" && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
+    echo "" && \
+    echo "Checking for lib/env.ts:" && \
+    (test -f "lib/env.ts" && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+    echo "" && \
+    echo "Contents of lib/ (if exists):" && \
+    (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist") && \
+    echo "" && \
+    echo "Searching for all env.ts files:" && \
+    find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+    echo "=== End Build Context Diagnostic ==="
+# #endregion
 
 # Handle both build contexts: if building from repo root, move web-ui/ contents to root
 # #region agent log
-RUN echo "=== Build Context Detection ===" && \
+RUN echo "=== Copying lib/env.ts ===" && \
     if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Building from repo root - moving web-ui/ contents to root" && \
-      cp -r web-ui/lib/* ./lib/ 2>/dev/null || true && \
-      cp -r web-ui/app/* ./app/ 2>/dev/null || true && \
-      cp -r web-ui/contexts/* ./contexts/ 2>/dev/null || true && \
-      cp -r web-ui/public/* ./public/ 2>/dev/null || true && \
-      cp -r web-ui/components/* ./components/ 2>/dev/null || true && \
-      echo "✓ Files moved from web-ui/ to root"; \
+      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
+      mkdir -p ./lib && \
+      cp -r web-ui/lib/* ./lib/ && \
+      echo "✓ lib/env.ts copied from web-ui/lib/"; \
     elif [ -f "lib/env.ts" ]; then \
-      echo "Building from web-ui/ directory - files already in root"; \
+      echo "Building from web-ui/ directory - lib/env.ts already exists"; \
     else \
-      echo "✗ ERROR: lib/env.ts not found!" && \
-      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      echo "✗ ERROR: lib/env.ts not found in either location!" && \
+      echo "This means lib/ was excluded by .dockerignore" && \
       exit 1; \
     fi && \
     echo "Verifying lib/env.ts exists:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts missing!" && exit 1)) && \
-    echo "=== End Build Context Detection ==="
+    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
+    echo "=== End Copying lib/env.ts ==="
 # #endregion
 
 # Diagnostic: Check what was actually copied
