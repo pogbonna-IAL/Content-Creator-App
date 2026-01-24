@@ -8,7 +8,7 @@ from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from .database import get_db, User
@@ -167,28 +167,36 @@ def verify_token(token: str) -> Optional[dict]:
 
 
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
     db: Session = Depends(get_db)
 ) -> User:
-    """Get current authenticated user from token"""
+    """Get current authenticated user from token
+    
+    Checks both Authorization header (Bearer token) and auth_token cookie.
+    Cookie is checked as fallback when Authorization header is not present.
+    """
     import logging
     logger = logging.getLogger(__name__)
     
-    # Extract token from credentials
-    if not credentials:
-        logger.warning("Authentication failed: No authorization credentials provided")
+    # Try to get token from Authorization header first
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    
+    # If no token in header, try to get from cookie (for httpOnly cookie support)
+    if not token:
+        cookie_token = request.cookies.get("auth_token")
+        if cookie_token:
+            token = cookie_token
+            logger.info("Using token from cookie (no Authorization header present)")
+    
+    # Validate token exists and is not empty
+    if not token or not token.strip():
+        logger.warning("Authentication failed: No authorization credentials provided (neither header nor cookie)")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication token is missing. Please log in again.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    token = credentials.credentials
-    if not token or not token.strip():
-        logger.warning("Authentication failed: Empty token")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token is invalid. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
