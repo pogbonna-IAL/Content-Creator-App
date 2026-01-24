@@ -14,18 +14,35 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Use COPY . . but ensure lib/env.ts is explicitly verified
-# This is more reliable than individual COPY commands which may fail if directories don't exist
-COPY . .
+# CRITICAL: Explicitly copy lib/ directory FIRST to ensure it's included
+# The root .dockerignore excludes lib/, so we must copy it explicitly
+COPY lib/ ./lib/
+COPY app/ ./app/
+COPY contexts/ ./contexts/
+COPY public/ ./public/
+# Copy optional directories if they exist
+COPY components/ ./components/ 2>/dev/null || mkdir -p ./components
+# Copy all config and source files
+COPY *.json ./
+COPY *.js ./
+COPY *.ts ./
+COPY *.config.* ./
 
 # Diagnostic: List build context to understand what files are available
 # #region agent log
 RUN echo "=== Build Context Diagnostic ===" && \
     echo "Current directory:" && pwd && \
-    echo "Contents of root:" && ls -la /app/ | head -20 && \
-    echo "Contents of lib/ directory:" && (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
+    echo "Contents of root:" && ls -la /app/ | head -30 && \
+    echo "" && \
+    echo "Directories in root:" && find /app -maxdepth 1 -type d | head -20 && \
+    echo "" && \
     echo "Looking for lib/env.ts:" && (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+    echo "Contents of lib/ directory:" && (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
+    echo "" && \
     echo "Checking for web-ui/lib/env.ts (if building from repo root):" && (test -f web-ui/lib/env.ts && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
+    echo "Contents of web-ui/lib/ directory:" && (ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ directory does not exist!") && \
+    echo "" && \
+    echo "Searching for env.ts files:" && find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
     echo "=== End Diagnostic ==="
 # #endregion
 
