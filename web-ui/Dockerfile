@@ -14,18 +14,22 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway builds from repo root, so web-ui/lib/ must be explicitly copied
-# The root .dockerignore excludes /lib/ but should include web-ui/lib/ via !web-ui/lib/
-# However, to be safe, we'll copy web-ui/lib/ explicitly first
+# CRITICAL: Railway builds from repo root, so web-ui/ directories must be explicitly copied
+# Copy required directories first, handling optional ones with RUN commands
 COPY web-ui/lib/ ./lib/
 COPY web-ui/app/ ./app/
 COPY web-ui/contexts/ ./contexts/
-COPY web-ui/public/ ./public/
-# Copy components directory (optional - create empty directory if it doesn't exist)
-RUN mkdir -p ./components && \
+
+# Copy optional directories (create if they don't exist)
+RUN mkdir -p ./public ./components && \
+    if [ -d "web-ui/public" ] && [ "$(ls -A web-ui/public 2>/dev/null)" ]; then \
+      cp -r web-ui/public/* ./public/; \
+    fi && \
     if [ -d "web-ui/components" ] && [ "$(ls -A web-ui/components 2>/dev/null)" ]; then \
       cp -r web-ui/components/* ./components/; \
     fi
+
+# Copy config files
 COPY web-ui/*.json ./
 COPY web-ui/*.js ./
 COPY web-ui/*.ts ./
