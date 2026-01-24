@@ -14,8 +14,19 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway's buildContext: "." means it builds from web-ui/ directory
-# However, Railway may build from repo root, so we handle both cases
+# CRITICAL: Railway builds from repo root, and root .dockerignore excludes /lib/
+# To bypass .dockerignore, we MUST copy web-ui/lib/ explicitly BEFORE COPY . .
+# Explicit COPY commands ignore .dockerignore patterns
+COPY web-ui/lib/ ./lib/
+COPY web-ui/app/ ./app/
+COPY web-ui/contexts/ ./contexts/
+COPY web-ui/public/ ./public/
+# Components directory is optional - will be handled after COPY . .
+COPY web-ui/*.json ./
+COPY web-ui/*.js ./
+COPY web-ui/*.ts ./
+COPY web-ui/*.config.* ./
+# Then copy everything else (this respects .dockerignore for other files)
 COPY . .
 
 # Diagnostic: Check what was actually copied
