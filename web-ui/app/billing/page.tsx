@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { API_URL } from "@/lib/env";
+import { API_URL, getApiUrl } from "@/lib/env";
 
 // Force dynamic rendering (no static generation)
 export const dynamic = 'force-dynamic';
@@ -46,7 +46,7 @@ function BillingContent() {
 
   const fetchSubscription = async () => {
     try {
-      const response = await fetch(`${API_URL}/v1/billing/subscription`, {
+      const response = await fetch(getApiUrl('v1/billing/subscription'), {
         headers: {
           Authorization: `Bearer ${localStorage.getItem("token")}`,
         },
@@ -67,7 +67,7 @@ function BillingContent() {
     if (!subscription) return;
 
     try {
-      const response = await fetch(`${API_URL}/v1/billing/bank-transfer`, {
+      const response = await fetch(getApiUrl('v1/billing/bank-transfer'), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -99,7 +99,7 @@ function BillingContent() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/v1/billing/cancel`, {
+      const response = await fetch(getApiUrl('v1/billing/cancel'), {
         method: "POST",
         headers: {
           Authorization: `Bearer ${localStorage.getItem("token")}`,

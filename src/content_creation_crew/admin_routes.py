@@ -52,8 +52,8 @@ async def require_admin(
     """
     Require user to be an admin
     
-    For now, checks if user's email domain is from the company
-    In production, implement proper RBAC or admin flag in database
+    Checks the is_admin flag on the user model.
+    Backward compatible: existing users default to is_admin=False.
     
     Args:
         current_user: Current authenticated user
@@ -65,28 +65,18 @@ async def require_admin(
     Raises:
         HTTPException: If user is not admin
     """
-    # TODO: Implement proper admin check
-    # For now, we'll require an admin flag or specific email domain
+    # Refresh user from database to ensure we have latest is_admin value
+    db.refresh(current_user)
     
-    # Option 1: Check admin flag (requires migration to add admin field to User model)
-    # if not current_user.is_admin:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="Admin access required"
-    #     )
-    
-    # Option 2: Check email domain (temporary for development)
-    admin_domains = ["admin.local", "example.com"]  # Configure via env in production
-    user_domain = current_user.email.split("@")[1] if "@" in current_user.email else ""
-    
-    if user_domain not in admin_domains and current_user.id != 1:  # Allow first user for setup
-        logger.warning(f"Non-admin user {current_user.id} attempted to access admin endpoint")
+    # Check admin flag
+    if not current_user.is_admin:
+        logger.warning(f"Non-admin user {current_user.id} ({current_user.email}) attempted to access admin endpoint")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
     
-    logger.info(f"Admin access granted to user {current_user.id}")
+    logger.info(f"Admin access granted to user {current_user.id} ({current_user.email})")
     return current_user
 
 
@@ -353,4 +343,123 @@ async def bump_moderation_version(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Moderation version bump failed: {str(e)}"
         )
+
+
+# ============================================================================
+# User Management Endpoints (for admin user management)
+# ============================================================================
+
+@router.post("/users/{user_id}/make-admin")
+async def make_user_admin(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Make a user an admin (admin only)
+    
+    **Admin Access Required**
+    """
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+    
+    if target_user.is_admin:
+        return {
+            "status": "success",
+            "message": f"User {user_id} is already an admin",
+            "user_id": user_id,
+            "email": target_user.email
+        }
+    
+    target_user.is_admin = True
+    db.commit()
+    db.refresh(target_user)
+    
+    logger.info(f"Admin {admin_user.id} made user {user_id} ({target_user.email}) an admin")
+    
+    return {
+        "status": "success",
+        "message": f"User {user_id} is now an admin",
+        "user_id": user_id,
+        "email": target_user.email
+    }
+
+
+@router.post("/users/{user_id}/remove-admin")
+async def remove_user_admin(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Remove admin status from a user (admin only)
+    
+    **Admin Access Required**
+    """
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+    
+    if not target_user.is_admin:
+        return {
+            "status": "success",
+            "message": f"User {user_id} is not an admin",
+            "user_id": user_id,
+            "email": target_user.email
+        }
+    
+    # Prevent removing admin from yourself
+    if target_user.id == admin_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove admin status from yourself"
+        )
+    
+    target_user.is_admin = False
+    db.commit()
+    db.refresh(target_user)
+    
+    logger.info(f"Admin {admin_user.id} removed admin status from user {user_id} ({target_user.email})")
+    
+    return {
+        "status": "success",
+        "message": f"User {user_id} is no longer an admin",
+        "user_id": user_id,
+        "email": target_user.email
+    }
+
+
+@router.get("/users/admins")
+async def list_admin_users(
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    List all admin users (admin only)
+    
+    **Admin Access Required**
+    """
+    admins = db.query(User).filter(User.is_admin == True).all()
+    
+    return {
+        "status": "success",
+        "count": len(admins),
+        "admins": [
+            {
+                "id": admin.id,
+                "email": admin.email,
+                "full_name": admin.full_name,
+                "is_active": admin.is_active,
+                "created_at": admin.created_at.isoformat() if admin.created_at else None
+            }
+            for admin in admins
+        ]
+    }
 

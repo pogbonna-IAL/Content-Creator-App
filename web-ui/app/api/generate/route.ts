@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { API_URL } from '@/lib/env'
+import { API_URL, getApiUrl } from '@/lib/env'
 
 // Increase timeout for this API route (30 minutes)
 export const maxDuration = 1800 // 30 minutes in seconds
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log('Calling FastAPI streaming endpoint at:', `${API_URL}/api/generate`)
+    console.log('Calling FastAPI streaming endpoint at:', getApiUrl('api/generate'))
 
     // Create a streaming response that proxies the SSE stream from FastAPI
     const encoder = new TextEncoder()
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
             fetchOptions.keepalive = true
           }
 
-          const response = await fetch(`${API_URL}/api/generate`, fetchOptions).finally(() => {
+          const response = await fetch(getApiUrl('api/generate'), fetchOptions).finally(() => {
             clearTimeout(timeoutId)
           })
 

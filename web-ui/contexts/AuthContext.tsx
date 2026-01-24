@@ -25,7 +25,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 // Import validated API URL from env module
-import { API_URL } from '@/lib/env'
+import { API_URL, getApiUrl } from '@/lib/env'
 const USER_COOKIE = 'auth_user'  // Non-httpOnly cookie for user display info
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -55,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const verifyAuthStatus = async () => {
     try {
       // Cookies (including httpOnly auth_token) are sent automatically
-      const response = await fetch(`${API_URL}/api/auth/me`, {
+      const response = await fetch(getApiUrl('api/auth/me'), {
         method: 'GET',
         credentials: 'include',  // Include cookies
       })
@@ -105,7 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       formData.append('username', email) // OAuth2PasswordRequestForm uses 'username'
       formData.append('password', password)
 
-      const response = await fetch(`${API_URL}/api/auth/login`, {
+      const response = await fetch(getApiUrl('api/auth/login'), {
         method: 'POST',
         body: formData,
         mode: 'cors',
@@ -150,7 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.log('Signup attempt:', { email, hasPassword: !!password, hasFullName: !!fullName })
       console.log('API URL:', `${API_URL}/api/auth/signup`)
       
-      const response = await fetch(`${API_URL}/api/auth/signup`, {
+      const response = await fetch(getApiUrl('api/auth/signup'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -212,7 +212,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     try {
       // Call backend logout endpoint to clear httpOnly cookies
-      await fetch(`${API_URL}/api/auth/logout`, {
+      await fetch(getApiUrl('api/auth/logout'), {
         method: 'POST',
         credentials: 'include',  // Include cookies
       }).catch(() => {

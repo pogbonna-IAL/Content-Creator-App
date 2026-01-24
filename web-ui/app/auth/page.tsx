@@ -7,7 +7,7 @@ import AuthForm from '@/components/AuthForm'
 import ContactForm from '@/components/ContactForm'
 
 // Import validated API URL from env module
-import { API_URL } from '@/lib/env'
+import { API_URL, getApiUrl } from '@/lib/env'
 
 // Force dynamic rendering (no static generation) to prevent React Context errors
 export const dynamic = 'force-dynamic'
@@ -55,7 +55,7 @@ The server should be running at: ${API_URL}`
   }
 
   const handleOAuthLogin = (provider: 'google' | 'facebook' | 'github') => {
-    window.location.href = `${API_URL}/api/auth/oauth/${provider}/login`
+    window.location.href = getApiUrl(`api/auth/oauth/${provider}/login`)
   }
 
   return (

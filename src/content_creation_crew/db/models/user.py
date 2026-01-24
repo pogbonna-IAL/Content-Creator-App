@@ -30,6 +30,9 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     
+    # Admin flag - defaults to False for backward compatibility
+    is_admin = Column(Boolean, default=False, nullable=False, index=True)
+    
     # Email Verification (S8)
     email_verified = Column(Boolean, default=False, nullable=False)  # New field for explicit tracking
     email_verification_token = Column(String, nullable=True, index=True)
