@@ -29,14 +29,23 @@ def get_cookie_domain(request: Optional[Request] = None) -> Optional[str]:
     Determine the cookie domain based on the request host.
     For Railway subdomains, use the parent domain (.up.railway.app) to share cookies.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if request:
         host = request.headers.get("host", "")
+        origin = request.headers.get("origin", "")
+        logger.info(f"Cookie domain detection: host={host}, origin={origin}")
+        
         # Check if we're on Railway
         if ".up.railway.app" in host:
             # Extract the parent domain (e.g., .up.railway.app)
             # This allows cookies to be shared across subdomains
-            return ".up.railway.app"
+            cookie_domain = ".up.railway.app"
+            logger.info(f"Setting cookie domain to {cookie_domain} for Railway deployment")
+            return cookie_domain
         # For other cases, don't set domain (cookies will be domain-specific)
+        logger.debug(f"Not on Railway, not setting cookie domain (host: {host})")
     return None
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
@@ -219,13 +228,16 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         # Set httpOnly cookie for token (secure in production)
         cookie_max_age = int(access_token_expires.total_seconds())
         cookie_domain = get_cookie_domain(request)
+        # For cross-origin requests (different subdomains), use "none" for SameSite
+        # This requires secure=True, which we already have in staging/prod
+        samesite_value = "none" if cookie_domain else "lax"
         response.set_cookie(
             key="auth_token",
             value=access_token,
             max_age=cookie_max_age,
             httponly=True,
-            secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
-            samesite="lax",  # CSRF protection
+            secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod (required for samesite=none)
+            samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
             path="/",
             domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
         )
@@ -238,7 +250,7 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             max_age=cookie_max_age,
             httponly=False,  # Can be read by frontend for display
             secure=config.ENV in ["staging", "prod"],
-            samesite="lax",
+            samesite=samesite_value,  # Match auth_token cookie
             path="/",
             domain=cookie_domain  # Set domain for cross-subdomain sharing
         )
@@ -321,13 +333,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
     # Set httpOnly cookie for token (secure in production)
     cookie_max_age = int(access_token_expires.total_seconds())
     cookie_domain = get_cookie_domain(request)
+    # For cross-origin requests (different subdomains), use "none" for SameSite
+    # This requires secure=True, which we already have in staging/prod
+    samesite_value = "none" if cookie_domain else "lax"
     response.set_cookie(
         key="auth_token",
         value=access_token,
         max_age=cookie_max_age,
         httponly=True,
-        secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod
-        samesite="lax",  # CSRF protection
+        secure=config.ENV in ["staging", "prod"],  # HTTPS only in staging/prod (required for samesite=none)
+        samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
         path="/",
         domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
     )
@@ -340,7 +355,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         max_age=cookie_max_age,
         httponly=False,  # Can be read by frontend for display
         secure=config.ENV in ["staging", "prod"],
-        samesite="lax",
+        samesite=samesite_value,  # Match auth_token cookie
         path="/",
         domain=cookie_domain  # Set domain for cross-subdomain sharing
     )
@@ -373,19 +388,22 @@ async def logout(request: Request, current_user: User = Depends(get_current_user
     
     # Get cookie domain for deletion (must match the domain used when setting)
     cookie_domain = get_cookie_domain(request)
+    samesite_value = "none" if cookie_domain else "lax"
     
     # Clear httpOnly cookie
     response.delete_cookie(
         key="auth_token",
         path="/",
-        samesite="lax",
+        samesite=samesite_value,  # Must match SameSite used when setting cookie
         httponly=True,
+        secure=config.ENV in ["staging", "prod"],  # Must match secure setting
         domain=cookie_domain  # Must match domain used when setting cookie
     )
     response.delete_cookie(
         key="auth_user",
         path="/",
-        samesite="lax",
+        samesite=samesite_value,  # Must match SameSite used when setting cookie
+        secure=config.ENV in ["staging", "prod"],  # Must match secure setting
         domain=cookie_domain  # Must match domain used when setting cookie
     )
     
