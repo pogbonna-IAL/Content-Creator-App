@@ -30,11 +30,7 @@ export default function Home() {
   const [status, setStatus] = useState<string>('')
   const [progress, setProgress] = useState<number>(0)
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/auth')
-    }
-  }, [user, authLoading, router])
+  // REMOVED: Redirect to /auth - now show marketing page instead
 
   // Conditional returns AFTER all hooks
   if (authLoading) {
@@ -45,8 +41,88 @@ export default function Home() {
     )
   }
 
+  // Show marketing page if user is not authenticated
   if (!user) {
-    return null
+    return (
+      <main className="min-h-screen flex flex-col">
+        <Navbar selectedFeature={selectedFeature} onFeatureSelect={setSelectedFeature} />
+        <div className="flex-1">
+          {/* Hero Section */}
+          <section className="container mx-auto px-4 py-16 md:py-24 text-center">
+            <div className="max-w-4xl mx-auto">
+              <h1 className="text-5xl md:text-6xl font-bold text-gradient mb-6">
+                AI-Powered Content Creation
+              </h1>
+              <p className="text-xl md:text-2xl text-gray-300 mb-8">
+                Create professional blog posts, social media content, audio, and videos with the power of AI
+              </p>
+              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                <button
+                  onClick={() => router.push('/auth')}
+                  className="px-8 py-3 bg-gradient-to-r from-neon-cyan to-neon-purple rounded-lg font-semibold hover:shadow-lg hover:shadow-neon-cyan/50 transition-all"
+                >
+                  Get Started
+                </button>
+                <button
+                  onClick={() => router.push('/auth')}
+                  className="px-8 py-3 border-2 border-neon-cyan rounded-lg font-semibold hover:bg-neon-cyan/10 transition-all"
+                >
+                  Sign In
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Features Section */}
+          <section className="container mx-auto px-4 py-16">
+            <h2 className="text-3xl md:text-4xl font-bold text-center mb-12 text-gradient">
+              Everything You Need to Create Amazing Content
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="glass-effect neon-border rounded-lg p-6">
+                <div className="text-4xl mb-4">📝</div>
+                <h3 className="text-xl font-bold mb-2">Blog Posts</h3>
+                <p className="text-gray-400">Generate comprehensive blog articles on any topic</p>
+              </div>
+              <div className="glass-effect neon-border rounded-lg p-6">
+                <div className="text-4xl mb-4">📱</div>
+                <h3 className="text-xl font-bold mb-2">Social Media</h3>
+                <p className="text-gray-400">Create engaging posts for all social platforms</p>
+              </div>
+              <div className="glass-effect neon-border rounded-lg p-6">
+                <div className="text-4xl mb-4">🎙️</div>
+                <h3 className="text-xl font-bold mb-2">Audio Content</h3>
+                <p className="text-gray-400">Generate voiceovers and audio content</p>
+              </div>
+              <div className="glass-effect neon-border rounded-lg p-6">
+                <div className="text-4xl mb-4">🎬</div>
+                <h3 className="text-xl font-bold mb-2">Video Content</h3>
+                <p className="text-gray-400">Create video scripts and content</p>
+              </div>
+            </div>
+          </section>
+
+          {/* CTA Section */}
+          <section className="container mx-auto px-4 py-16">
+            <div className="glass-effect neon-border rounded-2xl p-12 text-center max-w-3xl mx-auto">
+              <h2 className="text-3xl md:text-4xl font-bold mb-4 text-gradient">
+                Ready to Start Creating?
+              </h2>
+              <p className="text-xl text-gray-300 mb-8">
+                Join thousands of creators using AI to streamline their content workflow
+              </p>
+              <button
+                onClick={() => router.push('/auth')}
+                className="px-10 py-4 bg-gradient-to-r from-neon-cyan to-neon-purple rounded-lg font-semibold text-lg hover:shadow-lg hover:shadow-neon-cyan/50 transition-all"
+              >
+                Create Your Account
+              </button>
+            </div>
+          </section>
+        </div>
+        <Footer />
+      </main>
+    )
   }
 
   const handleGenerate = async (topic: string) => {

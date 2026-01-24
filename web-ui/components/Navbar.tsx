@@ -21,7 +21,7 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
 
   const handleLogout = () => {
     logout()
-    router.push('/auth')
+    router.push('/')
   }
 
   return (
@@ -40,26 +40,28 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
               </div>
             </div>
             
-            {/* Nav Buttons - Starting from 40% width */}
-            <div className="hidden md:flex items-center space-x-6 absolute left-[40%]">
-              <FeaturesDropdown selectedFeature={selectedFeature} onFeatureSelect={onFeatureSelect} />
-              <button
-                onClick={() => setIsAboutOpen(true)}
-                className="text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer"
-              >
-                About
-              </button>
-              <button
-                onClick={() => setIsContactOpen(true)}
-                className="text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer"
-              >
-                Contact
-              </button>
-            </div>
+            {/* Nav Buttons - Starting from 40% width (only show if authenticated) */}
+            {user && (
+              <div className="hidden md:flex items-center space-x-6 absolute left-[40%]">
+                <FeaturesDropdown selectedFeature={selectedFeature} onFeatureSelect={onFeatureSelect} />
+                <button
+                  onClick={() => setIsAboutOpen(true)}
+                  className="text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer"
+                >
+                  About
+                </button>
+                <button
+                  onClick={() => setIsContactOpen(true)}
+                  className="text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer"
+                >
+                  Contact
+                </button>
+              </div>
+            )}
             
-            {/* User Profile - Right Aligned */}
-            <div className="hidden md:flex items-center ml-auto">
-              {user && (
+            {/* Right side - Login/Signup buttons or User Profile */}
+            <div className="hidden md:flex items-center ml-auto gap-4">
+              {user ? (
                 <div className="relative">
                   <button
                     onClick={() => setShowUserMenu(!showUserMenu)}
@@ -87,6 +89,21 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
                     </div>
                   )}
                 </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => router.push('/auth')}
+                    className="px-4 py-2 text-gray-300 hover:text-neon-cyan transition-colors bg-transparent border-none cursor-pointer"
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    onClick={() => router.push('/auth')}
+                    className="px-4 py-2 bg-gradient-to-r from-neon-cyan to-neon-purple rounded-lg font-semibold hover:shadow-lg hover:shadow-neon-cyan/50 transition-all"
+                  >
+                    Get Started
+                  </button>
+                </>
               )}
             </div>
           </div>
