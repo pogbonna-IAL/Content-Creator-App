@@ -41,27 +41,42 @@ RUN mkdir -p ./lib && \
       echo "" >> ./lib/env.ts && \
       echo "let apiUrl = process.env.NEXT_PUBLIC_API_URL" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
-      echo "if (isDockerBuild || isBuildTime) {" >> ./lib/env.ts && \
-      echo "  apiUrl = apiUrl || \"http://localhost:8000\"" >> ./lib/env.ts && \
-      echo "} else {" >> ./lib/env.ts && \
-      echo "  if (isProduction && !apiUrl) {" >> ./lib/env.ts && \
-      echo "    apiUrl = \"http://localhost:8000\"" >> ./lib/env.ts && \
-      echo "  }" >> ./lib/env.ts && \
-      echo "  if (!apiUrl) {" >> ./lib/env.ts && \
-      echo "    apiUrl = \"http://localhost:8000\"" >> ./lib/env.ts && \
-      echo "  }" >> ./lib/env.ts && \
-      echo "}" >> ./lib/env.ts && \
-      echo "" >> ./lib/env.ts && \
-      echo "// Normalize API URL: remove trailing slash and ensure it's not empty" >> ./lib/env.ts && \
+      echo "// Normalize: trim whitespace and handle empty strings" >> ./lib/env.ts && \
       echo "if (apiUrl) {" >> ./lib/env.ts && \
       echo "  apiUrl = apiUrl.trim()" >> ./lib/env.ts && \
-      echo "  // Remove trailing slash to prevent double slashes in URL construction" >> ./lib/env.ts && \
+      echo "  // Remove trailing slashes" >> ./lib/env.ts && \
       echo "  apiUrl = apiUrl.replace(/\/+$/, '')" >> ./lib/env.ts && \
+      echo "  // Handle case where API_URL is just '/' or empty after normalization" >> ./lib/env.ts && \
+      echo "  if (apiUrl === '' || apiUrl === '/') {" >> ./lib/env.ts && \
+      echo "    apiUrl = null" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
-      echo "// Final fallback: ensure API_URL is never empty or undefined" >> ./lib/env.ts && \
-      echo "if (!apiUrl || apiUrl === '') {" >> ./lib/env.ts && \
+      echo "// During Docker builds or build time, allow localhost/default (will be set at runtime)" >> ./lib/env.ts && \
+      echo "if (isDockerBuild || isBuildTime) {" >> ./lib/env.ts && \
+      echo "  // Use provided URL or default to localhost for Docker builds or during build" >> ./lib/env.ts && \
+      echo "  apiUrl = apiUrl || \"http://localhost:8000\"" >> ./lib/env.ts && \
+      echo "} else {" >> ./lib/env.ts && \
+      echo "  // Runtime: In production, if API_URL is not set, use relative URLs (same origin)" >> ./lib/env.ts && \
+      echo "  // This works when frontend and backend are on the same domain (e.g., Railway)" >> ./lib/env.ts && \
+      echo "  if (isProduction && !apiUrl) {" >> ./lib/env.ts && \
+      echo "    // Use empty string to signal getApiUrl() to use relative URLs" >> ./lib/env.ts && \
+      echo "    apiUrl = ''" >> ./lib/env.ts && \
+      echo "  } else if (!apiUrl) {" >> ./lib/env.ts && \
+      echo "    // In development, default to localhost if not set" >> ./lib/env.ts && \
+      echo "    apiUrl = \"http://localhost:8000\"" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "// Final fallback: ensure API_URL is never undefined (but can be empty string for relative URLs)" >> ./lib/env.ts && \
+      echo "if (apiUrl === undefined || apiUrl === null) {" >> ./lib/env.ts && \
       echo "  apiUrl = 'http://localhost:8000'" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "// Log API URL for debugging (always log to help diagnose production issues)" >> ./lib/env.ts && \
+      echo "if (typeof window !== 'undefined') {" >> ./lib/env.ts && \
+      echo "  console.log('[env] API_URL:', apiUrl || '(empty/undefined)')" >> ./lib/env.ts && \
+      echo "  console.log('[env] NEXT_PUBLIC_API_URL:', process.env.NEXT_PUBLIC_API_URL || '(not set)')" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
       echo "export const API_URL = apiUrl" >> ./lib/env.ts && \
@@ -73,8 +88,29 @@ RUN mkdir -p ./lib && \
       echo "export function getApiUrl(path: string): string {" >> ./lib/env.ts && \
       echo "  // Remove leading slash from path if present" >> ./lib/env.ts && \
       echo "  const cleanPath = path.startsWith('/') ? path.slice(1) : path" >> ./lib/env.ts && \
-      echo "  // Ensure API_URL doesn't end with slash and path doesn't start with slash" >> ./lib/env.ts && \
-      echo "  return \`\${API_URL}/\${cleanPath}\`" >> ./lib/env.ts && \
+      echo "  " >> ./lib/env.ts && \
+      echo "  // Handle edge cases where API_URL might be empty, undefined, or just '/'" >> ./lib/env.ts && \
+      echo "  if (!API_URL || API_URL.trim() === '' || API_URL === '/') {" >> ./lib/env.ts && \
+      echo "    // Use relative URL (will use same origin as the frontend)" >> ./lib/env.ts && \
+      echo "    // This works when frontend and backend are on the same domain" >> ./lib/env.ts && \
+      echo "    const relativeUrl = \`/\${cleanPath}\`" >> ./lib/env.ts && \
+      echo "    if (typeof window !== 'undefined') {" >> ./lib/env.ts && \
+      echo "      console.log(\`[getApiUrl] API_URL is empty, using relative URL: \${relativeUrl}\`)" >> ./lib/env.ts && \
+      echo "    }" >> ./lib/env.ts && \
+      echo "    return relativeUrl" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
+      echo "  " >> ./lib/env.ts && \
+      echo "  // Normalize API_URL: trim and remove trailing slashes" >> ./lib/env.ts && \
+      echo "  const normalizedApiUrl = API_URL.trim().replace(/\/+$/, '')" >> ./lib/env.ts && \
+      echo "  " >> ./lib/env.ts && \
+      echo "  // Construct URL ensuring no double slashes" >> ./lib/env.ts && \
+      echo "  const fullUrl = \`\${normalizedApiUrl}/\${cleanPath}\`" >> ./lib/env.ts && \
+      echo "  " >> ./lib/env.ts && \
+      echo "  if (typeof window !== 'undefined') {" >> ./lib/env.ts && \
+      echo "    console.log(\`[getApiUrl] Constructed URL: \${fullUrl} (from API_URL: \${normalizedApiUrl})\`)" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
+      echo "  " >> ./lib/env.ts && \
+      echo "  return fullUrl" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "✓ lib/env.ts created"; \
     fi && \

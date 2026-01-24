@@ -30,7 +30,11 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
         <div className="container mx-auto px-4 py-4">
           <div className="relative flex items-center">
             {/* Logo and Title - Left Aligned */}
-            <div className="flex items-center space-x-3 flex-shrink-0">
+            <button
+              onClick={() => router.push('/')}
+              className="flex items-center space-x-3 flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
+              aria-label="Go to home page"
+            >
               <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center glow-text">
                 <span className="text-2xl font-bold">C</span>
               </div>
@@ -38,7 +42,7 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
                 <h1 className="text-xl font-bold text-gradient">Content Creator</h1>
                 <p className="text-xs text-gray-400">AI-Powered Content Generation</p>
               </div>
-            </div>
+            </button>
             
             {/* Nav Buttons - Starting from 40% width (only show if authenticated) */}
             {user && (
