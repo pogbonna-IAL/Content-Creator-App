@@ -14,25 +14,44 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway builds from repo root, and root .dockerignore excludes /lib/
-# Explicit COPY commands bypass .dockerignore, so copy web-ui/lib/ FIRST
-COPY web-ui/lib/ ./lib/
-COPY web-ui/app/ ./app/
-COPY web-ui/contexts/ ./contexts/
-COPY web-ui/public/ ./public/
-# Components directory will be handled by COPY . . (it's optional)
-COPY web-ui/*.json ./
-COPY web-ui/*.js ./
-COPY web-ui/*.ts ./
-COPY web-ui/*.config.* ./
+# CRITICAL: Railway's buildContext: "." means it builds from web-ui/ directory
+# Files are directly in build context (lib/, app/, etc.), not in web-ui/ subdirectory
+# However, Railway may use root .dockerignore which excludes /lib/
+# Explicit COPY commands bypass .dockerignore, so copy lib/ FIRST
+COPY lib/ ./lib/
+COPY app/ ./app/
+COPY contexts/ ./contexts/
+COPY public/ ./public/
+COPY components/ ./components/
+COPY *.json ./
+COPY *.js ./
+COPY *.ts ./
+COPY *.config.* ./
 # Then copy everything else (for any remaining files)
 COPY . .
 
-# Verify lib/env.ts exists
-RUN test -f lib/env.ts || \
-    (echo "ERROR: lib/env.ts not found after explicit copy!" && \
-     ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist" && \
-     exit 1)
+# Handle both build contexts: if building from repo root, copy web-ui/lib/ to lib/
+# #region agent log
+RUN echo "=== Ensuring lib/env.ts exists ===" && \
+    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
+      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
+      mkdir -p ./lib && \
+      cp -r web-ui/lib/* ./lib/ && \
+      echo "✓ lib/env.ts copied from web-ui/lib/"; \
+    elif [ -f "lib/env.ts" ]; then \
+      echo "Building from web-ui/ directory - lib/env.ts already exists"; \
+    else \
+      echo "✗ ERROR: lib/env.ts not found!" && \
+      echo "Build context:" && \
+      ls -la /app/ | head -20 && \
+      echo "Searching for env.ts:" && \
+      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      exit 1; \
+    fi && \
+    echo "Verifying lib/env.ts:" && \
+    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts missing!" && exit 1)) && \
+    echo "=== End Ensuring lib/env.ts ==="
+# #endregion
 
 # Diagnostic: Check what was actually copied
 # #region agent log
