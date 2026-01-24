@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import Navbar from '@/components/Navbar'
+import EmailVerificationBanner from '@/components/EmailVerificationBanner'
 import InputPanel from '@/components/InputPanel'
 import OutputPanel from '@/components/OutputPanel'
 import SocialMediaPanel from '@/components/SocialMediaPanel'
@@ -463,6 +464,7 @@ export default function Home() {
   return (
     <main className="min-h-screen flex flex-col">
       <Navbar selectedFeature={selectedFeature} onFeatureSelect={setSelectedFeature} />
+      <EmailVerificationBanner />
       <div className="flex-1 container mx-auto px-4 py-4 sm:py-6 md:py-8 max-w-7xl">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 md:gap-8 mb-4 sm:mb-6 md:mb-8">
           <div className="order-1 lg:order-none">

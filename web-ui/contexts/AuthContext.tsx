@@ -10,6 +10,7 @@ interface User {
   is_active: boolean
   is_verified: boolean
   is_admin: boolean
+  email_verified?: boolean
   provider: string | null
 }
 
@@ -21,6 +22,7 @@ interface AuthContextType {
   signup: (email: string, password: string, fullName?: string) => Promise<void>
   logout: () => Promise<void>
   setAuthToken: (token: string, user: User) => void  // Deprecated: cookies set by backend
+  verifyAuthStatus: () => Promise<void>  // Verify and refresh auth status
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -257,6 +259,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signup,
         logout,
         setAuthToken,
+        verifyAuthStatus,
       }}
     >
       {children}

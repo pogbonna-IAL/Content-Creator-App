@@ -59,6 +59,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_verified: bool
     is_admin: bool = False
+    email_verified: bool = False
     provider: Optional[str] = None
 
 
@@ -137,6 +138,31 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
         db.refresh(new_user)
         logger.info(f"User created successfully with ID: {new_user.id}")
         
+        # Auto-send verification email on signup
+        import secrets
+        from .services.email_provider import send_verification_email
+        
+        try:
+            # Generate verification token
+            verification_token = secrets.token_urlsafe(32)
+            
+            # Store token and timestamp
+            new_user.email_verification_token = verification_token
+            new_user.email_verification_sent_at = datetime.utcnow()
+            db.commit()
+            
+            # Build verification URL
+            frontend_url = config.FRONTEND_URL or "http://localhost:3000"
+            verification_url = f"{frontend_url}/verify-email?token={verification_token}"
+            
+            # Send verification email
+            send_verification_email(new_user.email, verification_url)
+            logger.info(f"Verification email sent to new user {new_user.id} ({new_user.email})")
+        except Exception as e:
+            # Log error but don't fail signup if email sending fails
+            logger.error(f"Failed to send verification email to new user {new_user.id}: {e}")
+            # Continue with signup even if email fails
+        
         # Audit log
         from .services.audit_log_service import get_audit_log_service
         audit_service = get_audit_log_service(db)
@@ -165,6 +191,7 @@ async def signup(user_data: UserSignup, db: Session = Depends(get_db)):
                 "is_active": new_user.is_active,
                 "is_verified": new_user.is_verified,
                 "is_admin": new_user.is_admin,
+                "email_verified": new_user.email_verified,
                 "provider": new_user.provider
             }
         }
@@ -253,15 +280,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     response_data = {
         "access_token": access_token,  # Keep for backward compatibility
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "is_active": user.is_active,
-            "is_verified": user.is_verified,
-            "is_admin": user.is_admin,
-            "provider": user.provider
-        }
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "is_active": user.is_active,
+                "is_verified": user.is_verified,
+                "is_admin": user.is_admin,
+                "email_verified": user.email_verified,
+                "provider": user.provider
+            }
     }
     
     # Create response with httpOnly cookie
@@ -298,15 +326,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current authenticated user information"""
-    return {
-        "id": current_user.id,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "is_active": current_user.is_active,
-        "is_verified": current_user.is_verified,
-        "is_admin": current_user.is_admin,
-        "provider": current_user.provider
-    }
+        return {
+            "id": current_user.id,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "is_active": current_user.is_active,
+            "is_verified": current_user.is_verified,
+            "is_admin": current_user.is_admin,
+            "email_verified": current_user.email_verified,
+            "provider": current_user.provider
+        }
 
 
 @router.post("/logout")
