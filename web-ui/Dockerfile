@@ -20,7 +20,7 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 COPY . .
 
 # Ensure lib/env.ts exists - handle both build contexts
-# Use a simple approach: copy from source if available, otherwise create it
+# Create it using echo commands to avoid heredoc parsing issues
 RUN mkdir -p ./lib && \
     if [ -f "lib/env.ts" ]; then \
       echo "✓ lib/env.ts exists"; \
@@ -28,33 +28,31 @@ RUN mkdir -p ./lib && \
       cp -r web-ui/lib/* ./lib/ && \
       echo "✓ lib/env.ts copied from web-ui/lib/"; \
     else \
-      cat > ./lib/env.ts <<'EOF'
-/**
- * Environment variable validation and configuration
- * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app
- */
-
-const isDockerBuild = process.env.DOCKER_BUILD === "true" || process.env.CI === "true"
-const isProduction = process.env.NODE_ENV === "production"
-const isBuildTime = process.env.NEXT_PHASE === "phase-production-build" || 
-                    process.env.NEXT_PHASE === "phase-development-build" ||
-                    typeof window === "undefined" && !process.env.NEXT_RUNTIME
-
-let apiUrl = process.env.NEXT_PUBLIC_API_URL
-
-if (isDockerBuild || isBuildTime) {
-  apiUrl = apiUrl || "http://localhost:8000"
-} else {
-  if (isProduction && !apiUrl) {
-    apiUrl = "http://localhost:8000"
-  }
-  if (!apiUrl) {
-    apiUrl = "http://localhost:8000"
-  }
-}
-
-export const API_URL = apiUrl
-EOF
+      echo "/**" > ./lib/env.ts && \
+      echo " * Environment variable validation and configuration" >> ./lib/env.ts && \
+      echo " * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app" >> ./lib/env.ts && \
+      echo " */" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "const isDockerBuild = process.env.DOCKER_BUILD === \"true\" || process.env.CI === \"true\"" >> ./lib/env.ts && \
+      echo "const isProduction = process.env.NODE_ENV === \"production\"" >> ./lib/env.ts && \
+      echo "const isBuildTime = process.env.NEXT_PHASE === \"phase-production-build\" ||" >> ./lib/env.ts && \
+      echo "                    process.env.NEXT_PHASE === \"phase-development-build\" ||" >> ./lib/env.ts && \
+      echo "                    typeof window === \"undefined\" && !process.env.NEXT_RUNTIME" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "let apiUrl = process.env.NEXT_PUBLIC_API_URL" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "if (isDockerBuild || isBuildTime) {" >> ./lib/env.ts && \
+      echo "  apiUrl = apiUrl || \"http://localhost:8000\"" >> ./lib/env.ts && \
+      echo "} else {" >> ./lib/env.ts && \
+      echo "  if (isProduction && !apiUrl) {" >> ./lib/env.ts && \
+      echo "    apiUrl = \"http://localhost:8000\"" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
+      echo "  if (!apiUrl) {" >> ./lib/env.ts && \
+      echo "    apiUrl = \"http://localhost:8000\"" >> ./lib/env.ts && \
+      echo "  }" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "export const API_URL = apiUrl" >> ./lib/env.ts && \
       echo "✓ lib/env.ts created"; \
     fi && \
     test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1)
