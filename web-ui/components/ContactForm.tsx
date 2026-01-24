@@ -59,7 +59,7 @@ export default function ContactForm() {
   return (
     <div className="glass-effect neon-border rounded-2xl p-8">
       <h2 className="text-3xl font-bold text-gradient mb-6">Contact Us</h2>
-      <p className="text-gray-400 mb-6">
+      <p className="text-gray-200 mb-6">
         Have a question or feedback? We'd love to hear from you!
       </p>
 

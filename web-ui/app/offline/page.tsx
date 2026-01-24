@@ -66,7 +66,7 @@ export default function OfflinePage() {
           <div className="space-y-4">
             <div className="bg-dark-bg/50 rounded-lg p-4 text-left">
               <h2 className="text-neon-cyan font-semibold mb-2">What you can do offline:</h2>
-              <ul className="text-sm text-gray-400 space-y-1">
+              <ul className="text-sm text-gray-200 space-y-1">
                 <li>• View previously generated content</li>
                 <li>• Browse cached pages</li>
                 <li>• Read documentation</li>

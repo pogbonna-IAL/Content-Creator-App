@@ -82,22 +82,22 @@ export default function Home() {
               <div className="glass-effect neon-border rounded-lg p-6">
                 <div className="text-4xl mb-4">📝</div>
                 <h3 className="text-xl font-bold mb-2">Blog Posts</h3>
-                <p className="text-gray-400">Generate comprehensive blog articles on any topic</p>
+                <p className="text-gray-200">Generate comprehensive blog articles on any topic</p>
               </div>
               <div className="glass-effect neon-border rounded-lg p-6">
                 <div className="text-4xl mb-4">📱</div>
                 <h3 className="text-xl font-bold mb-2">Social Media</h3>
-                <p className="text-gray-400">Create engaging posts for all social platforms</p>
+                <p className="text-gray-200">Create engaging posts for all social platforms</p>
               </div>
               <div className="glass-effect neon-border rounded-lg p-6">
                 <div className="text-4xl mb-4">🎙️</div>
                 <h3 className="text-xl font-bold mb-2">Audio Content</h3>
-                <p className="text-gray-400">Generate voiceovers and audio content</p>
+                <p className="text-gray-200">Generate voiceovers and audio content</p>
               </div>
               <div className="glass-effect neon-border rounded-lg p-6">
                 <div className="text-4xl mb-4">🎬</div>
                 <h3 className="text-xl font-bold mb-2">Video Content</h3>
-                <p className="text-gray-400">Create video scripts and content</p>
+                <p className="text-gray-200">Create video scripts and content</p>
               </div>
             </div>
           </section>

@@ -15,7 +15,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress 
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gradient mb-2">Audio Output</h2>
-        <p className="text-gray-400 text-sm">
+        <p className="text-gray-200 text-sm">
           AI-generated audio content will appear here
         </p>
       </div>
@@ -38,11 +38,11 @@ export default function AudioPanel({ output, isLoading, error, status, progress 
                 <p className="text-sm text-gray-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
                   {output}
                 </p>
-                <p className="text-xs text-gray-500 mt-2 text-right">Live Preview ({output.length} chars)</p>
+                <p className="text-xs text-gray-300 mt-2 text-right">Live Preview ({output.length} chars)</p>
               </div>
             )}
             {!output && (
-              <p className="text-xs text-gray-500 text-center max-w-xs">
+              <p className="text-xs text-gray-300 text-center max-w-xs">
                 Our AI crew is creating audio content
               </p>
             )}
@@ -58,7 +58,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress 
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 max-w-md">
               <p className="text-sm text-red-300 text-center break-words">{error}</p>
             </div>
-            <p className="text-xs text-gray-500 text-center mt-2">
+            <p className="text-xs text-gray-300 text-center mt-2">
               Check the browser console for more details
             </p>
           </div>
@@ -68,7 +68,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress 
               <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
                 {output}
               </div>
-              <p className="text-xs text-gray-500 mt-2 text-right">Total Length: {output.length} chars</p>
+              <p className="text-xs text-gray-300 mt-2 text-right">Total Length: {output.length} chars</p>
             </div>
             <div className="mt-4 flex flex-wrap gap-4">
               <button
@@ -118,8 +118,8 @@ export default function AudioPanel({ output, isLoading, error, status, progress 
                       d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
               </svg>
             </div>
-            <p className="text-gray-500">No audio content generated yet</p>
-            <p className="text-xs text-gray-600">Enter a topic and click generate to get started</p>
+            <p className="text-gray-300">No audio content generated yet</p>
+            <p className="text-xs text-gray-200">Enter a topic and click generate to get started</p>
           </div>
         )}
       </div>

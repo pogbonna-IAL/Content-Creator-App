@@ -121,6 +121,12 @@ const nextConfig = {
   // Next.js should auto-detect from tsconfig.json, but we ensure it's configured
   typescript: {
     // TypeScript errors won't block build, but paths should still work
+    ignoreBuildErrors: false,
+  },
+  // ESLint configuration - disable during builds to avoid compatibility issues
+  eslint: {
+    // Ignore ESLint errors during builds (ESLint 9 compatibility issue with Next.js 14)
+    ignoreDuringBuilds: true,
   },
   // Ensure experimental features don't interfere with path resolution
   experimental: {
@@ -542,18 +548,5 @@ if (configWithPWA.webpack) {
   }
 }
 
-// ESLint configuration - disable during builds to avoid compatibility issues
-const nextConfig = {
-  ...configWithPWA,
-  eslint: {
-    // Ignore ESLint errors during builds (ESLint 9 compatibility issue with Next.js 14)
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    // Keep TypeScript errors enabled
-    ignoreBuildErrors: false,
-  },
-}
-
-module.exports = nextConfig
+module.exports = configWithPWA
 

@@ -15,7 +15,7 @@ export default function VideoPanel({ output, isLoading, error, status, progress 
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gradient mb-2">Video Content Output</h2>
-        <p className="text-gray-400 text-sm">
+        <p className="text-gray-200 text-sm">
           AI-generated video content will appear here
         </p>
       </div>
@@ -38,11 +38,11 @@ export default function VideoPanel({ output, isLoading, error, status, progress 
                 <p className="text-sm text-gray-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
                   {output}
                 </p>
-                <p className="text-xs text-gray-500 mt-2 text-right">Live Preview ({output.length} chars)</p>
+                <p className="text-xs text-gray-300 mt-2 text-right">Live Preview ({output.length} chars)</p>
               </div>
             )}
             {!output && (
-              <p className="text-xs text-gray-500 text-center max-w-xs">
+              <p className="text-xs text-gray-300 text-center max-w-xs">
                 Our AI crew is creating video content
               </p>
             )}
@@ -58,7 +58,7 @@ export default function VideoPanel({ output, isLoading, error, status, progress 
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 max-w-md">
               <p className="text-sm text-red-300 text-center break-words">{error}</p>
             </div>
-            <p className="text-xs text-gray-500 text-center mt-2">
+            <p className="text-xs text-gray-300 text-center mt-2">
               Check the browser console for more details
             </p>
           </div>
@@ -68,7 +68,7 @@ export default function VideoPanel({ output, isLoading, error, status, progress 
               <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
                 {output}
               </div>
-              <p className="text-xs text-gray-500 mt-2 text-right">Total Length: {output.length} chars</p>
+              <p className="text-xs text-gray-300 mt-2 text-right">Total Length: {output.length} chars</p>
             </div>
             <div className="mt-4 flex flex-wrap gap-4">
               <button
@@ -118,8 +118,8 @@ export default function VideoPanel({ output, isLoading, error, status, progress 
                       d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
             </div>
-            <p className="text-gray-500">No video content generated yet</p>
-            <p className="text-xs text-gray-600">Enter a topic and click generate to get started</p>
+            <p className="text-gray-300">No video content generated yet</p>
+            <p className="text-xs text-gray-200">Enter a topic and click generate to get started</p>
           </div>
         )}
       </div>

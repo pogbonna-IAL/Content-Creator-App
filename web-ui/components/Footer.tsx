@@ -14,14 +14,14 @@ export default function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-6">
           <div>
             <h3 className="text-lg font-bold text-gradient mb-4">Content Creator</h3>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-gray-200">
               AI-powered content generation using MAS technology. Create comprehensive, 
               engaging content with the power of multiple AI agents working together.
             </p>
           </div>
           <div>
             <h4 className="text-sm font-semibold text-gray-300 mb-4">Quick Links</h4>
-            <ul className="space-y-2 text-sm text-gray-400">
+            <ul className="space-y-2 text-sm text-gray-200">
               <li>
                 <button
                   onClick={scrollToTop}
@@ -55,7 +55,7 @@ export default function Footer() {
           </div>
           <div>
             <h4 className="text-sm font-semibold text-gray-300 mb-4">Connect</h4>
-            <ul className="space-y-2 text-sm text-gray-400">
+            <ul className="space-y-2 text-sm text-gray-200">
               <li>
                 <a 
                   href="https://github.com/joaomdmoura/crewai" 
@@ -89,13 +89,13 @@ export default function Footer() {
         </div>
         <div className="border-t border-dark-border pt-6">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-gray-300">
               © {new Date().getFullYear()} Content Creator by Patrick Ogbonna. All rights reserved.
             </p>
             <div className="flex space-x-6">
-              <a href="/privacy" className="text-gray-500 hover:text-neon-cyan transition-colors text-sm">Privacy</a>
-              <a href="/terms" className="text-gray-500 hover:text-neon-cyan transition-colors text-sm">Terms</a>
-              <a href="/cookies" className="text-gray-500 hover:text-neon-cyan transition-colors text-sm">Cookies</a>
+              <a href="/privacy" className="text-gray-300 hover:text-neon-cyan transition-colors text-sm">Privacy</a>
+              <a href="/terms" className="text-gray-300 hover:text-neon-cyan transition-colors text-sm">Terms</a>
+              <a href="/cookies" className="text-gray-300 hover:text-neon-cyan transition-colors text-sm">Cookies</a>
             </div>
           </div>
         </div>

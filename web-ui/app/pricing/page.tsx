@@ -98,7 +98,7 @@ export default function PricingPage() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold text-gray-900 mb-4">Choose Your Plan</h1>
-          <p className="text-xl text-gray-600">
+          <p className="text-xl text-gray-200">
             Select the plan that best fits your content creation needs
           </p>
         </div>
@@ -106,7 +106,7 @@ export default function PricingPage() {
         {/* Payment Provider Selection */}
         <div className="mb-8 flex justify-center">
           <div className="bg-white p-4 rounded-lg shadow">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-200 mb-2">
               Payment Method
             </label>
             <select
@@ -135,7 +135,7 @@ export default function PricingPage() {
               </h3>
               
               <div className="mb-6">
-                <div className="text-sm text-gray-600 mb-2">Monthly Limits:</div>
+                <div className="text-sm text-gray-200 mb-2">Monthly Limits:</div>
                 <ul className="space-y-1 text-sm">
                   <li>Blog: {tier.limits.blog}</li>
                   <li>Social: {tier.limits.social}</li>
@@ -145,7 +145,7 @@ export default function PricingPage() {
               </div>
 
               <div className="mb-6">
-                <div className="text-sm font-medium text-gray-700 mb-2">Features:</div>
+                <div className="text-sm font-medium text-gray-200 mb-2">Features:</div>
                 <ul className="space-y-2">
                   {tier.features.map((feature, idx) => (
                     <li key={idx} className="flex items-start">
@@ -162,7 +162,7 @@ export default function PricingPage() {
                           d="M5 13l4 4L19 7"
                         />
                       </svg>
-                      <span className="text-sm text-gray-600">{feature}</span>
+                      <span className="text-sm text-gray-200">{feature}</span>
                     </li>
                   ))}
                 </ul>
@@ -173,7 +173,7 @@ export default function PricingPage() {
                 disabled={tier.name === "free"}
                 className={`w-full py-3 px-4 rounded-md font-medium ${
                   tier.name === "free"
-                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                    ? "bg-gray-600 text-gray-300 cursor-not-allowed"
                     : tier.name === "pro"
                     ? "bg-blue-600 text-white hover:bg-blue-700"
                     : "bg-gray-900 text-white hover:bg-gray-800"

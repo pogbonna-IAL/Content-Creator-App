@@ -77,7 +77,7 @@ export default function ContactModal({ isOpen, onClose }: ContactModalProps) {
           <h2 className="text-3xl font-bold text-gradient">Contact Us</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-neon-cyan transition-colors text-2xl leading-none"
+            className="text-gray-200 hover:text-neon-cyan transition-colors text-2xl leading-none"
             aria-label="Close"
           >
             ×

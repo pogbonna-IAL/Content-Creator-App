@@ -138,7 +138,7 @@ function BillingContent() {
             
             <div className="space-y-4">
               <div>
-                <span className="text-sm font-medium text-gray-700">Plan:</span>
+                <span className="text-sm font-medium text-gray-200">Plan:</span>
                 <span className="ml-2 text-lg font-semibold capitalize">{subscription.plan}</span>
               </div>
               
@@ -179,7 +179,7 @@ function BillingContent() {
           </div>
         ) : (
           <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
-            <p className="text-gray-600">You are currently on the Free plan.</p>
+            <p className="text-gray-200">You are currently on the Free plan.</p>
             <button
               onClick={() => router.push("/pricing")}
               className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
@@ -226,7 +226,7 @@ function BillingContent() {
                   </p>
                 </div>
                 
-                <div className="text-sm text-gray-600">
+                <div className="text-sm text-gray-200">
                   <p>
                     After completing the transfer, your subscription will be activated once we verify the payment.
                     This usually takes 1-2 business days.
@@ -236,7 +236,7 @@ function BillingContent() {
             ) : (
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
                     Payment Reference (Optional)
                   </label>
                   <input

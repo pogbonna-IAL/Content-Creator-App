@@ -40,7 +40,7 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
               </div>
               <div>
                 <h1 className="text-xl font-bold text-gradient">Content Creator</h1>
-                <p className="text-xs text-gray-400">AI-Powered Content Generation</p>
+                <p className="text-xs text-gray-200">AI-Powered Content Generation</p>
               </div>
             </button>
             
@@ -82,7 +82,7 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
                     <div className="absolute right-0 mt-2 w-48 glass-effect neon-border rounded-lg p-2">
                       <div className="px-3 py-2 border-b border-dark-border">
                         <p className="text-sm font-medium text-white">{user.full_name || user.email || 'User'}</p>
-                        {user.email && <p className="text-xs text-gray-400">{user.email}</p>}
+                        {user.email && <p className="text-xs text-gray-200">{user.email}</p>}
                       </div>
                       <button
                         onClick={handleLogout}

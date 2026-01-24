@@ -71,7 +71,7 @@ The server should be running at: ${API_URL}`
               <h1 className="text-3xl font-bold text-gradient mb-2">
                 {isSignUp ? 'Create Account' : 'Welcome Back'}
               </h1>
-              <p className="text-gray-400">
+              <p className="text-gray-200">
                 {isSignUp
                   ? 'Sign up to start creating content'
                   : 'Sign in to your account'}

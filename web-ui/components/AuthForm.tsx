@@ -100,7 +100,7 @@ export default function AuthForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       {isSignUp && (
         <div>
-          <label htmlFor="fullName" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="fullName" className="block text-sm font-medium text-gray-200">
             Full Name (Optional)
           </label>
           <input
@@ -115,7 +115,7 @@ export default function AuthForm({
       )}
       
       <div>
-        <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+        <label htmlFor="email" className="block text-sm font-medium text-gray-200">
           Email
         </label>
         <input
@@ -130,7 +130,7 @@ export default function AuthForm({
       </div>
       
       <div>
-        <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+        <label htmlFor="password" className="block text-sm font-medium text-gray-200">
           Password
         </label>
         <div className="relative mt-1">
@@ -147,7 +147,7 @@ export default function AuthForm({
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 focus:outline-none"
+            className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-300 hover:text-gray-100 focus:outline-none"
             aria-label={showPassword ? "Hide password" : "Show password"}
           >
             {showPassword ? (
@@ -163,7 +163,7 @@ export default function AuthForm({
           </button>
         </div>
         {isSignUp && (
-          <div className="mt-2 text-xs text-gray-600 space-y-1">
+          <div className="mt-2 text-xs text-gray-300 space-y-1">
             <p className="font-medium">Password must contain:</p>
             <ul className="list-disc list-inside space-y-0.5 ml-2">
               <li>At least 8 characters</li>
@@ -172,7 +172,7 @@ export default function AuthForm({
               <li>One number (0-9)</li>
               <li>One special character (!@#$%^&* etc.)</li>
             </ul>
-            <p className="text-gray-500 italic mt-1">Example: MyP@ssw0rd123</p>
+            <p className="text-gray-300 italic mt-1">Example: MyP@ssw0rd123</p>
           </div>
         )}
       </div>
@@ -186,7 +186,7 @@ export default function AuthForm({
             onChange={(e) => setRememberMe(e.target.checked)}
             className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
           />
-          <label htmlFor="rememberMe" className="ml-2 block text-sm text-gray-700">
+          <label htmlFor="rememberMe" className="ml-2 block text-sm text-gray-200">
             Remember my email
           </label>
         </div>
@@ -228,7 +228,7 @@ export default function AuthForm({
             <div className="w-full border-t border-gray-300" />
           </div>
           <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-white text-gray-500">Or continue with</span>
+            <span className="px-2 bg-white text-gray-700">Or continue with</span>
           </div>
         </div>
 
@@ -236,21 +236,21 @@ export default function AuthForm({
           <button
             type="button"
             onClick={() => onOAuthLogin('google')}
-            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
+            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Google
           </button>
           <button
             type="button"
             onClick={() => onOAuthLogin('facebook')}
-            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
+            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Facebook
           </button>
           <button
             type="button"
             onClick={() => onOAuthLogin('github')}
-            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
+            className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             GitHub
           </button>

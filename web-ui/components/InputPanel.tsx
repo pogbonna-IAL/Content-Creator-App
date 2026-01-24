@@ -21,7 +21,7 @@ export default function InputPanel({ onGenerate, isLoading }: InputPanelProps) {
     <div className="glass-effect neon-border rounded-2xl p-4 sm:p-6 h-full">
       <div className="mb-4 sm:mb-6">
         <h2 className="text-xl sm:text-2xl font-bold text-gradient mb-2">Create Content</h2>
-        <p className="text-gray-400 text-xs sm:text-sm">
+        <p className="text-gray-200 text-xs sm:text-sm">
           Enter a topic and let our AI crew create comprehensive content for you
         </p>
       </div>
@@ -75,7 +75,7 @@ export default function InputPanel({ onGenerate, isLoading }: InputPanelProps) {
       </form>
 
       <div className="mt-6 pt-6 border-t border-dark-border">
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-gray-300">
           💡 Tip: Be specific about your topic for better results
         </p>
       </div>

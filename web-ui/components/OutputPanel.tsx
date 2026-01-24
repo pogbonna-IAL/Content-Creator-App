@@ -22,7 +22,7 @@ export default function OutputPanel({ output, isLoading, error, status, progress
     <div className="glass-effect neon-border rounded-2xl p-4 sm:p-6 h-full flex flex-col">
       <div className="mb-4 sm:mb-6">
         <h2 className="text-xl sm:text-2xl font-bold text-gradient mb-2">Generated Content</h2>
-        <p className="text-gray-400 text-xs sm:text-sm">
+        <p className="text-gray-200 text-xs sm:text-sm">
           Your AI-generated content will appear here
         </p>
         {output && (
@@ -48,19 +48,19 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                     style={{ width: `${progress}%` }}
                   ></div>
                 </div>
-                <p className="text-xs text-gray-400 text-center">{progress}%</p>
+                <p className="text-xs text-gray-200 text-center">{progress}%</p>
               </div>
             )}
             {output && (
               <div className="w-full max-w-xs mt-4">
-                <p className="text-xs text-gray-500 text-center mb-2">Preview:</p>
+                <p className="text-xs text-gray-300 text-center mb-2">Preview:</p>
                 <div className="bg-dark-card rounded-lg p-3 max-h-32 overflow-y-auto">
                   <p className="text-xs text-gray-300">{output.substring(0, 200)}...</p>
                 </div>
               </div>
             )}
             {!output && (
-              <p className="text-xs text-gray-500 text-center max-w-xs">
+              <p className="text-xs text-gray-300 text-center max-w-xs">
                 Our AI crew is researching, writing, and editing your content
               </p>
             )}
@@ -76,7 +76,7 @@ export default function OutputPanel({ output, isLoading, error, status, progress
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 max-w-md">
               <p className="text-sm text-red-300 text-center break-words">{error}</p>
             </div>
-            <p className="text-xs text-gray-500 text-center mt-2">
+            <p className="text-xs text-gray-300 text-center mt-2">
               Check the browser console for more details
             </p>
           </div>
@@ -87,7 +87,7 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                 {output}
               </div>
               {output.length > 0 && (
-                <div className="mt-2 text-xs text-gray-500">
+                <div className="mt-2 text-xs text-gray-300">
                   Content length: {output.length} characters
                 </div>
               )}
@@ -143,8 +143,8 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                       d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
             </div>
-            <p className="text-gray-500">No content generated yet</p>
-            <p className="text-xs text-gray-600">Enter a topic and click generate to get started</p>
+            <p className="text-gray-300">No content generated yet</p>
+            <p className="text-xs text-gray-200">Enter a topic and click generate to get started</p>
           </div>
         )}
       </div>

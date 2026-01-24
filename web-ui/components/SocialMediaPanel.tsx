@@ -15,7 +15,7 @@ export default function SocialMediaPanel({ output, isLoading, error, status, pro
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gradient mb-2">Social Media Content</h2>
-        <p className="text-gray-400 text-sm">
+        <p className="text-gray-200 text-sm">
           AI-generated social media posts will appear here
         </p>
       </div>
@@ -38,11 +38,11 @@ export default function SocialMediaPanel({ output, isLoading, error, status, pro
                 <p className="text-sm text-gray-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
                   {output}
                 </p>
-                <p className="text-xs text-gray-500 mt-2 text-right">Live Preview ({output.length} chars)</p>
+                <p className="text-xs text-gray-300 mt-2 text-right">Live Preview ({output.length} chars)</p>
               </div>
             )}
             {!output && (
-              <p className="text-xs text-gray-500 text-center max-w-xs">
+              <p className="text-xs text-gray-300 text-center max-w-xs">
                 Our AI crew is creating engaging social media content
               </p>
             )}
@@ -58,7 +58,7 @@ export default function SocialMediaPanel({ output, isLoading, error, status, pro
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 max-w-md">
               <p className="text-sm text-red-300 text-center break-words">{error}</p>
             </div>
-            <p className="text-xs text-gray-500 text-center mt-2">
+            <p className="text-xs text-gray-300 text-center mt-2">
               Check the browser console for more details
             </p>
           </div>
@@ -68,7 +68,7 @@ export default function SocialMediaPanel({ output, isLoading, error, status, pro
               <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
                 {output}
               </div>
-              <p className="text-xs text-gray-500 mt-2 text-right">Total Length: {output.length} chars</p>
+              <p className="text-xs text-gray-300 mt-2 text-right">Total Length: {output.length} chars</p>
             </div>
             <div className="mt-4 flex flex-wrap gap-4">
               <button
@@ -119,8 +119,8 @@ export default function SocialMediaPanel({ output, isLoading, error, status, pro
                       d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
               </svg>
             </div>
-            <p className="text-gray-500">No social media content generated yet</p>
-            <p className="text-xs text-gray-600">Enter a topic and click generate to get started</p>
+            <p className="text-gray-300">No social media content generated yet</p>
+            <p className="text-xs text-gray-200">Enter a topic and click generate to get started</p>
           </div>
         )}
       </div>

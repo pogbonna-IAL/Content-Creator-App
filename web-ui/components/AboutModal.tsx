@@ -21,7 +21,7 @@ export default function AboutModal({ isOpen, onClose }: AboutModalProps) {
           <h2 className="text-3xl font-bold text-gradient">About Content Creator</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-neon-cyan transition-colors text-2xl leading-none"
+            className="text-gray-200 hover:text-neon-cyan transition-colors text-2xl leading-none"
             aria-label="Close"
           >
             ×
@@ -79,7 +79,7 @@ export default function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </div>
 
           <div className="pt-4 border-t border-dark-border">
-            <p className="text-sm text-gray-400 italic">
+            <p className="text-sm text-gray-200 italic">
               Powered by CrewAI and advanced language models. Built to make content creation accessible 
               to everyone.
             </p>
