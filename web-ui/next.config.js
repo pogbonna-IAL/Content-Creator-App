@@ -130,6 +130,19 @@ const nextConfig = {
   // Suppress React DevTools hook warnings
   webpack: (config, { dev, isServer, webpack: webpackInstance }) => {
     const projectRoot = path.resolve(__dirname)
+    const fs = require('fs')
+    
+    // #region agent log
+    const libEnvPathCheck = path.resolve(projectRoot, 'lib/env.ts')
+    const libEnvExists = fs.existsSync(libEnvPathCheck)
+    console.log('[DEBUG HYP-A] Main webpack config - File check:', {
+      libEnvPath: libEnvPathCheck,
+      libEnvExists,
+      isServer,
+      projectRoot,
+      aliasBefore: config.resolve?.alias?.['@/lib/env']
+    })
+    // #endregion
     
     // CRITICAL: Configure resolve BEFORE any other processing
     // This ensures the alias is set before Next.js processes imports
@@ -148,16 +161,33 @@ const nextConfig = {
     // CRITICAL: Also set explicit paths as fallbacks
     // These provide direct resolution paths if the @ alias doesn't work
     // NOTE: Don't include file extensions - webpack will resolve using resolve.extensions
+    const libEnvPath = path.resolve(projectRoot, 'lib/env')
+    const appLibEnvPath = path.resolve(projectRoot, 'app/lib/env')
+    
     config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
-    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env')
-    config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
+    config.resolve.alias['@/lib/env'] = libEnvPath
+    config.resolve.alias['@/app/lib/env'] = appLibEnvPath
     config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
     config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
+    
+    // #region agent log
+    console.log('[DEBUG HYP-D] Main webpack - Alias set:', {
+      '@/lib/env': config.resolve.alias['@/lib/env'],
+      '@/app/lib/env': config.resolve.alias['@/app/lib/env'],
+      libEnvPathWithExt: libEnvPath + '.ts',
+      libEnvFileExists: fs.existsSync(libEnvPath + '.ts'),
+      extensions: config.resolve.extensions?.slice(0, 5),
+      isServer
+    })
+    // #endregion
     
     // CRITICAL: Ensure aliases are set BEFORE other processing
     // Force override any existing aliases that might conflict
     if (!config.resolve.alias['@/app/lib/env']) {
-      config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
+      config.resolve.alias['@/app/lib/env'] = appLibEnvPath
+    }
+    if (!config.resolve.alias['@/lib/env']) {
+      config.resolve.alias['@/lib/env'] = libEnvPath
     }
     
     // CRITICAL: Ensure module resolution includes project root FIRST
@@ -204,6 +234,109 @@ const nextConfig = {
     // CRITICAL: Ensure @/app/lib/env alias is set correctly
     // The alias should work without needing NormalModuleReplacementPlugin
     // Removing the plugin to avoid absolute path resolution issues
+    
+    // Add webpack resolver plugin to debug module resolution
+    // #region agent log
+    const libEnvExistsCheck = fs.existsSync(libEnvPath + '.ts')
+    
+    // Add a custom resolver plugin to trace @/lib/env resolution
+    if (!config.resolve.plugins) {
+      config.resolve.plugins = []
+    }
+    
+    // Create a simple resolver plugin to log resolution attempts and results
+    class DebugResolverPlugin {
+      apply(resolver) {
+        // Log resolution attempts
+        resolver.hooks.resolve.tapAsync('DebugResolver', (request, resolveContext, callback) => {
+          if (request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
+            // #region agent log
+            const logData = {
+              request: request.request,
+              context: request.context,
+              path: request.path,
+              isServer,
+              libEnvPath,
+              libEnvExists: libEnvExistsCheck,
+              aliasValue: config.resolve.alias['@/lib/env'],
+              modules: config.resolve.modules?.slice(0, 3),
+              extensions: config.resolve.extensions?.slice(0, 5)
+            }
+            console.log('[DEBUG HYP-D] Resolver attempting:', logData)
+            // #endregion
+          }
+          callback()
+        })
+        
+        // Log successful resolutions - try multiple hooks
+        resolver.hooks.result.tap('DebugResolverResult', (request) => {
+          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
+            console.log('[DEBUG HYP-D] Resolver SUCCESS (result):', {
+              request: request.request,
+              resolvedPath: request.path || request.resolvedPath || request.context?.path,
+              isServer
+            })
+          }
+        })
+        
+        // Also try the 'afterResolve' hook
+        resolver.hooks.afterResolve.tapAsync('DebugResolverAfterResolve', (request, resolveContext, callback) => {
+          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
+            console.log('[DEBUG HYP-D] Resolver AFTER RESOLVE:', {
+              request: request.request,
+              path: request.path,
+              context: request.context?.path,
+              isServer
+            })
+          }
+          callback()
+        })
+        
+        // Log failed resolutions
+        resolver.hooks.noResolve.tap('DebugResolverNoResolve', (request, error) => {
+          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
+            console.log('[DEBUG HYP-D] Resolver FAILED:', {
+              request: request.request,
+              error: error?.message || String(error),
+              isServer
+            })
+          }
+        })
+      }
+    }
+    config.resolve.plugins.push(new DebugResolverPlugin())
+    
+    // Also add webpack error handling to catch module resolution failures
+    // #region agent log
+    config.plugins = config.plugins || []
+    config.plugins.push({
+      apply: (compiler) => {
+        compiler.hooks.compilation.tap('DebugModuleResolution', (compilation) => {
+          compilation.hooks.buildModule.tap('DebugModuleResolution', (module) => {
+            if (module.request && (module.request.includes('@/lib/env') || module.request === '@/lib/env')) {
+              console.log('[DEBUG HYP-D] Building module:', {
+                request: module.request,
+                userRequest: module.userRequest,
+                resource: module.resource,
+                isServer
+              })
+            }
+          })
+          
+          compilation.hooks.failedModule.tap('DebugModuleResolution', (module, error) => {
+            if (module.request && (module.request.includes('@/lib/env') || module.request === '@/lib/env')) {
+              console.log('[DEBUG HYP-D] Module build FAILED:', {
+                request: module.request,
+                userRequest: module.userRequest,
+                error: error?.message || String(error),
+                isServer
+              })
+            }
+          })
+        })
+      }
+    })
+    // #endregion
     
     // Debug logging
     console.log('='.repeat(60))
@@ -324,6 +457,17 @@ if (configWithPWA.webpack) {
     // Instead, rely on the alias which should work correctly
     const envPath = path.resolve(projectRoot, 'app/lib/env')
     const libEnvPath = path.resolve(projectRoot, 'lib/env')
+    const fs = require('fs')
+    
+    // #region agent log
+    const libEnvExists = fs.existsSync(libEnvPath + '.ts')
+    console.log('[DEBUG HYP-A] After PWA - File check:', {
+      libEnvPath: libEnvPath + '.ts',
+      libEnvExists,
+      isServer: options.isServer,
+      aliasBefore: result.resolve?.alias?.['@/lib/env']
+    })
+    // #endregion
     
     result.resolve.alias['@/app/lib/env'] = envPath
     result.resolve.alias['@/lib/env'] = libEnvPath
@@ -335,6 +479,17 @@ if (configWithPWA.webpack) {
     if (!result.resolve.alias['@/lib/env']) {
       result.resolve.alias['@/lib/env'] = libEnvPath
     }
+    
+    // #region agent log
+    console.log('[DEBUG HYP-E] After PWA - Final alias state:', {
+      '@/lib/env': result.resolve.alias['@/lib/env'],
+      '@/app/lib/env': result.resolve.alias['@/app/lib/env'],
+      libEnvFileExists: fs.existsSync(libEnvPath + '.ts'),
+      extensions: result.resolve.extensions?.slice(0, 5),
+      isServer: options.isServer,
+      modules: result.resolve.modules?.slice(0, 3)
+    })
+    // #endregion
     
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
     console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
