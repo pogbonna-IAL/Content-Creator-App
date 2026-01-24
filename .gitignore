@@ -20,6 +20,8 @@
 *keys*
 *password*
 *passwords*
+# Exception: password_validator.py is source code, not a password file
+!src/content_creation_crew/services/password_validator.py
 *token*
 *tokens*
 *credential*
