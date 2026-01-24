@@ -260,19 +260,26 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             pass
         # #endregion
         
-        response.set_cookie(
-            key="auth_token",
-            value=access_token,
-            max_age=cookie_max_age,
-            httponly=True,
-            secure=secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
-            samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
-            path="/",
-            domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
-        )
+        # Build cookie kwargs - only include domain if it's not None
+        cookie_kwargs = {
+            "key": "auth_token",
+            "value": access_token,
+            "max_age": cookie_max_age,
+            "httponly": True,
+            "secure": secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
+            "samesite": samesite_value,  # "none" for cross-origin, "lax" for same-origin
+            "path": "/"
+        }
+        # Only add domain if it's not None (FastAPI will omit it if not provided)
+        if cookie_domain:
+            cookie_kwargs["domain"] = cookie_domain
+        
+        response.set_cookie(**cookie_kwargs)
         
         # #region agent log
         try:
+            # Check all Set-Cookie headers (can be multiple)
+            set_cookie_headers = response.headers.getlist("set-cookie")
             with open('.cursor/debug.log', 'a') as f:
                 log_entry = {
                     "sessionId": "debug-session",
@@ -281,29 +288,48 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
                     "location": "auth_routes.py:260",
                     "message": "Cookie set - checking Set-Cookie header",
                     "data": {
-                        "set_cookie_header": response.headers.get("set-cookie", "NOT_FOUND"),
+                        "set_cookie_headers": set_cookie_headers,
+                        "set_cookie_count": len(set_cookie_headers),
                         "cookie_domain": cookie_domain,
-                        "samesite": samesite_value
+                        "samesite": samesite_value,
+                        "secure": secure_flag,
+                        "response_status": response.status_code,
+                        "all_response_headers": dict(response.headers)
                     },
                     "timestamp": int(datetime.utcnow().timestamp() * 1000)
                 }
                 f.write(json_module.dumps(log_entry) + '\n')
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                with open('.cursor/debug.log', 'a') as f:
+                    log_entry = {
+                        "sessionId": "debug-session",
+                        "runId": "cookie-set-signup",
+                        "hypothesisId": "A",
+                        "location": "auth_routes.py:275",
+                        "message": "Error logging Set-Cookie header",
+                        "data": {"error": str(e)},
+                        "timestamp": int(datetime.utcnow().timestamp() * 1000)
+                    }
+                    f.write(json_module.dumps(log_entry) + '\n')
+            except Exception:
+                pass
         # #endregion
         
         # Set user info cookie (not sensitive, can be readable)
         import json
-        response.set_cookie(
-            key="auth_user",
-            value=json.dumps(response_data["user"]),
-            max_age=cookie_max_age,
-            httponly=False,  # Can be read by frontend for display
-            secure=config.ENV in ["staging", "prod"],
-            samesite=samesite_value,  # Match auth_token cookie
-            path="/",
-            domain=cookie_domain  # Set domain for cross-subdomain sharing
-        )
+        user_cookie_kwargs = {
+            "key": "auth_user",
+            "value": json.dumps(response_data["user"]),
+            "max_age": cookie_max_age,
+            "httponly": False,  # Can be read by frontend for display
+            "secure": config.ENV in ["staging", "prod"],
+            "samesite": samesite_value,  # Match auth_token cookie
+            "path": "/"
+        }
+        if cookie_domain:
+            user_cookie_kwargs["domain"] = cookie_domain
+        response.set_cookie(**user_cookie_kwargs)
         
         return response
     except HTTPException:
@@ -415,19 +441,26 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         pass
     # #endregion
     
-    response.set_cookie(
-        key="auth_token",
-        value=access_token,
-        max_age=cookie_max_age,
-        httponly=True,
-        secure=secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
-        samesite=samesite_value,  # "none" for cross-origin, "lax" for same-origin
-        path="/",
-        domain=cookie_domain  # Set domain for cross-subdomain sharing (e.g., .up.railway.app)
-    )
+    # Build cookie kwargs - only include domain if it's not None
+    cookie_kwargs = {
+        "key": "auth_token",
+        "value": access_token,
+        "max_age": cookie_max_age,
+        "httponly": True,
+        "secure": secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
+        "samesite": samesite_value,  # "none" for cross-origin, "lax" for same-origin
+        "path": "/"
+    }
+    # Only add domain if it's not None (FastAPI will omit it if not provided)
+    if cookie_domain:
+        cookie_kwargs["domain"] = cookie_domain
+    
+    response.set_cookie(**cookie_kwargs)
     
     # #region agent log
     try:
+        # Check all Set-Cookie headers (can be multiple)
+        set_cookie_headers = response.headers.getlist("set-cookie")
         with open('.cursor/debug.log', 'a') as f:
             log_entry = {
                 "sessionId": "debug-session",
@@ -436,29 +469,48 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
                 "location": "auth_routes.py:356",
                 "message": "Cookie set - checking Set-Cookie header",
                 "data": {
-                    "set_cookie_header": response.headers.get("set-cookie", "NOT_FOUND"),
+                    "set_cookie_headers": set_cookie_headers,
+                    "set_cookie_count": len(set_cookie_headers),
                     "cookie_domain": cookie_domain,
-                    "samesite": samesite_value
+                    "samesite": samesite_value,
+                    "secure": secure_flag,
+                    "response_status": response.status_code,
+                    "all_response_headers": dict(response.headers)
                 },
                 "timestamp": int(datetime.utcnow().timestamp() * 1000)
             }
             f.write(json_module.dumps(log_entry) + '\n')
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            with open('.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "sessionId": "debug-session",
+                    "runId": "cookie-set-login",
+                    "hypothesisId": "A",
+                    "location": "auth_routes.py:375",
+                    "message": "Error logging Set-Cookie header",
+                    "data": {"error": str(e)},
+                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
+                }
+                f.write(json_module.dumps(log_entry) + '\n')
+        except Exception:
+            pass
     # #endregion
     
     # Set user info cookie (not sensitive, can be readable)
     import json
-    response.set_cookie(
-        key="auth_user",
-        value=json.dumps(response_data["user"]),
-        max_age=cookie_max_age,
-        httponly=False,  # Can be read by frontend for display
-        secure=config.ENV in ["staging", "prod"],
-        samesite=samesite_value,  # Match auth_token cookie
-        path="/",
-        domain=cookie_domain  # Set domain for cross-subdomain sharing
-    )
+    user_cookie_kwargs = {
+        "key": "auth_user",
+        "value": json.dumps(response_data["user"]),
+        "max_age": cookie_max_age,
+        "httponly": False,  # Can be read by frontend for display
+        "secure": config.ENV in ["staging", "prod"],
+        "samesite": samesite_value,  # Match auth_token cookie
+        "path": "/"
+    }
+    if cookie_domain:
+        user_cookie_kwargs["domain"] = cookie_domain
+    response.set_cookie(**user_cookie_kwargs)
     
     return response
 
