@@ -14,19 +14,29 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Build context is web-ui/ directory (not repo root)
-# This means COPY . . copies web-ui/ contents directly to /app
+# CRITICAL: Handle both build contexts (web-ui/ or repo root)
+# Railway may build from repo root despite buildContext setting
 COPY . .
 
-# Verify critical files exist
+# If building from repo root, copy web-ui/lib/ to lib/
 # #region agent log
-RUN echo "=== Build Context Verification ===" && \
-    echo "Current directory:" && pwd && \
-    echo "Checking for lib/env.ts:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-    echo "Contents of lib/ directory:" && \
-    (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!") && \
-    echo "=== End Build Context Verification ==="
+RUN echo "=== Build Context Detection ===" && \
+    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
+      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
+      mkdir -p ./lib && \
+      cp -r web-ui/lib/* ./lib/ && \
+      echo "✓ lib/env.ts copied from web-ui/lib/"; \
+    elif [ -f "lib/env.ts" ]; then \
+      echo "Building from web-ui/ - lib/env.ts already exists"; \
+    else \
+      echo "✗ ERROR: lib/env.ts not found!" && \
+      echo "Searched locations: web-ui/lib/env.ts, lib/env.ts" && \
+      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      exit 1; \
+    fi && \
+    echo "Verifying lib/env.ts exists:" && \
+    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
+    echo "=== End Build Context Detection ==="
 # #endregion
 
 # Verify critical files exist (this will fail the build if lib/env.ts is missing)
