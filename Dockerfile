@@ -69,8 +69,19 @@ COPY api_server.py ./
 COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
-COPY src/ ./src/
+
+# Copy src directory
+# IMPORTANT: Railway build context must include src/ directory
+# If this fails, ensure:
+# 1. src/ directory is committed to git and pushed to repository
+# 2. railway.json buildContext is set to "." (project root)
+# 3. Railway build cache is cleared (Settings -> Clear Build Cache)
+# 4. Check that Railway is building from the correct branch/commit
+COPY src ./src/
 # Note: config files are included in src/content_creation_crew/config/
+
+# Verify src directory was copied correctly
+RUN test -d ./src && echo "✓ src directory copied successfully" || (echo "✗ ERROR: src directory not found after COPY" && echo "Build context contents:" && ls -la / && exit 1)
 
 # Install hatchling build backend (required for package imports)
 RUN pip install --no-cache-dir hatchling setuptools wheel
