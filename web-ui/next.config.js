@@ -128,7 +128,7 @@ const nextConfig = {
     serverComponentsExternalPackages: [],
   },
   // Suppress React DevTools hook warnings
-  webpack: (config, { dev, isServer, webpack }) => {
+  webpack: (config, { dev, isServer, webpack: webpackInstance }) => {
     const projectRoot = path.resolve(__dirname)
     
     // CRITICAL: Configure resolve BEFORE any other processing
@@ -147,11 +147,18 @@ const nextConfig = {
     
     // CRITICAL: Also set explicit paths as fallbacks
     // These provide direct resolution paths if the @ alias doesn't work
+    // NOTE: Don't include file extensions - webpack will resolve using resolve.extensions
     config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
-    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env.ts')
-    config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env.ts')
+    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env')
+    config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
     config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
     config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
+    
+    // CRITICAL: Ensure aliases are set BEFORE other processing
+    // Force override any existing aliases that might conflict
+    if (!config.resolve.alias['@/app/lib/env']) {
+      config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
+    }
     
     // CRITICAL: Ensure module resolution includes project root FIRST
     config.resolve.modules = config.resolve.modules || []
@@ -194,6 +201,16 @@ const nextConfig = {
       config.resolve.extensions = orderedExts.length > 0 ? orderedExts : config.resolve.extensions
     }
     
+    // CRITICAL: Use NormalModuleReplacementPlugin as a fallback for @/app/lib/env
+    // This ensures the module resolves even if the alias doesn't work
+    config.plugins = config.plugins || []
+    config.plugins.push(
+      new webpackInstance.NormalModuleReplacementPlugin(
+        /^@\/app\/lib\/env$/,
+        path.resolve(projectRoot, 'app/lib/env.ts')
+      )
+    )
+    
     // Debug logging
     console.log('='.repeat(60))
     console.log('[WEBPACK CONFIG] Applied!')
@@ -201,6 +218,7 @@ const nextConfig = {
     console.log('[WEBPACK CONFIG] @ alias:', config.resolve.alias['@'])
     console.log('[WEBPACK CONFIG] @/lib alias:', config.resolve.alias['@/lib'])
     console.log('[WEBPACK CONFIG] @/lib/env alias:', config.resolve.alias['@/lib/env'])
+    console.log('[WEBPACK CONFIG] @/app/lib/env alias:', config.resolve.alias['@/app/lib/env'])
     console.log('[WEBPACK CONFIG] All aliases:', Object.keys(config.resolve.alias))
     console.log('[WEBPACK CONFIG] Extensions:', config.resolve.extensions.slice(0, 5))
     console.log('[WEBPACK CONFIG] Modules (full):', config.resolve.modules)
@@ -248,6 +266,7 @@ if (configWithPWA.webpack) {
   configWithPWA.webpack = (config, options) => {
     // First apply PWA's webpack config
     const result = pwaWebpack(config, options) || config
+    const webpackInstance = options.webpack || require('webpack')
     
     const projectRoot = path.resolve(__dirname)
     
@@ -258,8 +277,8 @@ if (configWithPWA.webpack) {
     result.resolve.alias = {
       '@': projectRoot,                    // Base alias
       '@/lib': path.resolve(projectRoot, 'lib'),  // Explicit lib alias
-      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),  // Explicit env alias
-      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),  // Explicit app/lib/env alias
+      '@/lib/env': path.resolve(projectRoot, 'lib/env'),  // Explicit env alias (no extension)
+      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env'),  // Explicit app/lib/env alias (no extension)
       '@/contexts': path.resolve(projectRoot, 'contexts'),  // Explicit contexts alias
       '@/components': path.resolve(projectRoot, 'components'),  // Explicit components alias
       ...existingAliases,                  // Then preserve other aliases
@@ -305,10 +324,29 @@ if (configWithPWA.webpack) {
       result.resolve.extensions = orderedExts.length > 0 ? orderedExts : result.resolve.extensions
     }
     
+    // CRITICAL: Force override @/app/lib/env alias to ensure it's set correctly
+    // This must be done AFTER PWA processes the config
+    const envPath = path.resolve(projectRoot, 'app/lib/env')
+    result.resolve.alias['@/app/lib/env'] = envPath
+    
+    // CRITICAL: Use NormalModuleReplacementPlugin as a fallback for @/app/lib/env
+    // This ensures the module resolves even if the alias doesn't work
+    result.plugins = result.plugins || []
+    const envPathWithExt = path.resolve(projectRoot, 'app/lib/env.ts')
+    
+    // Match exact @/app/lib/env - this will replace the import with the actual file path
+    result.plugins.push(
+      new webpackInstance.NormalModuleReplacementPlugin(
+        /^@\/app\/lib\/env$/,
+        envPathWithExt
+      )
+    )
+    
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
     console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
     console.log('[WEBPACK AFTER PWA] @/lib/env alias:', result.resolve.alias['@/lib/env'])
     console.log('[WEBPACK AFTER PWA] @/app/lib/env alias:', result.resolve.alias['@/app/lib/env'])
+    console.log('[WEBPACK AFTER PWA] NormalModuleReplacementPlugin target:', envPath)
     console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
     return result
@@ -322,13 +360,15 @@ if (configWithPWA.webpack) {
     config.resolve.alias = {
       '@': projectRoot,
       '@/lib': path.resolve(projectRoot, 'lib'),
-      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),
-      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),
-      '@/lib': path.resolve(projectRoot, 'lib'),
-      '@/lib/env': path.resolve(projectRoot, 'lib/env.ts'),
-      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env.ts'),
+      '@/lib/env': path.resolve(projectRoot, 'lib/env'),
+      '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env'),
+      '@/contexts': path.resolve(projectRoot, 'contexts'),
+      '@/components': path.resolve(projectRoot, 'components'),
       ...(config.resolve.alias || {}),
     }
+    
+    // CRITICAL: Force override to ensure @/app/lib/env is set correctly
+    config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
     
     // CRITICAL: Ensure module resolution includes project root FIRST
     config.resolve.modules = config.resolve.modules || []
