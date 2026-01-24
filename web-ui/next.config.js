@@ -70,22 +70,30 @@ const withPWA = require('next-pwa')({
 function validateBuildEnv() {
   const env = process.env.NODE_ENV || 'development'
   const isProd = env === 'production'
+  const isDev = env === 'development'
   const isDockerBuild = process.env.DOCKER_BUILD === 'true' || process.env.CI === 'true'
   
   // Check required environment variables
   const apiUrl = process.env.NEXT_PUBLIC_API_URL
   
+  // Skip strict validation during Docker builds (API URL can be set at runtime)
+  if (isDockerBuild) {
+    console.log('ℹ️  Docker build detected - allowing localhost/default API URL (will be set at runtime)')
+    return
+  }
+  
+  // Skip strict validation in development (localhost is allowed)
+  if (isDev) {
+    console.log('ℹ️  Development build detected - allowing localhost/default API URL')
+    return
+  }
+  
+  // Production validation (only for non-Docker, non-dev builds)
   if (isProd && !apiUrl) {
     console.error('❌ Build failed: NEXT_PUBLIC_API_URL is required in production')
     console.error('   Set it as an environment variable:')
     console.error('   NEXT_PUBLIC_API_URL=https://api.yourdomain.com npm run build')
     process.exit(1)
-  }
-  
-  // Skip strict validation during Docker builds (API URL can be set at runtime)
-  if (isDockerBuild) {
-    console.log('ℹ️  Docker build detected - allowing localhost/default API URL (will be set at runtime)')
-    return
   }
   
   if (isProd && apiUrl && !apiUrl.startsWith('https://')) {

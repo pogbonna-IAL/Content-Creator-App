@@ -11,6 +11,9 @@ import AudioPanel from '@/components/AudioPanel'
 import VideoPanel from '@/components/VideoPanel'
 import Footer from '@/components/Footer'
 
+// Force dynamic rendering (no static generation) to prevent React Context errors
+export const dynamic = 'force-dynamic'
+
 export default function Home() {
   // ALL hooks must be called at the top, before any conditional returns
   const { user, isLoading: authLoading } = useAuth()

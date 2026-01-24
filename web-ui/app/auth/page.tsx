@@ -9,6 +9,9 @@ import ContactForm from '@/components/ContactForm'
 // Import validated API URL from env module
 import { API_URL } from '@/app/lib/env'
 
+// Force dynamic rendering (no static generation) to prevent React Context errors
+export const dynamic = 'force-dynamic'
+
 export default function AuthPage() {
   const [isSignUp, setIsSignUp] = useState(false)
   const [error, setError] = useState<string | null>(null)

@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_URL } from "@/app/lib/env";
 
+// Force dynamic rendering (no static generation) to prevent React Context errors
+export const dynamic = 'force-dynamic'
+
 interface Tier {
   name: string;
   displayName: string;

@@ -5,6 +5,9 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { API_URL } from '@/app/lib/env'
 
+// Force dynamic rendering (no static generation) to prevent React Context errors
+export const dynamic = 'force-dynamic'
+
 function AuthCallbackContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
