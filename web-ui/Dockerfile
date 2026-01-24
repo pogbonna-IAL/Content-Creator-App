@@ -19,11 +19,8 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 # First copy everything (respects .dockerignore)
 COPY . .
 
-# If lib/env.ts is missing, create it from the source code
-# This handles the case where lib/ was excluded by .dockerignore
-# #region agent log
-RUN echo "=== Ensuring lib/env.ts exists ===" && \
-    if [ -f "lib/env.ts" ]; then \
+# Ensure lib/env.ts exists - handle both build contexts
+RUN if [ -f "lib/env.ts" ]; then \
       echo "✓ lib/env.ts exists in build context"; \
     elif [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
       echo "Building from repo root - copying web-ui/lib/ to lib/" && \
@@ -33,160 +30,35 @@ RUN echo "=== Ensuring lib/env.ts exists ===" && \
     else \
       echo "✗ lib/env.ts NOT found - creating it from source" && \
       mkdir -p ./lib && \
-      echo '/**' > ./lib/env.ts && \
-      echo ' * Environment variable validation and configuration' >> ./lib/env.ts && \
-      echo ' * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app' >> ./lib/env.ts && \
-      echo ' */' >> ./lib/env.ts && \
-      echo '' >> ./lib/env.ts && \
-      echo 'const isDockerBuild = process.env.DOCKER_BUILD === "true" || process.env.CI === "true"' >> ./lib/env.ts && \
-      echo 'const isProduction = process.env.NODE_ENV === "production"' >> ./lib/env.ts && \
-      echo 'const isBuildTime = process.env.NEXT_PHASE === "phase-production-build" ||' >> ./lib/env.ts && \
-      echo '                    process.env.NEXT_PHASE === "phase-development-build" ||' >> ./lib/env.ts && \
-      echo '                    typeof window === "undefined" && !process.env.NEXT_RUNTIME' >> ./lib/env.ts && \
-      echo '' >> ./lib/env.ts && \
-      echo 'let apiUrl = process.env.NEXT_PUBLIC_API_URL' >> ./lib/env.ts && \
-      echo '' >> ./lib/env.ts && \
-      echo 'if (isDockerBuild || isBuildTime) {' >> ./lib/env.ts && \
-      echo '  apiUrl = apiUrl || "http://localhost:8000"' >> ./lib/env.ts && \
-      echo '} else {' >> ./lib/env.ts && \
-      echo '  if (isProduction && !apiUrl) {' >> ./lib/env.ts && \
-      echo '    apiUrl = "http://localhost:8000"' >> ./lib/env.ts && \
-      echo '  }' >> ./lib/env.ts && \
-      echo '  if (!apiUrl) {' >> ./lib/env.ts && \
-      echo '    apiUrl = "http://localhost:8000"' >> ./lib/env.ts && \
-      echo '  }' >> ./lib/env.ts && \
-      echo '}' >> ./lib/env.ts && \
-      echo '' >> ./lib/env.ts && \
-      echo 'export const API_URL = apiUrl' >> ./lib/env.ts && \
+      printf '%s\n' \
+        '/**' \
+        ' * Environment variable validation and configuration' \
+        ' * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app' \
+        ' */' \
+        '' \
+        'const isDockerBuild = process.env.DOCKER_BUILD === "true" || process.env.CI === "true"' \
+        'const isProduction = process.env.NODE_ENV === "production"' \
+        'const isBuildTime = process.env.NEXT_PHASE === "phase-production-build" ||' \
+        '                    process.env.NEXT_PHASE === "phase-development-build" ||' \
+        '                    typeof window === "undefined" && !process.env.NEXT_RUNTIME' \
+        '' \
+        'let apiUrl = process.env.NEXT_PUBLIC_API_URL' \
+        '' \
+        'if (isDockerBuild || isBuildTime) {' \
+        '  apiUrl = apiUrl || "http://localhost:8000"' \
+        '} else {' \
+        '  if (isProduction && !apiUrl) {' \
+        '    apiUrl = "http://localhost:8000"' \
+        '  }' \
+        '  if (!apiUrl) {' \
+        '    apiUrl = "http://localhost:8000"' \
+        '  }' \
+        '}' \
+        '' \
+        'export const API_URL = apiUrl' > ./lib/env.ts && \
       echo "✓ lib/env.ts created"; \
     fi && \
-    echo "Verifying lib/env.ts:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
-    echo "=== End Ensuring lib/env.ts ==="
-# #endregion
-
-# Handle both build contexts: if building from repo root, copy web-ui/lib/ to lib/
-# #region agent log
-RUN echo "=== Ensuring lib/env.ts exists ===" && \
-    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
-      mkdir -p ./lib && \
-      cp -r web-ui/lib/* ./lib/ && \
-      echo "✓ lib/env.ts copied from web-ui/lib/"; \
-    elif [ -f "lib/env.ts" ]; then \
-      echo "Building from web-ui/ directory - lib/env.ts already exists"; \
-    else \
-      echo "✗ ERROR: lib/env.ts not found!" && \
-      echo "Build context:" && \
-      ls -la /app/ | head -20 && \
-      echo "Searching for env.ts:" && \
-      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
-      exit 1; \
-    fi && \
-    echo "Verifying lib/env.ts:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts missing!" && exit 1)) && \
-    echo "=== End Ensuring lib/env.ts ==="
-# #endregion
-
-# Diagnostic: Check what was actually copied
-# #region agent log
-RUN echo "=== Build Context Diagnostic ===" && \
-    echo "Current directory:" && pwd && \
-    echo "Contents of /app:" && ls -la /app/ | head -30 && \
-    echo "" && \
-    echo "Checking for web-ui/ directory:" && \
-    (test -d "web-ui" && echo "✓ web-ui/ exists" || echo "✗ web-ui/ does NOT exist") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/env.ts:" && \
-    (test -f "web-ui/lib/env.ts" && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
-    echo "" && \
-    echo "Checking for lib/env.ts:" && \
-    (test -f "lib/env.ts" && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-    echo "" && \
-    echo "Contents of lib/ (if exists):" && \
-    (ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist") && \
-    echo "" && \
-    echo "Searching for all env.ts files:" && \
-    find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
-    echo "=== End Build Context Diagnostic ==="
-# #endregion
-
-# Handle both build contexts: if building from repo root, move web-ui/ contents to root
-# #region agent log
-RUN echo "=== Copying lib/env.ts ===" && \
-    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Building from repo root - copying web-ui/lib/ to lib/" && \
-      mkdir -p ./lib && \
-      cp -r web-ui/lib/* ./lib/ && \
-      echo "✓ lib/env.ts copied from web-ui/lib/"; \
-    elif [ -f "lib/env.ts" ]; then \
-      echo "Building from web-ui/ directory - lib/env.ts already exists"; \
-    else \
-      echo "✗ ERROR: lib/env.ts not found in either location!" && \
-      echo "This means lib/ was excluded by .dockerignore" && \
-      exit 1; \
-    fi && \
-    echo "Verifying lib/env.ts exists:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
-    echo "=== End Copying lib/env.ts ==="
-# #endregion
-
-# Diagnostic: Check what was actually copied
-# #region agent log
-RUN echo "=== Build Context Diagnostic ===" && \
-    echo "Current directory:" && pwd && \
-    echo "Contents of /app:" && ls -la /app/ | head -30 && \
-    echo "" && \
-    echo "Checking for web-ui/ directory:" && \
-    (test -d "web-ui" && echo "✓ web-ui/ exists" || echo "✗ web-ui/ does NOT exist") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/ directory:" && \
-    (test -d "web-ui/lib" && echo "✓ web-ui/lib/ exists" || echo "✗ web-ui/lib/ does NOT exist") && \
-    echo "" && \
-    echo "Checking for web-ui/lib/env.ts:" && \
-    (test -f "web-ui/lib/env.ts" && echo "✓ web-ui/lib/env.ts found!" || echo "✗ web-ui/lib/env.ts NOT found!") && \
-    echo "" && \
-    echo "Contents of web-ui/lib/ (if exists):" && \
-    (ls -la web-ui/lib/ 2>/dev/null || echo "web-ui/lib/ does not exist") && \
-    echo "" && \
-    echo "Checking for lib/env.ts:" && \
-    (test -f "lib/env.ts" && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
-    echo "" && \
-    echo "Searching for all env.ts files:" && \
-    find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
-    echo "=== End Build Context Diagnostic ==="
-# #endregion
-
-# If building from repo root, copy web-ui/lib/ to lib/
-# #region agent log
-RUN echo "=== Copying lib/env.ts ===" && \
-    if [ -f "web-ui/lib/env.ts" ]; then \
-      echo "Found web-ui/lib/env.ts - copying to lib/" && \
-      mkdir -p ./lib && \
-      cp -r web-ui/lib/* ./lib/ && \
-      echo "✓ lib/env.ts copied from web-ui/lib/" && \
-      ls -la lib/; \
-    elif [ -f "lib/env.ts" ]; then \
-      echo "✓ lib/env.ts already exists in root"; \
-    else \
-      echo "✗ ERROR: lib/env.ts not found in either location!" && \
-      echo "This means web-ui/lib/ was excluded by .dockerignore" && \
-      exit 1; \
-    fi && \
-    echo "Verifying lib/env.ts exists:" && \
-    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts still missing!" && exit 1)) && \
-    echo "=== End Copying lib/env.ts ==="
-# #endregion
-
-# Verify critical files exist (this will fail the build if lib/env.ts is missing)
-RUN test -f lib/env.ts || \
-    (echo "ERROR: lib/env.ts not found in build context!" && \
-     echo "Build context should be web-ui/ directory" && \
-     echo "Current directory:" && pwd && \
-     echo "Contents of /app:" && ls -la /app/ | head -20 && \
-     echo "Searching for env.ts files:" && \
-     find /app -name "env.ts" -type f 2>/dev/null && \
-     exit 1)
+    test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1)
 
 # Set environment variables for build
 # CRITICAL: Set DOCKER_BUILD=true to skip strict validation during Docker builds
