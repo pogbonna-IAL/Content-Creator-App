@@ -425,8 +425,82 @@ logger.info("✓ Global exception handlers configured (M3 - error hygiene)")
 # Include authentication routes
 app.include_router(auth_router)
 app.include_router(oauth_router)
+
+# #region agent log
+# Add middleware to log all requests to help debug 404s
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+import json as json_module
+import time
+
+class RequestDebugMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        import logging
+        debug_logger = logging.getLogger(__name__)
+        
+        # Log request details
+        log_data = {
+            "sessionId": "debug-session",
+            "runId": "request-debug",
+            "hypothesisId": "E",
+            "location": "api_server.py:430",
+            "message": "Incoming request",
+            "data": {
+                "method": request.method,
+                "path": str(request.url.path),
+                "full_url": str(request.url),
+                "headers": dict(request.headers),
+                "query_params": dict(request.query_params)
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+        debug_logger.warning(f"[DEBUG] Request: {json_module.dumps(log_data)}")
+        
+        response = await call_next(request)
+        
+        # Log response details
+        log_data = {
+            "sessionId": "debug-session",
+            "runId": "request-debug",
+            "hypothesisId": "E",
+            "location": "api_server.py:450",
+            "message": "Response sent",
+            "data": {
+                "status_code": response.status_code,
+                "path": str(request.url.path),
+                "response_headers": dict(response.headers)
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+        debug_logger.warning(f"[DEBUG] Response: {json_module.dumps(log_data)}")
+        
+        return response
+
+app.add_middleware(RequestDebugMiddleware)
+# #endregion
+
 app.include_router(subscription_router)
 app.include_router(billing_router)
+
+# #region agent log
+# Add a test endpoint and log registered routes
+@app.get("/api/test-routing")
+async def test_routing():
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning("[DEBUG] Test routing endpoint hit successfully")
+    return {"message": "Routing works", "status": "ok"}
+
+# Log all registered routes for debugging
+import logging
+route_logger = logging.getLogger(__name__)
+all_routes = []
+for route in app.routes:
+    if hasattr(route, 'path') and hasattr(route, 'methods'):
+        all_routes.append(f"{list(route.methods)} {route.path}")
+route_logger.warning(f"[DEBUG] Registered routes count: {len(all_routes)}")
+route_logger.warning(f"[DEBUG] Sample routes (first 20): {all_routes[:20]}")
+# #endregion
 
 # Include v1 content routes
 from content_creation_crew.content_routes import router as content_router

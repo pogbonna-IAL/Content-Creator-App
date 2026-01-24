@@ -188,27 +188,37 @@ def get_auth_token(
     try:
         # #region agent log
         import json as json_module
+        import os
+        import time
+        
+        log_entry = {
+            "sessionId": "debug-session",
+            "runId": "cookie-read",
+            "hypothesisId": "B",
+            "location": "auth.py:189",
+            "message": "Attempting to read auth_token cookie",
+            "data": {
+                "request_url": str(request.url),
+                "request_host": request.headers.get("host", ""),
+                "request_origin": request.headers.get("origin", ""),
+                "cookie_header": request.headers.get("cookie", "NOT_FOUND"),
+                "all_cookies": list(request.cookies.keys()),
+                "cookie_count": len(request.cookies)
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+        
+        # Log to standard logger (visible in Railway logs)
+        logger.warning(f"[DEBUG] Cookie read attempt: {json_module.dumps(log_entry)}")
+        
+        # Also try to log to file
         try:
-            with open('.cursor/debug.log', 'a') as f:
-                log_entry = {
-                    "sessionId": "debug-session",
-                    "runId": "cookie-read",
-                    "hypothesisId": "B",
-                    "location": "auth.py:189",
-                    "message": "Attempting to read auth_token cookie",
-                    "data": {
-                        "request_url": str(request.url),
-                        "request_host": request.headers.get("host", ""),
-                        "request_origin": request.headers.get("origin", ""),
-                        "cookie_header": request.headers.get("cookie", "NOT_FOUND"),
-                        "all_cookies": list(request.cookies.keys()),
-                        "cookie_count": len(request.cookies)
-                    },
-                    "timestamp": int(__import__('time').time() * 1000)
-                }
+            log_path = os.path.join(os.getcwd(), '.cursor', 'debug.log')
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, 'a') as f:
                 f.write(json_module.dumps(log_entry) + '\n')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[DEBUG] Failed to write log file: {e}")
         # #endregion
         
         cookie_token = request.cookies.get("auth_token")

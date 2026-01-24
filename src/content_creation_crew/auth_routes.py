@@ -235,29 +235,40 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         
         # #region agent log
         import json as json_module
+        import os
+        import logging
+        debug_logger = logging.getLogger(__name__)
+        
+        log_data = {
+            "sessionId": "debug-session",
+            "runId": "cookie-set-signup",
+            "hypothesisId": "A",
+            "location": "auth_routes.py:234",
+            "message": "Setting auth_token cookie in signup",
+            "data": {
+                "cookie_domain": cookie_domain,
+                "samesite": samesite_value,
+                "secure": secure_flag,
+                "httponly": True,
+                "path": "/",
+                "env": config.ENV,
+                "host": request.headers.get("host", "") if request else None,
+                "origin": request.headers.get("origin", "") if request else None
+            },
+            "timestamp": int(datetime.utcnow().timestamp() * 1000)
+        }
+        
+        # Log to standard logger (visible in Railway logs)
+        debug_logger.warning(f"[DEBUG] Cookie setting params: {json_module.dumps(log_data)}")
+        
+        # Also try to log to file
         try:
-            with open('.cursor/debug.log', 'a') as f:
-                log_entry = {
-                    "sessionId": "debug-session",
-                    "runId": "cookie-set-signup",
-                    "hypothesisId": "A",
-                    "location": "auth_routes.py:234",
-                    "message": "Setting auth_token cookie in signup",
-                    "data": {
-                        "cookie_domain": cookie_domain,
-                        "samesite": samesite_value,
-                        "secure": secure_flag,
-                        "httponly": True,
-                        "path": "/",
-                        "env": config.ENV,
-                        "host": request.headers.get("host", "") if request else None,
-                        "origin": request.headers.get("origin", "") if request else None
-                    },
-                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
-                }
-                f.write(json_module.dumps(log_entry) + '\n')
-        except Exception:
-            pass
+            log_path = os.path.join(os.getcwd(), '.cursor', 'debug.log')
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, 'a') as f:
+                f.write(json_module.dumps(log_data) + '\n')
+        except Exception as e:
+            debug_logger.warning(f"[DEBUG] Failed to write log file: {e}")
         # #endregion
         
         # Build cookie kwargs - only include domain if it's not None
@@ -277,43 +288,44 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         response.set_cookie(**cookie_kwargs)
         
         # #region agent log
+        import os
+        import logging
+        debug_logger = logging.getLogger(__name__)
+        
         try:
             # Check all Set-Cookie headers (can be multiple)
             set_cookie_headers = response.headers.getlist("set-cookie")
-            with open('.cursor/debug.log', 'a') as f:
-                log_entry = {
-                    "sessionId": "debug-session",
-                    "runId": "cookie-set-signup",
-                    "hypothesisId": "A",
-                    "location": "auth_routes.py:260",
-                    "message": "Cookie set - checking Set-Cookie header",
-                    "data": {
-                        "set_cookie_headers": set_cookie_headers,
-                        "set_cookie_count": len(set_cookie_headers),
-                        "cookie_domain": cookie_domain,
-                        "samesite": samesite_value,
-                        "secure": secure_flag,
-                        "response_status": response.status_code,
-                        "all_response_headers": dict(response.headers)
-                    },
-                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
-                }
-                f.write(json_module.dumps(log_entry) + '\n')
-        except Exception as e:
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "cookie-set-signup",
+                "hypothesisId": "A",
+                "location": "auth_routes.py:260",
+                "message": "Cookie set - checking Set-Cookie header",
+                "data": {
+                    "set_cookie_headers": set_cookie_headers,
+                    "set_cookie_count": len(set_cookie_headers),
+                    "cookie_domain": cookie_domain,
+                    "samesite": samesite_value,
+                    "secure": secure_flag,
+                    "response_status": response.status_code,
+                    "all_response_headers": dict(response.headers)
+                },
+                "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            }
+            
+            # Log to standard logger (visible in Railway logs)
+            debug_logger.warning(f"[DEBUG] Set-Cookie headers: {json_module.dumps(log_entry)}")
+            
+            # Also try to log to file
             try:
-                with open('.cursor/debug.log', 'a') as f:
-                    log_entry = {
-                        "sessionId": "debug-session",
-                        "runId": "cookie-set-signup",
-                        "hypothesisId": "A",
-                        "location": "auth_routes.py:275",
-                        "message": "Error logging Set-Cookie header",
-                        "data": {"error": str(e)},
-                        "timestamp": int(datetime.utcnow().timestamp() * 1000)
-                    }
+                log_path = os.path.join(os.getcwd(), '.cursor', 'debug.log')
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                with open(log_path, 'a') as f:
                     f.write(json_module.dumps(log_entry) + '\n')
-            except Exception:
-                pass
+            except Exception as e:
+                debug_logger.warning(f"[DEBUG] Failed to write log file: {e}")
+        except Exception as e:
+            debug_logger.warning(f"[DEBUG] Error logging Set-Cookie header: {e}")
         # #endregion
         
         # Set user info cookie (not sensitive, can be readable)
