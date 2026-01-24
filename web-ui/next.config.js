@@ -201,15 +201,9 @@ const nextConfig = {
       config.resolve.extensions = orderedExts.length > 0 ? orderedExts : config.resolve.extensions
     }
     
-    // CRITICAL: Use NormalModuleReplacementPlugin as a fallback for @/app/lib/env
-    // This ensures the module resolves even if the alias doesn't work
-    config.plugins = config.plugins || []
-    config.plugins.push(
-      new webpackInstance.NormalModuleReplacementPlugin(
-        /^@\/app\/lib\/env$/,
-        path.resolve(projectRoot, 'app/lib/env.ts')
-      )
-    )
+    // CRITICAL: Ensure @/app/lib/env alias is set correctly
+    // The alias should work without needing NormalModuleReplacementPlugin
+    // Removing the plugin to avoid absolute path resolution issues
     
     // Debug logging
     console.log('='.repeat(60))
@@ -326,27 +320,20 @@ if (configWithPWA.webpack) {
     
     // CRITICAL: Force override @/app/lib/env alias to ensure it's set correctly
     // This must be done AFTER PWA processes the config
+    // Remove NormalModuleReplacementPlugin - it was causing absolute path issues
+    // Instead, rely on the alias which should work correctly
     const envPath = path.resolve(projectRoot, 'app/lib/env')
     result.resolve.alias['@/app/lib/env'] = envPath
     
-    // CRITICAL: Use NormalModuleReplacementPlugin as a fallback for @/app/lib/env
-    // This ensures the module resolves even if the alias doesn't work
-    result.plugins = result.plugins || []
-    const envPathWithExt = path.resolve(projectRoot, 'app/lib/env.ts')
-    
-    // Match exact @/app/lib/env - this will replace the import with the actual file path
-    result.plugins.push(
-      new webpackInstance.NormalModuleReplacementPlugin(
-        /^@\/app\/lib\/env$/,
-        envPathWithExt
-      )
-    )
+    // Ensure the alias is set and not overridden
+    if (!result.resolve.alias['@/app/lib/env']) {
+      result.resolve.alias['@/app/lib/env'] = envPath
+    }
     
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
     console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
     console.log('[WEBPACK AFTER PWA] @/lib/env alias:', result.resolve.alias['@/lib/env'])
     console.log('[WEBPACK AFTER PWA] @/app/lib/env alias:', result.resolve.alias['@/app/lib/env'])
-    console.log('[WEBPACK AFTER PWA] NormalModuleReplacementPlugin target:', envPath)
     console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
     return result
