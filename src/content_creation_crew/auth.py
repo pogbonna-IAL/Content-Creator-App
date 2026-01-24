@@ -166,9 +166,51 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(
+def get_auth_token(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer)
+) -> Optional[str]:
+    """
+    Extract authentication token from Authorization header or cookie.
+    Returns None if no token is found.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Try Authorization header first
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+        logger.debug("Token found in Authorization header")
+        return token
+    
+    # Fallback to cookie
+    try:
+        cookie_token = request.cookies.get("auth_token")
+        if cookie_token:
+            logger.info("Using token from cookie (no Authorization header present)")
+            return cookie_token
+        else:
+            # Log for debugging - check what cookies are available
+            all_cookies = list(request.cookies.keys())
+            cookie_count = len(all_cookies)
+            logger.warning(
+                f"No auth_token cookie found. "
+                f"Total cookies received: {cookie_count}, "
+                f"Cookie names: {all_cookies}, "
+                f"Request URL: {request.url}, "
+                f"Request headers: {dict(request.headers)}"
+            )
+    except AttributeError as e:
+        logger.error(f"Request object missing cookies attribute: {e}, Request type: {type(request)}")
+    except Exception as e:
+        logger.error(f"Error accessing request.cookies: {e}, Request type: {type(request)}")
+    
+    return None
+
+
+async def get_current_user(
+    token: Optional[str] = Depends(get_auth_token),
     db: Session = Depends(get_db)
 ) -> User:
     """Get current authenticated user from token
@@ -178,18 +220,6 @@ async def get_current_user(
     """
     import logging
     logger = logging.getLogger(__name__)
-    
-    # Try to get token from Authorization header first
-    token = None
-    if credentials and credentials.credentials:
-        token = credentials.credentials
-    
-    # If no token in header, try to get from cookie (for httpOnly cookie support)
-    if not token:
-        cookie_token = request.cookies.get("auth_token")
-        if cookie_token:
-            token = cookie_token
-            logger.info("Using token from cookie (no Authorization header present)")
     
     # Validate token exists and is not empty
     if not token or not token.strip():
