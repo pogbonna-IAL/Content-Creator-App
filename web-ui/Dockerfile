@@ -52,7 +52,30 @@ RUN mkdir -p ./lib && \
       echo "  }" >> ./lib/env.ts && \
       echo "}" >> ./lib/env.ts && \
       echo "" >> ./lib/env.ts && \
+      echo "// Normalize API URL: remove trailing slash and ensure it's not empty" >> ./lib/env.ts && \
+      echo "if (apiUrl) {" >> ./lib/env.ts && \
+      echo "  apiUrl = apiUrl.trim()" >> ./lib/env.ts && \
+      echo "  // Remove trailing slash to prevent double slashes in URL construction" >> ./lib/env.ts && \
+      echo "  apiUrl = apiUrl.replace(/\/+$/, '')" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "// Final fallback: ensure API_URL is never empty or undefined" >> ./lib/env.ts && \
+      echo "if (!apiUrl || apiUrl === '') {" >> ./lib/env.ts && \
+      echo "  apiUrl = 'http://localhost:8000'" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
       echo "export const API_URL = apiUrl" >> ./lib/env.ts && \
+      echo "" >> ./lib/env.ts && \
+      echo "/**" >> ./lib/env.ts && \
+      echo " * Helper function to construct API URLs safely" >> ./lib/env.ts && \
+      echo " * Ensures no double slashes and handles empty API_URL gracefully" >> ./lib/env.ts && \
+      echo " */" >> ./lib/env.ts && \
+      echo "export function getApiUrl(path: string): string {" >> ./lib/env.ts && \
+      echo "  // Remove leading slash from path if present" >> ./lib/env.ts && \
+      echo "  const cleanPath = path.startsWith('/') ? path.slice(1) : path" >> ./lib/env.ts && \
+      echo "  // Ensure API_URL doesn't end with slash and path doesn't start with slash" >> ./lib/env.ts && \
+      echo "  return \`\${API_URL}/\${cleanPath}\`" >> ./lib/env.ts && \
+      echo "}" >> ./lib/env.ts && \
       echo "✓ lib/env.ts created"; \
     fi && \
     test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1)
