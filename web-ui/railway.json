@@ -3,7 +3,7 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile",
-    "buildContext": "."
+    "buildContext": "web-ui"
   },
   "deploy": {
     "startCommand": "",
