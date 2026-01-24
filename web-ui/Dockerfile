@@ -14,26 +14,33 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Railway builds from repo root, so web-ui/ directories must be explicitly copied
-# Copy required directories first, handling optional ones with RUN commands
-COPY web-ui/lib/ ./lib/
-COPY web-ui/app/ ./app/
-COPY web-ui/contexts/ ./contexts/
+# CRITICAL: Railway's buildContext: "." means it builds from web-ui/ directory
+# So we copy directly from web-ui/ subdirectories (not web-ui/web-ui/)
+# However, Railway may build from repo root, so we handle both cases with RUN commands
+COPY . .
 
-# Copy optional directories (create if they don't exist)
-RUN mkdir -p ./public ./components && \
-    if [ -d "web-ui/public" ] && [ "$(ls -A web-ui/public 2>/dev/null)" ]; then \
-      cp -r web-ui/public/* ./public/; \
+# Handle both build contexts: if building from repo root, move web-ui/ contents to root
+# #region agent log
+RUN echo "=== Build Context Detection ===" && \
+    if [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
+      echo "Building from repo root - moving web-ui/ contents to root" && \
+      cp -r web-ui/lib/* ./lib/ 2>/dev/null || true && \
+      cp -r web-ui/app/* ./app/ 2>/dev/null || true && \
+      cp -r web-ui/contexts/* ./contexts/ 2>/dev/null || true && \
+      cp -r web-ui/public/* ./public/ 2>/dev/null || true && \
+      cp -r web-ui/components/* ./components/ 2>/dev/null || true && \
+      echo "✓ Files moved from web-ui/ to root"; \
+    elif [ -f "lib/env.ts" ]; then \
+      echo "Building from web-ui/ directory - files already in root"; \
+    else \
+      echo "✗ ERROR: lib/env.ts not found!" && \
+      find /app -name "env.ts" -type f 2>/dev/null | head -10 && \
+      exit 1; \
     fi && \
-    if [ -d "web-ui/components" ] && [ "$(ls -A web-ui/components 2>/dev/null)" ]; then \
-      cp -r web-ui/components/* ./components/; \
-    fi
-
-# Copy config files
-COPY web-ui/*.json ./
-COPY web-ui/*.js ./
-COPY web-ui/*.ts ./
-COPY web-ui/*.config.* ./
+    echo "Verifying lib/env.ts exists:" && \
+    (test -f lib/env.ts && echo "✓ lib/env.ts verified!" || (echo "✗ lib/env.ts missing!" && exit 1)) && \
+    echo "=== End Build Context Detection ==="
+# #endregion
 
 # Diagnostic: Check what was actually copied
 # #region agent log
