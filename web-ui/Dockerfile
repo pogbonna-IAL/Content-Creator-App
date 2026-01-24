@@ -14,19 +14,29 @@ COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code
-# CRITICAL: Explicitly copy lib/ directory FIRST to ensure it's included
-# The root .dockerignore excludes lib/, so we must copy it explicitly
-COPY lib/ ./lib/
-COPY app/ ./app/
-COPY contexts/ ./contexts/
-COPY public/ ./public/
-# Copy optional directories if they exist
-COPY components/ ./components/ 2>/dev/null || mkdir -p ./components
-# Copy all config and source files
-COPY *.json ./
-COPY *.js ./
-COPY *.ts ./
-COPY *.config.* ./
+# CRITICAL: Railway builds from repo root (not web-ui/), so we need to copy web-ui/ contents
+# First copy everything, then move web-ui/ contents to root if needed
+COPY . .
+
+# If building from repo root, move web-ui files to root
+# #region agent log
+RUN echo "=== Build Context Check ===" && \
+    if [ -d "web-ui" ]; then \
+      echo "Building from repo root - web-ui/ directory exists" && \
+      echo "Moving web-ui files to root..." && \
+      cp -r web-ui/* . && \
+      cp -r web-ui/.* . 2>/dev/null || true && \
+      echo "Files moved. Checking lib/env.ts:" && \
+      (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+      ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!"; \
+    else \
+      echo "Building from web-ui/ directory - web-ui/ does not exist" && \
+      echo "Checking lib/env.ts:" && \
+      (test -f lib/env.ts && echo "✓ lib/env.ts found!" || echo "✗ lib/env.ts NOT found!") && \
+      ls -la lib/ 2>/dev/null || echo "lib/ directory does not exist!"; \
+    fi && \
+    echo "=== End Build Context Check ==="
+# #endregion
 
 # Diagnostic: List build context to understand what files are available
 # #region agent log
