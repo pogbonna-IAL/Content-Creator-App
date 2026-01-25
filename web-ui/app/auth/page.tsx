@@ -8,6 +8,7 @@ import ContactForm from '@/components/ContactForm'
 
 // Import validated API URL from env module
 import { API_URL, getApiUrl } from '@/lib/env'
+import { apiCall } from '@/lib/api-client'
 
 // Force dynamic rendering (no static generation) to prevent React Context errors
 export const dynamic = 'force-dynamic'

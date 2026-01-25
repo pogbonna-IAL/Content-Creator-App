@@ -29,6 +29,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 // Import validated API URL from env module
 import { API_URL, getApiUrl } from '@/lib/env'
+import { apiCall } from '@/lib/api-client'
 const USER_COOKIE = 'auth_user'  // Non-httpOnly cookie for user display info
 
 export function AuthProvider({ children }: { children: ReactNode }) {
