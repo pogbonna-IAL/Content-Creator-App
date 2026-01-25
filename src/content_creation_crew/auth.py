@@ -382,7 +382,13 @@ async def get_current_user(
     jti = payload.get("jti")
     if jti:
         try:
-            from .services.token_blacklist import get_token_blacklist
+            # Try relative import first, fallback to absolute import
+            try:
+                from .services.token_blacklist import get_token_blacklist
+            except ImportError:
+                # Fallback to absolute import if relative import fails
+                from content_creation_crew.services.token_blacklist import get_token_blacklist
+            
             blacklist = get_token_blacklist()
             
             if blacklist.is_revoked(jti):
@@ -405,7 +411,11 @@ async def get_current_user(
                         headers={"WWW-Authenticate": "Bearer"},
                     )
         except HTTPException:
+            # Re-raise HTTP exceptions (token is blacklisted)
             raise
+        except ImportError as e:
+            logger.warning(f"Token blacklist module not available: {e}. Continuing without blacklist check.")
+            # Continue without blacklist check if module not available
         except Exception as e:
             logger.error(f"Error checking token blacklist: {e}")
             # Continue anyway - don't block auth if blacklist check fails
