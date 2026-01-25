@@ -294,16 +294,13 @@ const nextConfig = {
           
           // Handle @/lib/api-client requests
           if (request.request === '@/lib/api-client') {
-            const apiClientTsPath = apiClientPath + '.ts'
-            if (fs.existsSync(apiClientTsPath)) {
-              const resolvedPath = apiClientPath.replace(/\\/g, '/')
-              request.request = resolvedPath
-              console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/api-client to', resolvedPath)
-              callback()
-              return
-            } else {
-              console.warn('[WEBPACK] EnvResolverPlugin: lib/api-client.ts not found at', apiClientTsPath)
-            }
+            // Always redirect - don't check file existence (file might not exist yet during build)
+            // Webpack will handle the actual file resolution
+            const resolvedPath = apiClientPath.replace(/\\/g, '/')
+            request.request = resolvedPath
+            console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/api-client to', resolvedPath)
+            callback()
+            return
           }
           
           // For all other requests, continue normally
@@ -343,20 +340,17 @@ const nextConfig = {
     }
     
     // Add plugin for @/lib/api-client
-    const apiClientTsPath = apiClientPath + '.ts'
-    if (fs.existsSync(apiClientTsPath)) {
-      const apiClientReplacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
-        /^@\/lib\/api-client$/,
-        (resource) => {
-          const resolvedPath = apiClientPath.replace(/\\/g, '/')
-          resource.request = resolvedPath
-          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with', resolvedPath)
-        }
-      )
-      config.plugins.unshift(apiClientReplacementPlugin)
-    } else {
-      console.warn('[WEBPACK] Warning: lib/api-client.ts not found at', apiClientTsPath)
-    }
+    // Don't check file existence - webpack will handle resolution
+    // The file should exist, but checking might fail in Docker builds
+    const apiClientReplacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
+      /^@\/lib\/api-client$/,
+      (resource) => {
+        const resolvedPath = apiClientPath.replace(/\\/g, '/')
+        resource.request = resolvedPath
+        console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with', resolvedPath)
+      }
+    )
+    config.plugins.unshift(apiClientReplacementPlugin)
     
     // Also add webpack error handling to catch module resolution failures
     // #region agent log
