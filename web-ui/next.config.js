@@ -173,14 +173,18 @@ const nextConfig = {
     config.resolve.alias = {
       '@': projectRoot,    // Base alias - MUST be first
       '@/lib': path.resolve(projectRoot, 'lib'),  // Directory alias
-      '@/lib/env': libEnvPath,  // File alias (without extension - webpack adds it)
-      '@/lib/api-client': apiClientPath,  // File alias for api-client
+      '@/lib/env': libEnvPath,  // File alias (absolute path, no extension)
+      '@/lib/api-client': apiClientPath,  // File alias (absolute path, no extension)
       '@/app/lib/env': appLibEnvPath,  // File alias for app/lib/env
       '@/contexts': path.resolve(projectRoot, 'contexts'),
       '@/components': path.resolve(projectRoot, 'components'),
       '@/app': path.resolve(projectRoot, 'app'),
       ...existingAliases,  // Then preserve other aliases (but @ takes precedence)
     }
+    
+    // CRITICAL: Force override to ensure file aliases are set (they might be overridden by existingAliases)
+    config.resolve.alias['@/lib/env'] = libEnvPath
+    config.resolve.alias['@/lib/api-client'] = apiClientPath
     
     // CRITICAL: Ensure resolve.extensions includes .ts and .tsx
     if (!config.resolve.extensions) {
@@ -290,37 +294,9 @@ const nextConfig = {
       config.plugins = []
     }
     
-    // Only add plugin if file exists
-    if (fs.existsSync(libEnvTsPath)) {
-      // NormalModuleReplacementPlugin runs during the module replacement phase
-      // It catches imports matching the regex and replaces them with the actual path
-      const replacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
-        /^@\/lib\/env$/,
-        (resource) => {
-          // Use relative path from project root (lib/env) so webpack can resolve it
-          // Webpack will resolve this via resolve.modules which includes projectRoot
-          resource.request = 'lib/env'
-          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with lib/env')
-        }
-      )
-      
-      // Add plugin at the beginning so it runs early
-      config.plugins.unshift(replacementPlugin)
-    } else {
-      console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath)
-    }
-    
-    // Add plugin for @/lib/api-client
-    // Use relative path from project root (lib/api-client) so webpack can resolve it
-    const apiClientReplacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
-      /^@\/lib\/api-client$/,
-      (resource) => {
-        // Use relative path from project root - webpack will resolve via resolve.modules
-        resource.request = 'lib/api-client'
-        console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with lib/api-client')
-      }
-    )
-    config.plugins.unshift(apiClientReplacementPlugin)
+    // Don't use NormalModuleReplacementPlugin - let webpack's alias system handle it
+    // The aliases are configured above and should work correctly
+    // If aliases don't work, the issue is elsewhere (e.g., Next.js alias processing)
     
     // Also add webpack error handling to catch module resolution failures
     // #region agent log
@@ -541,8 +517,12 @@ if (configWithPWA.webpack) {
       ...(config.resolve.alias || {}),
     }
     
-    // CRITICAL: Force override to ensure @/app/lib/env is set correctly
+    // CRITICAL: Force override to ensure file aliases are set correctly
+    const apiClientPathFallback = path.resolve(projectRoot, 'lib/api-client')
+    const libEnvPathFallback = path.resolve(projectRoot, 'lib/env')
     config.resolve.alias['@/app/lib/env'] = path.resolve(projectRoot, 'app/lib/env')
+    config.resolve.alias['@/lib/env'] = libEnvPathFallback
+    config.resolve.alias['@/lib/api-client'] = apiClientPathFallback
     
     // CRITICAL: Ensure module resolution includes project root FIRST
     config.resolve.modules = config.resolve.modules || []
