@@ -21,6 +21,8 @@
     ],
     "paths": {
       "@/*": ["./*"],
+      "@/lib/env": ["./lib/env"],
+      "@/lib/api-client": ["./lib/api-client"],
       "@/lib/*": ["./lib/*"],
       "@/app/*": ["./app/*"],
       "@/contexts/*": ["./contexts/*"],
