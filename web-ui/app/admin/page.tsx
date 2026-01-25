@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import { getApiUrl } from '@/lib/env'
+import { createAuthHeaders } from '@/lib/api-client'
 
 export const dynamic = 'force-dynamic'
 
@@ -82,9 +83,9 @@ function OverviewTab() {
   useEffect(() => {
     // Fetch overview stats
     Promise.all([
-      fetch(getApiUrl('v1/admin/users/admins'), { credentials: 'include' }).then(r => r.json()).catch(() => ({ count: 0, admins: [] })),
-      fetch(getApiUrl('v1/admin/cache/stats'), { credentials: 'include' }).then(r => r.json()).catch(() => ({ stats: {} })),
-      fetch(getApiUrl('health'), { credentials: 'include' }).then(r => r.json()).catch(() => ({ status: 'unknown' })),
+      fetch(getApiUrl('v1/admin/users/admins'), { headers: createAuthHeaders(), credentials: 'include' }).then(r => r.json()).catch(() => ({ count: 0, admins: [] })),
+      fetch(getApiUrl('v1/admin/cache/stats'), { headers: createAuthHeaders(), credentials: 'include' }).then(r => r.json()).catch(() => ({ stats: {} })),
+      fetch(getApiUrl('health'), { headers: createAuthHeaders(), credentials: 'include' }).then(r => r.json()).catch(() => ({ status: 'unknown' })),
     ])
       .then(([admins, cache, health]) => {
         setStats({ admins, cache, health })
@@ -135,6 +136,7 @@ function UsersTab() {
   const loadAdmins = async () => {
     try {
       const response = await fetch(getApiUrl('v1/admin/users/admins'), {
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       if (response.ok) {
@@ -154,6 +156,7 @@ function UsersTab() {
     try {
       const response = await fetch(getApiUrl(`v1/admin/users/${userId}/make-admin`), {
         method: 'POST',
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       const data = await response.json()
@@ -177,6 +180,7 @@ function UsersTab() {
     try {
       const response = await fetch(getApiUrl(`v1/admin/users/${userId}/remove-admin`), {
         method: 'POST',
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       const data = await response.json()
@@ -272,6 +276,7 @@ function CacheTab() {
   const loadCacheStats = async () => {
     try {
       const response = await fetch(getApiUrl('v1/admin/cache/stats'), {
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       if (response.ok) {
@@ -297,7 +302,7 @@ function CacheTab() {
       }
       const response = await fetch(getApiUrl('v1/admin/cache/invalidate/users'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: createAuthHeaders({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ user_ids: ids }),
       })
@@ -322,7 +327,7 @@ function CacheTab() {
     try {
       const response = await fetch(getApiUrl('v1/admin/cache/invalidate/content'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: createAuthHeaders({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({
           clear_all: clearAll,
@@ -435,8 +440,8 @@ function SystemTab() {
 
   useEffect(() => {
     Promise.all([
-      fetch(getApiUrl('health'), { credentials: 'include' }).then(r => r.json()).catch(() => ({ status: 'unknown' })),
-      fetch(getApiUrl('meta'), { credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+      fetch(getApiUrl('health'), { headers: createAuthHeaders(), credentials: 'include' }).then(r => r.json()).catch(() => ({ status: 'unknown' })),
+      fetch(getApiUrl('meta'), { headers: createAuthHeaders(), credentials: 'include' }).then(r => r.json()).catch(() => ({})),
     ])
       .then(([healthData, metaData]) => {
         setHealth(healthData)
@@ -535,6 +540,7 @@ function ModerationTab() {
     try {
       const response = await fetch(getApiUrl('v1/admin/moderation/bump-version'), {
         method: 'POST',
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       const data = await response.json()
@@ -597,9 +603,11 @@ function BillingTab() {
     try {
       const [processesData, statsData] = await Promise.all([
         fetch(getApiUrl(`v1/admin/dunning/processes${statusFilter ? `?status=${statusFilter}` : ''}`), {
+          headers: createAuthHeaders(),
           credentials: 'include',
         }).then(r => r.json()).catch(() => ({ processes: [], count: 0, total: 0 })),
         fetch(getApiUrl('v1/admin/dunning/stats'), {
+          headers: createAuthHeaders(),
           credentials: 'include',
         }).then(r => r.json()).catch(() => ({ stats: null })),
       ])
@@ -617,6 +625,7 @@ function BillingTab() {
     setDetailsLoading(true)
     try {
       const response = await fetch(getApiUrl(`v1/admin/dunning/processes/${processId}`), {
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
       if (response.ok) {

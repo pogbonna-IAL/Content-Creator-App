@@ -57,10 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const verifyAuthStatus = async () => {
     try {
-      // Cookies (including httpOnly auth_token) are sent automatically
-      const response = await fetch(getApiUrl('api/auth/me'), {
+      // Use apiCall helper which automatically adds Authorization header
+      const response = await apiCall('api/auth/me', {
         method: 'GET',
-        credentials: 'include',  // Include cookies
       })
 
       if (!response.ok) {
@@ -112,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         method: 'POST',
         body: formData,
         mode: 'cors',
-        credentials: 'include',  // Include cookies to receive httpOnly auth_token
+        credentials: 'include',  // Include cookies as fallback
       }).catch((fetchError) => {
         console.error('Login fetch error:', fetchError)
         if (fetchError instanceof TypeError && fetchError.message.includes('fetch')) {
@@ -130,10 +129,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json()
-      // Backend sets httpOnly cookie automatically
-      // Just update local user state
+      // Store token in localStorage for cross-subdomain authentication
+      // Backend returns access_token in response body
+      if (data.access_token) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('auth_token', data.access_token)
+        }
+        setToken(data.access_token)
+      }
+      // Update local user state
       setUser(data.user)
-      setToken(null)  // Token is in httpOnly cookie, not accessible from JS
       Cookies.set(USER_COOKIE, JSON.stringify(data.user), { expires: 7 })
     } catch (error) {
       console.error('Login error:', error)
@@ -190,10 +195,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const data = await response.json()
       console.log('Signup success:', { hasToken: !!data.access_token, hasUser: !!data.user })
-      // Backend sets httpOnly cookie automatically
-      // Just update local user state
+      // Store token in localStorage for cross-subdomain authentication
+      if (data.access_token) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('auth_token', data.access_token)
+        }
+        setToken(data.access_token)
+      }
+      // Update local user state
       setUser(data.user)
-      setToken(null)  // Token is in httpOnly cookie, not accessible from JS
       Cookies.set(USER_COOKIE, JSON.stringify(data.user), { expires: 7 })
     } catch (error) {
       console.error('Signup error:', error)
@@ -214,20 +224,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     try {
-      // Call backend logout endpoint to clear httpOnly cookies
-      await fetch(getApiUrl('api/auth/logout'), {
+      // Use apiCall helper which automatically adds Authorization header
+      await apiCall('api/auth/logout', {
         method: 'POST',
-        credentials: 'include',  // Include cookies
       }).catch(() => {
-        // Ignore errors - cookies will be cleared client-side anyway
+        // Ignore errors - will clear client-side anyway
       })
     } catch (error) {
       console.error('Logout error:', error)
     } finally {
-      // Clear local state
+      // Clear local state and token
       setUser(null)
       setToken(null)
       Cookies.remove(USER_COOKIE)
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('auth_token')
+      }
       
       // Clear saved email if "Remember me" was not checked
       if (typeof window !== 'undefined') {

@@ -14,9 +14,16 @@ export async function POST(request: NextRequest) {
     // The auth_token cookie is set by the backend and needs to be forwarded
     const cookieHeader = request.headers.get('cookie') || ''
     
-    // Extract auth_token from cookies if present
-    // Handle both URL-encoded and plain cookies, and various cookie formats
+    // Extract token from Authorization header first (preferred for cross-subdomain)
     let token: string | null = null
+    const authHeader = request.headers.get('authorization')
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim()
+    }
+    
+    // Fallback: Extract auth_token from cookies if Authorization header not present
+    // Handle both URL-encoded and plain cookies, and various cookie formats
+    if (!token) {
     
     // Try multiple extraction methods
     // Method 1: Regex match from cookie header string

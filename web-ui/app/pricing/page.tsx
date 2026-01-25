@@ -53,12 +53,18 @@ export default function PricingPage() {
     }
 
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {
+        "Content-Type": "application/json",
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      
       const response = await fetch(getApiUrl('v1/billing/upgrade'), {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
+        headers,
+        credentials: 'include',
         body: JSON.stringify({
           plan,
           provider: selectedProvider,

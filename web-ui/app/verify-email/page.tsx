@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { getApiUrl } from '@/lib/env'
+import { createAuthHeaders } from '@/lib/api-client'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 
@@ -32,9 +33,9 @@ function VerifyEmailContent() {
       try {
         const response = await fetch(getApiUrl('api/auth/verify-email/confirm'), {
           method: 'POST',
-          headers: {
+          headers: createAuthHeaders({
             'Content-Type': 'application/json',
-          },
+          }),
           credentials: 'include',
           body: JSON.stringify({ token }),
         })
@@ -78,6 +79,7 @@ function VerifyEmailContent() {
       setLoading(true)
       const response = await fetch(getApiUrl('api/auth/verify-email/request'), {
         method: 'POST',
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
 

@@ -27,25 +27,20 @@ from .middleware.auth_rate_limit import get_auth_rate_limiter
 def get_cookie_domain(request: Optional[Request] = None) -> Optional[str]:
     """
     Determine the cookie domain based on the request host.
-    For Railway subdomains, use the parent domain (.up.railway.app) to share cookies.
+    
+    IMPORTANT: Browsers REJECT cookies set with a parent domain from a subdomain.
+    For example, setting domain=".up.railway.app" from "api.up.railway.app" will be rejected.
+    
+    Solution: Don't set domain parameter - let cookies be domain-specific.
+    For cross-subdomain sharing, use Authorization headers or a proxy.
     """
     import logging
     logger = logging.getLogger(__name__)
     
-    if request:
-        host = request.headers.get("host", "")
-        origin = request.headers.get("origin", "")
-        logger.info(f"Cookie domain detection: host={host}, origin={origin}")
-        
-        # Check if we're on Railway
-        if ".up.railway.app" in host:
-            # Extract the parent domain (e.g., .up.railway.app)
-            # This allows cookies to be shared across subdomains
-            cookie_domain = ".up.railway.app"
-            logger.info(f"Setting cookie domain to {cookie_domain} for Railway deployment")
-            return cookie_domain
-        # For other cases, don't set domain (cookies will be domain-specific)
-        logger.debug(f"Not on Railway, not setting cookie domain (host: {host})")
+    # CRITICAL FIX: Don't set domain parameter
+    # Browsers reject cookies with parent domains set from subdomains
+    # Cookies will be domain-specific (only work on the exact domain that set them)
+    # For cross-subdomain auth, we'll need to use Authorization headers instead
     return None
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
@@ -271,19 +266,19 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             debug_logger.warning(f"[DEBUG] Failed to write log file: {e}")
         # #endregion
         
-        # Build cookie kwargs - only include domain if it's not None
+        # Build cookie kwargs - DON'T set domain (browsers reject parent domain cookies from subdomains)
+        # Cookies will be domain-specific (only work on api subdomain)
+        # For cross-subdomain, frontend should use Authorization header instead
         cookie_kwargs = {
             "key": "auth_token",
             "value": access_token,
             "max_age": cookie_max_age,
             "httponly": True,
-            "secure": secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
-            "samesite": samesite_value,  # "none" for cross-origin, "lax" for same-origin
+            "secure": secure_flag,  # HTTPS only in staging/prod
+            "samesite": "lax",  # Use "lax" since we're not setting domain (same-origin)
             "path": "/"
         }
-        # Only add domain if it's not None (FastAPI will omit it if not provided)
-        if cookie_domain:
-            cookie_kwargs["domain"] = cookie_domain
+        # DO NOT set domain - browsers reject parent domain cookies from subdomains
         
         response.set_cookie(**cookie_kwargs)
         
@@ -336,11 +331,10 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             "max_age": cookie_max_age,
             "httponly": False,  # Can be read by frontend for display
             "secure": config.ENV in ["staging", "prod"],
-            "samesite": samesite_value,  # Match auth_token cookie
+            "samesite": "lax",  # Use "lax" since we're not setting domain
             "path": "/"
         }
-        if cookie_domain:
-            user_cookie_kwargs["domain"] = cookie_domain
+        # DO NOT set domain - browsers reject parent domain cookies from subdomains
         response.set_cookie(**user_cookie_kwargs)
         
         return response
@@ -402,16 +396,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
     response_data = {
         "access_token": access_token,  # Keep for backward compatibility
         "token_type": "bearer",
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "full_name": user.full_name,
-                "is_active": user.is_active,
-                "is_verified": user.is_verified,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
                 "is_admin": user.is_admin,
                 "email_verified": user.email_verified,
-                "provider": user.provider
-            }
+            "provider": user.provider
+        }
     }
     
     # Create response with httpOnly cookie
@@ -453,19 +447,19 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         pass
     # #endregion
     
-    # Build cookie kwargs - only include domain if it's not None
+    # Build cookie kwargs - DON'T set domain (browsers reject parent domain cookies from subdomains)
+    # Cookies will be domain-specific (only work on api subdomain)
+    # For cross-subdomain, frontend should use Authorization header instead
     cookie_kwargs = {
         "key": "auth_token",
         "value": access_token,
         "max_age": cookie_max_age,
         "httponly": True,
-        "secure": secure_flag,  # HTTPS only in staging/prod (required for samesite=none)
-        "samesite": samesite_value,  # "none" for cross-origin, "lax" for same-origin
+        "secure": secure_flag,  # HTTPS only in staging/prod
+        "samesite": "lax",  # Use "lax" since we're not setting domain (same-origin)
         "path": "/"
     }
-    # Only add domain if it's not None (FastAPI will omit it if not provided)
-    if cookie_domain:
-        cookie_kwargs["domain"] = cookie_domain
+    # DO NOT set domain - browsers reject parent domain cookies from subdomains
     
     response.set_cookie(**cookie_kwargs)
     
@@ -517,11 +511,10 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         "max_age": cookie_max_age,
         "httponly": False,  # Can be read by frontend for display
         "secure": config.ENV in ["staging", "prod"],
-        "samesite": samesite_value,  # Match auth_token cookie
+        "samesite": "lax",  # Use "lax" since we're not setting domain
         "path": "/"
     }
-    if cookie_domain:
-        user_cookie_kwargs["domain"] = cookie_domain
+    # DO NOT set domain - browsers reject parent domain cookies from subdomains
     response.set_cookie(**user_cookie_kwargs)
     
     return response

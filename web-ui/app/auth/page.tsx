@@ -40,9 +40,8 @@ export default function AuthPage() {
       // Verify auth status by checking /api/auth/me before redirecting
       // This ensures cookies are set and auth is working
       try {
-        const verifyResponse = await fetch(getApiUrl('api/auth/me'), {
+        const verifyResponse = await apiCall('api/auth/me', {
           method: 'GET',
-          credentials: 'include',
         })
         
         if (verifyResponse.ok) {

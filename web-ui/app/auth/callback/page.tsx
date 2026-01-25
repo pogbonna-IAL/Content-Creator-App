@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { API_URL, getApiUrl } from '@/lib/env'
+import { apiCall } from '@/lib/api-client'
 
 // Force dynamic rendering (no static generation) to prevent React Context errors
 export const dynamic = 'force-dynamic'
@@ -20,10 +21,9 @@ function AuthCallbackContent() {
 
     if (token) {
       // Backend sets httpOnly cookie automatically via OAuth callback
-      // Verify auth status (cookies sent automatically)
-      fetch(getApiUrl('api/auth/me'), {
+      // Verify auth status using apiCall (adds Authorization header)
+      apiCall('api/auth/me', {
         method: 'GET',
-        credentials: 'include',  // Include cookies
       })
         .then((res) => {
           if (!res.ok) {
@@ -44,9 +44,8 @@ function AuthCallbackContent() {
         })
     } else {
       // No token in URL - check if cookies are already set (direct visit)
-      fetch(getApiUrl('api/auth/me'), {
+      apiCall('api/auth/me', {
         method: 'GET',
-        credentials: 'include',
       })
         .then((res) => {
           if (res.ok) {

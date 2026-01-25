@@ -142,13 +142,19 @@ export default function Home() {
       console.log('Sending streaming request for topic:', topic)
       
       // Call the streaming API endpoint
-      // Token is automatically included via cookies
+      // Include Authorization header for cross-subdomain auth
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      
       const response = await fetch('/api/generate', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include', // Include cookies
+        headers,
+        credentials: 'include', // Include cookies as fallback
         body: JSON.stringify({ topic }),
       })
 

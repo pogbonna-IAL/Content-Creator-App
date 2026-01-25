@@ -46,10 +46,15 @@ function BillingContent() {
 
   const fetchSubscription = async () => {
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      
       const response = await fetch(getApiUrl('v1/billing/subscription'), {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
+        headers,
+        credentials: 'include',
       });
 
       if (response.ok) {
@@ -67,12 +72,18 @@ function BillingContent() {
     if (!subscription) return;
 
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {
+        "Content-Type": "application/json",
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      
       const response = await fetch(getApiUrl('v1/billing/bank-transfer'), {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
+        headers,
+        credentials: 'include',
         body: JSON.stringify({
           plan: subscription.plan,
           reference: reference || undefined,
@@ -99,11 +110,16 @@ function BillingContent() {
     }
 
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      
       const response = await fetch(getApiUrl('v1/billing/cancel'), {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
+        headers,
+        credentials: 'include',
       });
 
       if (response.ok) {

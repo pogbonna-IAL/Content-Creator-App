@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { getApiUrl } from '@/lib/env'
+import { createAuthHeaders } from '@/lib/api-client'
 
 export default function EmailVerificationBanner() {
   const { user } = useAuth()
@@ -23,6 +24,7 @@ export default function EmailVerificationBanner() {
     try {
       const response = await fetch(getApiUrl('api/auth/verify-email/request'), {
         method: 'POST',
+        headers: createAuthHeaders(),
         credentials: 'include',
       })
 
