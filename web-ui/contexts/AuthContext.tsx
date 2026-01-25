@@ -93,7 +93,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       Cookies.set(USER_COOKIE, JSON.stringify(userData), { expires: 7 })
       setIsLoading(false)
     } catch (error) {
-      console.error('Auth verification failed:', error)
+      // Enhanced error logging for network issues
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const isNetworkError = errorMessage.includes('Failed to fetch') || 
+                            errorMessage.includes('NetworkError') ||
+                            error instanceof TypeError
+      
+      console.error('Auth verification failed:', {
+        error: errorMessage,
+        isNetworkError,
+        apiUrl: API_URL,
+        endpoint: 'api/auth/me',
+        fullUrl: getApiUrl('api/auth/me'),
+        suggestion: isNetworkError 
+          ? `Check if API server is running at ${API_URL || 'http://localhost:8000'}. Also check CORS settings.`
+          : 'Unknown error occurred',
+      })
+      
       // Network error or other issue - clear auth state
       setUser(null)
       setToken(null)

@@ -108,19 +108,47 @@ const nextConfig = {
     // Next.js 15 automatically reads tsconfig.json paths, but we need explicit file aliases
     const projectRoot = path.resolve(__dirname)
     
-    // Ensure @ alias is set (Next.js 15 should handle this automatically from tsconfig.json)
+    // CRITICAL: Ensure resolve object exists
     config.resolve = config.resolve || {}
+    
+    // CRITICAL: Get existing aliases first, then override with our specific ones
+    const existingAliases = config.resolve.alias || {}
+    
+    // CRITICAL: Set aliases - file aliases must come BEFORE wildcard aliases
     config.resolve.alias = {
+      // Base alias
       '@': projectRoot,
-      // Explicit file aliases for better reliability
+      // Explicit file aliases (must be before wildcard patterns)
       '@/lib/env': path.resolve(projectRoot, 'lib/env'),
       '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
-      ...config.resolve.alias,
+      // Directory aliases
+      '@/lib': path.resolve(projectRoot, 'lib'),
+      '@/app': path.resolve(projectRoot, 'app'),
+      '@/contexts': path.resolve(projectRoot, 'contexts'),
+      '@/components': path.resolve(projectRoot, 'components'),
+      // Preserve other aliases
+      ...existingAliases,
+    }
+    
+    // CRITICAL: Force override file aliases again to ensure they're not overridden
+    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env')
+    config.resolve.alias['@/lib/api-client'] = path.resolve(projectRoot, 'lib/api-client')
+    
+    // Ensure module resolution includes project root
+    config.resolve.modules = config.resolve.modules || []
+    if (!config.resolve.modules.includes(projectRoot)) {
+      config.resolve.modules.unshift(projectRoot)
     }
     
     // Ensure TypeScript extensions are included
     if (!config.resolve.extensions) {
       config.resolve.extensions = ['.tsx', '.ts', '.jsx', '.js', '.json']
+    } else {
+      // Ensure .ts and .tsx come first
+      const extensions = config.resolve.extensions.filter((ext) => 
+        !['.tsx', '.ts'].includes(ext)
+      )
+      config.resolve.extensions = ['.tsx', '.ts', ...extensions]
     }
     
     return config
@@ -179,12 +207,33 @@ if (configWithPWA.webpack) {
     // TypeScript paths from tsconfig.json are automatically handled, but explicit aliases help
     const projectRoot = path.resolve(__dirname)
     result.resolve = result.resolve || {}
+    
+    // Get existing aliases
+    const existingAliases = result.resolve.alias || {}
+    
+    // Set aliases with file aliases first
     result.resolve.alias = {
       '@': projectRoot,
-      // Explicit file aliases for better reliability
+      // Explicit file aliases (must be before wildcard patterns)
       '@/lib/env': path.resolve(projectRoot, 'lib/env'),
       '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
-      ...(result.resolve.alias || {}),
+      // Directory aliases
+      '@/lib': path.resolve(projectRoot, 'lib'),
+      '@/app': path.resolve(projectRoot, 'app'),
+      '@/contexts': path.resolve(projectRoot, 'contexts'),
+      '@/components': path.resolve(projectRoot, 'components'),
+      // Preserve other aliases
+      ...existingAliases,
+    }
+    
+    // Force override file aliases again
+    result.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env')
+    result.resolve.alias['@/lib/api-client'] = path.resolve(projectRoot, 'lib/api-client')
+    
+    // Ensure module resolution includes project root
+    result.resolve.modules = result.resolve.modules || []
+    if (!result.resolve.modules.includes(projectRoot)) {
+      result.resolve.modules.unshift(projectRoot)
     }
     
     return result
@@ -194,13 +243,32 @@ if (configWithPWA.webpack) {
   configWithPWA.webpack = (config) => {
     const projectRoot = path.resolve(__dirname)
     config.resolve = config.resolve || {}
+    
+    const existingAliases = config.resolve.alias || {}
+    
     config.resolve.alias = {
       '@': projectRoot,
-      // Explicit file aliases for better reliability
+      // Explicit file aliases (must be before wildcard patterns)
       '@/lib/env': path.resolve(projectRoot, 'lib/env'),
       '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
-      ...(config.resolve.alias || {}),
+      // Directory aliases
+      '@/lib': path.resolve(projectRoot, 'lib'),
+      '@/app': path.resolve(projectRoot, 'app'),
+      '@/contexts': path.resolve(projectRoot, 'contexts'),
+      '@/components': path.resolve(projectRoot, 'components'),
+      ...existingAliases,
     }
+    
+    // Force override file aliases
+    config.resolve.alias['@/lib/env'] = path.resolve(projectRoot, 'lib/env')
+    config.resolve.alias['@/lib/api-client'] = path.resolve(projectRoot, 'lib/api-client')
+    
+    // Ensure module resolution includes project root
+    config.resolve.modules = config.resolve.modules || []
+    if (!config.resolve.modules.includes(projectRoot)) {
+      config.resolve.modules.unshift(projectRoot)
+    }
+    
     return config
   }
 }
