@@ -169,10 +169,12 @@ const nextConfig = {
     }
     
     // Set up aliases - use absolute paths for better reliability
+    const apiClientPath = path.resolve(projectRoot, 'lib/api-client')
     config.resolve.alias = {
       '@': projectRoot,    // Base alias - MUST be first
       '@/lib': path.resolve(projectRoot, 'lib'),  // Directory alias
       '@/lib/env': libEnvPath,  // File alias (without extension - webpack adds it)
+      '@/lib/api-client': apiClientPath,  // File alias for api-client
       '@/app/lib/env': appLibEnvPath,  // File alias for app/lib/env
       '@/contexts': path.resolve(projectRoot, 'contexts'),
       '@/components': path.resolve(projectRoot, 'components'),
@@ -289,6 +291,21 @@ const nextConfig = {
               console.warn('[WEBPACK] EnvResolverPlugin: lib/env.ts not found at', libEnvTsPath)
             }
           }
+          
+          // Handle @/lib/api-client requests
+          if (request.request === '@/lib/api-client') {
+            const apiClientTsPath = apiClientPath + '.ts'
+            if (fs.existsSync(apiClientTsPath)) {
+              const resolvedPath = apiClientPath.replace(/\\/g, '/')
+              request.request = resolvedPath
+              console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/api-client to', resolvedPath)
+              callback()
+              return
+            } else {
+              console.warn('[WEBPACK] EnvResolverPlugin: lib/api-client.ts not found at', apiClientTsPath)
+            }
+          }
+          
           // For all other requests, continue normally
           callback()
         })
@@ -323,6 +340,22 @@ const nextConfig = {
       config.plugins.unshift(replacementPlugin)
     } else {
       console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath)
+    }
+    
+    // Add plugin for @/lib/api-client
+    const apiClientTsPath = apiClientPath + '.ts'
+    if (fs.existsSync(apiClientTsPath)) {
+      const apiClientReplacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
+        /^@\/lib\/api-client$/,
+        (resource) => {
+          const resolvedPath = apiClientPath.replace(/\\/g, '/')
+          resource.request = resolvedPath
+          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with', resolvedPath)
+        }
+      )
+      config.plugins.unshift(apiClientReplacementPlugin)
+    } else {
+      console.warn('[WEBPACK] Warning: lib/api-client.ts not found at', apiClientTsPath)
     }
     
     // Also add webpack error handling to catch module resolution failures
@@ -424,6 +457,7 @@ if (configWithPWA.webpack) {
       '@': projectRoot,                    // Base alias
       '@/lib': path.resolve(projectRoot, 'lib'),  // Explicit lib alias
       '@/lib/env': path.resolve(projectRoot, 'lib/env'),  // Explicit env alias (no extension)
+      '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),  // Explicit api-client alias (no extension)
       '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env'),  // Explicit app/lib/env alias (no extension)
       '@/contexts': path.resolve(projectRoot, 'contexts'),  // Explicit contexts alias
       '@/components': path.resolve(projectRoot, 'components'),  // Explicit components alias
@@ -476,6 +510,7 @@ if (configWithPWA.webpack) {
     // Instead, rely on the alias which should work correctly
     const envPath = path.resolve(projectRoot, 'app/lib/env')
     const libEnvPath = path.resolve(projectRoot, 'lib/env')
+    const apiClientPath = path.resolve(projectRoot, 'lib/api-client')
     const fs = require('fs')
     
     // #region agent log
@@ -490,6 +525,7 @@ if (configWithPWA.webpack) {
     
     result.resolve.alias['@/app/lib/env'] = envPath
     result.resolve.alias['@/lib/env'] = libEnvPath
+    result.resolve.alias['@/lib/api-client'] = apiClientPath
     
     // Ensure the alias is set and not overridden
     if (!result.resolve.alias['@/app/lib/env']) {
@@ -498,12 +534,17 @@ if (configWithPWA.webpack) {
     if (!result.resolve.alias['@/lib/env']) {
       result.resolve.alias['@/lib/env'] = libEnvPath
     }
+    if (!result.resolve.alias['@/lib/api-client']) {
+      result.resolve.alias['@/lib/api-client'] = apiClientPath
+    }
     
     // #region agent log
     console.log('[DEBUG HYP-E] After PWA - Final alias state:', {
       '@/lib/env': result.resolve.alias['@/lib/env'],
+      '@/lib/api-client': result.resolve.alias['@/lib/api-client'],
       '@/app/lib/env': result.resolve.alias['@/app/lib/env'],
       libEnvFileExists: fs.existsSync(libEnvPath + '.ts'),
+      apiClientFileExists: fs.existsSync(apiClientPath + '.ts'),
       extensions: result.resolve.extensions?.slice(0, 5),
       isServer: options.isServer,
       modules: result.resolve.modules?.slice(0, 3)
@@ -513,6 +554,7 @@ if (configWithPWA.webpack) {
     console.log('[WEBPACK AFTER PWA] @ alias:', result.resolve.alias['@'])
     console.log('[WEBPACK AFTER PWA] @/lib alias:', result.resolve.alias['@/lib'])
     console.log('[WEBPACK AFTER PWA] @/lib/env alias:', result.resolve.alias['@/lib/env'])
+    console.log('[WEBPACK AFTER PWA] @/lib/api-client alias:', result.resolve.alias['@/lib/api-client'])
     console.log('[WEBPACK AFTER PWA] @/app/lib/env alias:', result.resolve.alias['@/app/lib/env'])
     console.log('[WEBPACK AFTER PWA] Extensions:', result.resolve.extensions.slice(0, 5))
     
@@ -528,6 +570,7 @@ if (configWithPWA.webpack) {
       '@': projectRoot,
       '@/lib': path.resolve(projectRoot, 'lib'),
       '@/lib/env': path.resolve(projectRoot, 'lib/env'),
+      '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
       '@/app/lib/env': path.resolve(projectRoot, 'app/lib/env'),
       '@/contexts': path.resolve(projectRoot, 'contexts'),
       '@/components': path.resolve(projectRoot, 'components'),

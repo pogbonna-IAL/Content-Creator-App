@@ -24,40 +24,40 @@ export async function POST(request: NextRequest) {
     // Fallback: Extract auth_token from cookies if Authorization header not present
     // Handle both URL-encoded and plain cookies, and various cookie formats
     if (!token) {
-    
-    // Try multiple extraction methods
-    // Method 1: Regex match from cookie header string
-    const tokenMatch = cookieHeader.match(/auth_token=([^;,\s]+)/)
-    if (tokenMatch && tokenMatch[1]) {
-      try {
-        // Try decoding URL-encoded value
-        token = decodeURIComponent(tokenMatch[1].trim())
-      } catch {
-        // If decoding fails, use the raw value (might already be decoded)
-        token = tokenMatch[1].trim()
+      // Try multiple extraction methods
+      // Method 1: Regex match from cookie header string
+      const tokenMatch = cookieHeader.match(/auth_token=([^;,\s]+)/)
+      if (tokenMatch && tokenMatch[1]) {
+        try {
+          // Try decoding URL-encoded value
+          token = decodeURIComponent(tokenMatch[1].trim())
+        } catch {
+          // If decoding fails, use the raw value (might already be decoded)
+          token = tokenMatch[1].trim()
+        }
       }
-    }
-    
-    // Method 2: Try reading from Next.js cookies API (might work if same domain)
-    if (!token) {
-      const cookieToken = request.cookies.get('auth_token')?.value
-      if (cookieToken) {
-        token = cookieToken.trim()
+      
+      // Method 2: Try reading from Next.js cookies API (might work if same domain)
+      if (!token) {
+        const cookieToken = request.cookies.get('auth_token')?.value
+        if (cookieToken) {
+          token = cookieToken.trim()
+        }
       }
-    }
-    
-    // Method 3: Try parsing all cookies manually
-    if (!token && cookieHeader) {
-      const cookies = cookieHeader.split(';').map(c => c.trim())
-      for (const cookie of cookies) {
-        if (cookie.startsWith('auth_token=')) {
-          const value = cookie.substring('auth_token='.length).trim()
-          try {
-            token = decodeURIComponent(value)
-          } catch {
-            token = value
+      
+      // Method 3: Try parsing all cookies manually
+      if (!token && cookieHeader) {
+        const cookies = cookieHeader.split(';').map(c => c.trim())
+        for (const cookie of cookies) {
+          if (cookie.startsWith('auth_token=')) {
+            const value = cookie.substring('auth_token='.length).trim()
+            try {
+              token = decodeURIComponent(value)
+            } catch {
+              token = value
+            }
+            break
           }
-          break
         }
       }
     }
