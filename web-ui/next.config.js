@@ -103,15 +103,18 @@ const nextConfig = {
   // No need for complex webpack config - Next.js 15 handles path aliases automatically
   
   // Simplified webpack config - Next.js 15 has much better defaults
-  // Only minimal customization needed
+  // Only minimal customization needed for specific file aliases
   webpack: (config, { isServer }) => {
-    // Next.js 15 automatically reads tsconfig.json paths, so minimal webpack config needed
-    // Only ensure basic aliases are set as fallback
+    // Next.js 15 automatically reads tsconfig.json paths, but we need explicit file aliases
     const projectRoot = path.resolve(__dirname)
     
     // Ensure @ alias is set (Next.js 15 should handle this automatically from tsconfig.json)
+    config.resolve = config.resolve || {}
     config.resolve.alias = {
       '@': projectRoot,
+      // Explicit file aliases for better reliability
+      '@/lib/env': path.resolve(projectRoot, 'lib/env'),
+      '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
       ...config.resolve.alias,
     }
     
@@ -172,12 +175,15 @@ if (configWithPWA.webpack) {
     // Apply PWA's webpack config first
     const result = pwaWebpack(config, options) || config
     
-    // Next.js 15: Minimal override - just ensure @ alias is set
-    // TypeScript paths from tsconfig.json are automatically handled
+    // Next.js 15: Ensure @ alias and specific file aliases are set
+    // TypeScript paths from tsconfig.json are automatically handled, but explicit aliases help
     const projectRoot = path.resolve(__dirname)
     result.resolve = result.resolve || {}
     result.resolve.alias = {
       '@': projectRoot,
+      // Explicit file aliases for better reliability
+      '@/lib/env': path.resolve(projectRoot, 'lib/env'),
+      '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
       ...(result.resolve.alias || {}),
     }
     
@@ -190,6 +196,9 @@ if (configWithPWA.webpack) {
     config.resolve = config.resolve || {}
     config.resolve.alias = {
       '@': projectRoot,
+      // Explicit file aliases for better reliability
+      '@/lib/env': path.resolve(projectRoot, 'lib/env'),
+      '@/lib/api-client': path.resolve(projectRoot, 'lib/api-client'),
       ...(config.resolve.alias || {}),
     }
     return config
