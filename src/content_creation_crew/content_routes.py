@@ -416,10 +416,18 @@ async def stream_job_progress(
         # Poll for job updates
         last_status = job.status
         last_artifact_count = 0
+        last_keepalive_time = time.time()
+        keepalive_interval = 5.0  # Send keep-alive every 5 seconds to prevent timeout
         
         while True:
             # Refresh job from database
             db.refresh(job)
+            
+            # Send keep-alive comment if enough time has passed (prevents undici body timeout)
+            current_time = time.time()
+            if current_time - last_keepalive_time >= keepalive_interval:
+                yield ": keep-alive\n\n"
+                last_keepalive_time = current_time
             
             # Check for status changes
             if job.status != last_status:
@@ -480,8 +488,8 @@ async def stream_job_progress(
                     yield f"data: {json.dumps(event_data)}\n\n"
                 last_artifact_count = len(current_artifacts)
             
-            # Wait before next poll
-            await asyncio.sleep(1)
+            # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
+            await asyncio.sleep(0.5)
     
     return StreamingResponse(
         generate_stream(),
@@ -597,6 +605,123 @@ async def run_generation_async(
         model_name = policy.get_model_name()
         logger.info(f"Job {job_id}: Starting generation with model {model_name}, timeout={timeout_seconds}s")
         
+        # Check cache BEFORE running CrewAI (Performance Optimization)
+        from .services.content_cache import get_cache
+        cache = get_cache()
+        cached_content = cache.get(topic, content_types, PROMPT_VERSION, model_name)
+        
+        if cached_content:
+            logger.info(f"Job {job_id}: Cache hit for topic: {topic}, using cached content")
+            sse_store.add_event(job_id, 'agent_progress', {
+                'job_id': job_id,
+                'message': 'Using cached content...',
+                'step': 'cache_hit'
+            })
+            
+            # Create artifacts from cache
+            if 'blog' in content_types and cached_content.get('content'):
+                # Validate cached blog content
+                from .content_validator import validate_and_repair_content
+                is_valid, validated_model, content, was_repaired = validate_and_repair_content(
+                    'blog', cached_content['content'], model_name, allow_repair=False
+                )
+                if not is_valid:
+                    content = cached_content['content']
+                
+                # Moderate cached content before saving
+                if config.ENABLE_CONTENT_MODERATION:
+                    from .services.moderation_service import get_moderation_service
+                    moderation_service = get_moderation_service()
+                    moderation_result = moderation_service.moderate_output(
+                        content,
+                        'blog',
+                        context={"job_id": job_id, "user_id": user_id, "cached": True}
+                    )
+                    
+                    if moderation_result.passed:
+                        content_service.create_artifact(
+                            job_id,
+                            'blog',
+                            content,
+                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                            prompt_version=PROMPT_VERSION,
+                            model_used=model_name
+                        )
+                        sse_store.add_event(job_id, 'artifact_ready', {
+                            'job_id': job_id,
+                            'artifact_type': 'blog',
+                            'message': 'Blog content from cache',
+                            'cached': True
+                        })
+                else:
+                    content_service.create_artifact(
+                        job_id,
+                        'blog',
+                        content,
+                        content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                        prompt_version=PROMPT_VERSION,
+                        model_used=model_name
+                    )
+                    sse_store.add_event(job_id, 'artifact_ready', {
+                        'job_id': job_id,
+                        'artifact_type': 'blog',
+                        'message': 'Blog content from cache',
+                        'cached': True
+                    })
+            
+            # Handle other content types from cache
+            for content_type in content_types:
+                if content_type == 'blog':
+                    continue
+                
+                cache_key_map = {
+                    'social': 'social_media_content',
+                    'audio': 'audio_content',
+                    'video': 'video_content'
+                }
+                cache_key = cache_key_map.get(content_type)
+                if cache_key and cached_content.get(cache_key):
+                    raw_content = cached_content[cache_key]
+                    from .content_validator import validate_and_repair_content
+                    is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
+                        content_type, raw_content, model_name, allow_repair=False
+                    )
+                    if not is_valid:
+                        validated_content = raw_content
+                    
+                    content_service.create_artifact(
+                        job_id,
+                        content_type,
+                        validated_content,
+                        content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                        prompt_version=PROMPT_VERSION,
+                        model_used=model_name
+                    )
+                    sse_store.add_event(job_id, 'artifact_ready', {
+                        'job_id': job_id,
+                        'artifact_type': content_type,
+                        'message': f'{content_type} content from cache',
+                        'cached': True
+                    })
+            
+            # Mark job as completed
+            content_service.update_job_status(
+                job_id,
+                JobStatus.COMPLETED.value,
+                finished_at=datetime.utcnow()
+            )
+            sse_store.add_event(job_id, 'complete', {
+                'job_id': job_id,
+                'status': JobStatus.COMPLETED.value,
+                'message': 'Content generated from cache',
+                'cached': True
+            })
+            logger.info(f"Job {job_id}: Completed using cached content")
+            return  # Skip CrewAI execution
+        
+        # Cache miss - proceed with CrewAI generation
+        logger.info(f"Job {job_id}: Cache miss, running CrewAI generation")
+        
         # Run generation
         crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
         crew_obj = crew_instance._build_crew(content_types=content_types)
@@ -616,17 +741,93 @@ async def run_generation_async(
         llm_start_time = time.time()
         llm_success = False
         
+        # Progress tracking for streaming updates
+        executor_done = False
+        result = None
+        executor_error = None
+        
+        async def run_executor_with_progress():
+            """Run executor and send periodic progress updates"""
+            nonlocal executor_done, result, executor_error, llm_success
+            
+            try:
+                # Send research started
+                sse_store.add_event(job_id, 'agent_progress', {
+                    'job_id': job_id,
+                    'message': 'Starting research phase...',
+                    'step': 'research'
+                })
+                
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: crew_obj.kickoff(inputs={'topic': topic})
+                    ),
+                    timeout=timeout_seconds
+                )
+                llm_success = True
+                executor_done = True
+                logger.info(f"Job {job_id}: CrewAI execution completed successfully")
+            except asyncio.TimeoutError:
+                executor_error = TimeoutError(f"Content generation timed out after {timeout_seconds} seconds")
+                executor_done = True
+            except Exception as e:
+                executor_error = e
+                executor_done = True
+        
+        # Start executor task
+        executor_task = asyncio.create_task(run_executor_with_progress())
+        
+        # Send periodic progress updates while executor is running
+        progress_steps = [
+            ('research', 'Researching topic...'),
+            ('writing', 'Writing blog post...'),
+            ('editing', 'Editing and formatting...'),
+        ]
+        step_index = 0
+        last_progress_time = time.time()
+        
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: crew_obj.kickoff(inputs={'topic': topic})
-                ),
-                timeout=timeout_seconds
-            )
-            llm_success = True
-            logger.info(f"Job {job_id}: CrewAI execution completed successfully")
-        except asyncio.TimeoutError:
+            while not executor_done:
+                # Wait for either executor completion or 10 seconds (whichever comes first)
+                done, pending = await asyncio.wait(
+                    [executor_task],
+                    timeout=10.0,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                if done:
+                    # Executor completed
+                    break
+                else:
+                    # Timeout - executor still running, send progress update
+                    elapsed = time.time() - last_progress_time
+                    if elapsed >= 10.0 and step_index < len(progress_steps):
+                        step, message = progress_steps[step_index]
+                        sse_store.add_event(job_id, 'agent_progress', {
+                            'job_id': job_id,
+                            'message': message,
+                            'step': step
+                        })
+                        step_index = min(step_index + 1, len(progress_steps) - 1)
+                        last_progress_time = time.time()
+            
+            # Ensure executor completed
+            await executor_task
+            
+            if executor_error:
+                if isinstance(executor_error, TimeoutError):
+                    error_msg = str(executor_error)
+                    logger.error(f"Job {job_id}: {error_msg}")
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': error_msg,
+                        'error_type': 'timeout'
+                    })
+                    raise executor_error
+                else:
+                    raise executor_error
+        except (TimeoutError, asyncio.TimeoutError) as e:
             error_msg = f"Content generation timed out after {timeout_seconds} seconds. The generation process took longer than the configured timeout."
             logger.error(f"Job {job_id}: {error_msg}")
             sse_store.add_event(job_id, 'error', {

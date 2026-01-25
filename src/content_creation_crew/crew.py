@@ -62,11 +62,20 @@ class ContentCreationCrew():
         # Initialize the LLM with tier-appropriate model
         # Optimize for speed: lower temperature = faster, more deterministic responses
         tier_config = self.tier_config.get(tier, {})
-        temperature = 0.3 if tier == 'free' else 0.5  # Lower temp for free tier = faster
+        temperature = 0.2 if tier == 'free' else 0.4  # Even lower temp for free tier = faster
         
         # Get Ollama base URL from config
         from .config import config
         ollama_base_url = config.OLLAMA_BASE_URL
+        
+        # Set max_tokens limit based on tier to prevent overly long generations
+        max_tokens_map = {
+            'free': 2000,      # Limit free tier to 2000 tokens for faster generation
+            'basic': 3000,     # Basic tier: 3000 tokens
+            'pro': 4000,        # Pro tier: 4000 tokens
+            'enterprise': 6000 # Enterprise: 6000 tokens
+        }
+        max_tokens = max_tokens_map.get(tier, 2000)
         
         self.llm = LLM(
             model=model,
@@ -78,6 +87,7 @@ class ContentCreationCrew():
                 "request_timeout": 1800.0,  # Request timeout
                 "connection_timeout": 60.0,  # Connection timeout
                 "temperature": temperature,  # Also set in config for compatibility
+                "max_tokens": max_tokens,  # Limit tokens for faster generation
             }
         )
     
