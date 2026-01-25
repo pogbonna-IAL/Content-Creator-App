@@ -159,29 +159,26 @@ const nextConfig = {
     
     // CRITICAL: Force set @ alias FIRST - this must come before other aliases
     // Next.js should set this from tsconfig.json, but we ensure it's correct
-    config.resolve.alias = {
-      '@': projectRoot,    // Base alias - MUST be first
-      ...existingAliases,  // Then preserve other aliases (but @ takes precedence)
-    }
-    
-    // CRITICAL: Also set explicit paths as fallbacks
-    // These provide direct resolution paths if the @ alias doesn't work
-    // NOTE: Don't include file extensions - webpack will resolve using resolve.extensions
     const libEnvPath = path.resolve(projectRoot, 'lib/env')
     const appLibEnvPath = path.resolve(projectRoot, 'app/lib/env')
-    
-    // Ensure lib/env.ts exists - if not, create a fallback
     const libEnvTsPath = libEnvPath + '.ts'
+    
+    // Ensure lib/env.ts exists - if not, warn
     if (!fs.existsSync(libEnvTsPath)) {
       console.warn(`[WEBPACK] Warning: ${libEnvTsPath} does not exist!`)
     }
     
-    config.resolve.alias['@/lib'] = path.resolve(projectRoot, 'lib')
-    // CRITICAL: Set alias to the directory, not the file (webpack will resolve with extensions)
-    config.resolve.alias['@/lib/env'] = libEnvPath
-    config.resolve.alias['@/app/lib/env'] = appLibEnvPath
-    config.resolve.alias['@/contexts'] = path.resolve(projectRoot, 'contexts')
-    config.resolve.alias['@/components'] = path.resolve(projectRoot, 'components')
+    // Set up aliases - use absolute paths for better reliability
+    config.resolve.alias = {
+      '@': projectRoot,    // Base alias - MUST be first
+      '@/lib': path.resolve(projectRoot, 'lib'),  // Directory alias
+      '@/lib/env': libEnvPath,  // File alias (without extension - webpack adds it)
+      '@/app/lib/env': appLibEnvPath,  // File alias for app/lib/env
+      '@/contexts': path.resolve(projectRoot, 'contexts'),
+      '@/components': path.resolve(projectRoot, 'components'),
+      '@/app': path.resolve(projectRoot, 'app'),
+      ...existingAliases,  // Then preserve other aliases (but @ takes precedence)
+    }
     
     // CRITICAL: Ensure resolve.extensions includes .ts and .tsx
     if (!config.resolve.extensions) {
@@ -329,26 +326,32 @@ const nextConfig = {
     }
     config.resolve.plugins.push(new DebugResolverPlugin())
     
-    // CRITICAL: Add NormalModuleReplacementPlugin to handle @/lib/env resolution
+    // CRITICAL: Add NormalModuleReplacementPlugin as fallback for @/lib/env resolution
     // This ensures webpack can resolve @/lib/env even when the alias doesn't work
+    // Only add if lib/env.ts exists and alias might not work
     if (!config.plugins) {
       config.plugins = []
     }
     
-    // Only add if lib/env.ts exists
+    // Only add plugin if file exists - it will help with edge cases
+    // This plugin runs EARLY in the resolution process to catch @/lib/env imports
     if (fs.existsSync(libEnvTsPath)) {
+      // Use NormalModuleReplacementPlugin to catch @/lib/env before resolver fails
+      // The plugin should run before the resolver checks, so we replace the request early
       config.plugins.push(
         new webpackInstance.NormalModuleReplacementPlugin(
           /^@\/lib\/env$/,
           (resource) => {
-            // Replace the request with the absolute path to lib/env.ts
-            resource.request = libEnvTsPath
-            console.log('[WEBPACK] NormalModuleReplacementPlugin: Resolving @/lib/env to', libEnvTsPath)
+            // Replace with the absolute path (without .ts extension - webpack adds it)
+            // Use forward slashes for cross-platform compatibility
+            const resolvedPath = libEnvPath.replace(/\\/g, '/')
+            resource.request = resolvedPath
+            console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with', resolvedPath)
           }
         )
       )
     } else {
-      console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath, '- NormalModuleReplacementPlugin not added')
+      console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath)
     }
     
     // Also add webpack error handling to catch module resolution failures
