@@ -261,95 +261,66 @@ const nextConfig = {
       config.resolve.plugins = []
     }
     
-    // Create a simple resolver plugin to log resolution attempts and results
-    class DebugResolverPlugin {
+    // Create a resolver plugin that intercepts @/lib/env and redirects to the actual file
+    // This runs EARLY in the resolution process, before webpack gives up
+    class EnvResolverPlugin {
       apply(resolver) {
-        // Log resolution attempts
-        resolver.hooks.resolve.tapAsync('DebugResolver', (request, resolveContext, callback) => {
-          if (request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
-            // #region agent log
-            const logData = {
-              request: request.request,
-              context: request.context,
-              path: request.path,
-              isServer,
-              libEnvPath,
-              libEnvExists: libEnvExistsCheck,
-              aliasValue: config.resolve.alias['@/lib/env'],
-              modules: config.resolve.modules?.slice(0, 3),
-              extensions: config.resolve.extensions?.slice(0, 5)
+        // Hook into the resolve phase - this runs before the normal resolution
+        // Use 'before' stage to ensure it runs before other resolvers
+        resolver.hooks.resolve.tapAsync('EnvResolverPlugin', (request, resolveContext, callback) => {
+          // Only handle @/lib/env requests
+          if (request.request === '@/lib/env') {
+            // Check if file exists
+            if (fs.existsSync(libEnvTsPath)) {
+              // Replace the request with the actual file path (without extension)
+              // Webpack will add the .ts extension automatically based on resolve.extensions
+              const resolvedPath = libEnvPath.replace(/\\/g, '/')
+              
+              // Modify the request in place - this will be used by subsequent resolvers
+              request.request = resolvedPath
+              
+              console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/env to', resolvedPath)
+              
+              // Continue with normal resolution - webpack will now resolve the new path
+              // Don't call doResolve again to avoid recursion - just modify and continue
+              callback()
+              return
+            } else {
+              console.warn('[WEBPACK] EnvResolverPlugin: lib/env.ts not found at', libEnvTsPath)
             }
-            console.log('[DEBUG HYP-D] Resolver attempting:', logData)
-            // #endregion
           }
+          // For all other requests, continue normally
           callback()
-        })
-        
-        // Log successful resolutions - try multiple hooks
-        resolver.hooks.result.tap('DebugResolverResult', (request) => {
-          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
-            console.log('[DEBUG HYP-D] Resolver SUCCESS (result):', {
-              request: request.request,
-              resolvedPath: request.path || request.resolvedPath || request.context?.path,
-              isServer
-            })
-          }
-        })
-        
-        // Note: afterResolve hook may not be available in all webpack versions
-        // Only use it if it exists and has the tapAsync method
-        if (resolver.hooks.afterResolve && typeof resolver.hooks.afterResolve.tapAsync === 'function') {
-          resolver.hooks.afterResolve.tapAsync('DebugResolverAfterResolve', (request, resolveContext, callback) => {
-            if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
-              console.log('[DEBUG HYP-D] Resolver AFTER RESOLVE:', {
-                request: request.request,
-                path: request.path,
-                context: request.context?.path,
-                isServer
-              })
-            }
-            callback()
-          })
-        }
-        
-        // Log failed resolutions
-        resolver.hooks.noResolve.tap('DebugResolverNoResolve', (request, error) => {
-          if (request && request.request && (request.request === '@/lib/env' || request.request.includes('@/lib/env'))) {
-            console.log('[DEBUG HYP-D] Resolver FAILED:', {
-              request: request.request,
-              error: error?.message || String(error),
-              isServer
-            })
-          }
         })
       }
     }
-    config.resolve.plugins.push(new DebugResolverPlugin())
+    // Add this plugin FIRST so it runs before other resolvers
+    config.resolve.plugins.unshift(new EnvResolverPlugin())
     
     // CRITICAL: Add NormalModuleReplacementPlugin as fallback for @/lib/env resolution
-    // This ensures webpack can resolve @/lib/env even when the alias doesn't work
-    // Only add if lib/env.ts exists and alias might not work
+    // This plugin runs during module replacement phase and catches @/lib/env imports
+    // It works together with the resolver plugin to ensure resolution succeeds
     if (!config.plugins) {
       config.plugins = []
     }
     
-    // Only add plugin if file exists - it will help with edge cases
-    // This plugin runs EARLY in the resolution process to catch @/lib/env imports
+    // Only add plugin if file exists
     if (fs.existsSync(libEnvTsPath)) {
-      // Use NormalModuleReplacementPlugin to catch @/lib/env before resolver fails
-      // The plugin should run before the resolver checks, so we replace the request early
-      config.plugins.push(
-        new webpackInstance.NormalModuleReplacementPlugin(
-          /^@\/lib\/env$/,
-          (resource) => {
-            // Replace with the absolute path (without .ts extension - webpack adds it)
-            // Use forward slashes for cross-platform compatibility
-            const resolvedPath = libEnvPath.replace(/\\/g, '/')
-            resource.request = resolvedPath
-            console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with', resolvedPath)
-          }
-        )
+      // NormalModuleReplacementPlugin runs during the module replacement phase
+      // It catches imports matching the regex and replaces them with the actual path
+      const replacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
+        /^@\/lib\/env$/,
+        (resource) => {
+          // Replace @/lib/env with the absolute path (without .ts extension)
+          // Webpack will add the extension automatically based on resolve.extensions
+          const resolvedPath = libEnvPath.replace(/\\/g, '/')
+          resource.request = resolvedPath
+          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with', resolvedPath)
+        }
       )
+      
+      // Add plugin at the beginning so it runs early
+      config.plugins.unshift(replacementPlugin)
     } else {
       console.warn('[WEBPACK] Warning: lib/env.ts not found at', libEnvTsPath)
     }
