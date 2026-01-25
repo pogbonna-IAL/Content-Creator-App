@@ -3,8 +3,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { getApiUrl } from '@/lib/env'
-import { createAuthHeaders } from '@/lib/api-client'
+import { apiCall } from '@/lib/api-client'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 
@@ -31,12 +30,11 @@ function VerifyEmailContent() {
     // Verify email with token
     const verifyEmail = async () => {
       try {
-        const response = await fetch(getApiUrl('api/auth/verify-email/confirm'), {
+        const response = await apiCall('api/auth/verify-email/confirm', {
           method: 'POST',
-          headers: createAuthHeaders({
+          headers: {
             'Content-Type': 'application/json',
-          }),
-          credentials: 'include',
+          },
           body: JSON.stringify({ token }),
         })
 
@@ -64,8 +62,11 @@ function VerifyEmailContent() {
         }
       } catch (error) {
         console.error('Email verification error:', error)
+        const errorMessage = error instanceof Error ? error.message : 'An error occurred'
         setStatus('error')
-        setMessage('An error occurred while verifying your email. Please try again.')
+        setMessage(errorMessage.includes('Failed to fetch')
+          ? 'Cannot connect to server. Please check your connection and try again.'
+          : 'An error occurred while verifying your email. Please try again.')
       } finally {
         setLoading(false)
       }
@@ -77,10 +78,8 @@ function VerifyEmailContent() {
   const handleResendEmail = async () => {
     try {
       setLoading(true)
-      const response = await fetch(getApiUrl('api/auth/verify-email/request'), {
+      const response = await apiCall('api/auth/verify-email/request', {
         method: 'POST',
-        headers: createAuthHeaders(),
-        credentials: 'include',
       })
 
       const data = await response.json()
@@ -94,7 +93,10 @@ function VerifyEmailContent() {
       }
     } catch (error) {
       console.error('Resend email error:', error)
-      setMessage('An error occurred. Please try again.')
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred'
+      setMessage(errorMessage.includes('Failed to fetch')
+        ? 'Cannot connect to server. Please check your connection and try again.'
+        : 'An error occurred. Please try again.')
       setStatus('error')
     } finally {
       setLoading(false)

@@ -3,8 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { getApiUrl } from '@/lib/env'
-import { createAuthHeaders } from '@/lib/api-client'
+import { apiCall } from '@/lib/api-client'
 
 export default function EmailVerificationBanner() {
   const { user } = useAuth()
@@ -22,10 +21,8 @@ export default function EmailVerificationBanner() {
     setMessage(null)
     
     try {
-      const response = await fetch(getApiUrl('api/auth/verify-email/request'), {
+      const response = await apiCall('api/auth/verify-email/request', {
         method: 'POST',
-        headers: createAuthHeaders(),
-        credentials: 'include',
       })
 
       const data = await response.json()
@@ -39,7 +36,10 @@ export default function EmailVerificationBanner() {
       }
     } catch (error) {
       console.error('Resend email error:', error)
-      setMessage('An error occurred. Please try again.')
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred'
+      setMessage(errorMessage.includes('Failed to fetch') 
+        ? 'Cannot connect to server. Please check your connection and try again.'
+        : 'An error occurred. Please try again.')
       setTimeout(() => setMessage(null), 5000)
     } finally {
       setIsResending(false)

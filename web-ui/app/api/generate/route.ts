@@ -188,21 +188,72 @@ export async function POST(request: NextRequest) {
             'Cookie': cookieHeader ? 'present' : 'missing',
           })
           
-          const fetchOptions: RequestInit = {
+          const fetchOptions: RequestInit & { 
+            // Node.js undici-specific options
+            bodyTimeout?: number
+            headersTimeout?: number
+            keepalive?: boolean
+          } = {
             method: 'GET',
             headers: streamHeaders,
             signal: abortController.signal,
           }
 
-          // For Node.js, we can try to set keepalive
+          // For Node.js, configure undici-specific timeout options
+          // These are needed to prevent body timeout errors during long streaming
           if (typeof process !== 'undefined') {
-            // @ts-ignore - Node.js specific fetch options
+            // @ts-ignore - Node.js undici-specific fetch options
+            // Set body timeout to 30 minutes (1800000ms) to match our maxDuration
+            // Note: These options may need to be set via undici directly in some cases
+            fetchOptions.bodyTimeout = 30 * 60 * 1000 // 30 minutes (1800000ms)
+            fetchOptions.headersTimeout = 30 * 60 * 1000 // 30 minutes
             fetchOptions.keepalive = true
+            // Also try setting via dispatcher if available
+            // This is critical for preventing UND_ERR_BODY_TIMEOUT errors
+            try {
+              // @ts-ignore - undici types
+              const { Agent, setGlobalDispatcher, getGlobalDispatcher } = require('undici')
+              
+              // Create a custom agent with extended timeouts for streaming
+              const customAgent = new Agent({
+                bodyTimeout: 30 * 60 * 1000, // 30 minutes - critical for long streams
+                headersTimeout: 30 * 60 * 1000, // 30 minutes
+                connectTimeout: 60000, // 1 minute connection timeout
+              })
+              
+              // Set as dispatcher for this fetch call
+              // @ts-ignore
+              fetchOptions.dispatcher = customAgent
+              
+              // Also set global dispatcher temporarily (will be used by fetch)
+              const originalDispatcher = getGlobalDispatcher()
+              setGlobalDispatcher(customAgent)
+              
+              // Store restore function for cleanup
+              // @ts-ignore
+              fetchOptions._restoreDispatcher = () => {
+                if (originalDispatcher) {
+                  setGlobalDispatcher(originalDispatcher)
+                }
+              }
+            } catch (e) {
+              // undici not available or already configured, continue with fetchOptions only
+              console.log('Could not configure undici dispatcher, using fetchOptions only:', e)
+            }
           }
 
-          const response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions).finally(() => {
+          let response: Response
+          try {
+            response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions)
+          } finally {
             clearTimeout(timeoutId)
-          })
+            // Restore original dispatcher if we changed it
+            // @ts-ignore
+            if (fetchOptions._restoreDispatcher) {
+              // @ts-ignore
+              fetchOptions._restoreDispatcher()
+            }
+          }
 
           if (!response.ok) {
             const errorText = await response.text()
@@ -228,14 +279,13 @@ export async function POST(request: NextRequest) {
           const readStream = async () => {
             try {
               let lastActivity = Date.now()
+              // Send keep-alive more frequently (every 15 seconds) to prevent undici body timeout
+              // This ensures the connection stays active even during long pauses in content generation
               const keepAliveInterval = setInterval(() => {
-                // Send keep-alive comment every 30 seconds to prevent timeout
-                const now = Date.now()
-                if (now - lastActivity > 30000) {
-                  // Send SSE comment as keep-alive
-                  streamController.enqueue(encoder.encode(': keep-alive\n\n'))
-                }
-              }, 30000)
+                // Always send keep-alive comment to prevent any timeout
+                streamController.enqueue(encoder.encode(': keep-alive\n\n'))
+                lastActivity = Date.now()
+              }, 15000) // Every 15 seconds - more frequent to prevent timeout
 
               try {
                 while (true) {
@@ -276,21 +326,35 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           console.error('Streaming error:', error)
           const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+          const errorCause = error instanceof Error && error.cause ? error.cause : null
           console.error('Error details:', errorMessage)
+          console.error('Error cause:', errorCause)
           
-          // Check if it's a timeout error
-          if (errorMessage.includes('UND_ERR_BODY_TIMEOUT') || errorMessage.includes('timeout')) {
+          // Check if it's a timeout error (including nested cause with UND_ERR_BODY_TIMEOUT code)
+          const isTimeoutError = errorMessage.includes('UND_ERR_BODY_TIMEOUT') || 
+              errorMessage.includes('Body Timeout') ||
+              errorMessage.includes('body timeout') ||
+              errorMessage.includes('BodyTimeoutError') ||
+              errorMessage.includes('timeout') ||
+              (errorCause && typeof errorCause === 'object' && 
+               'code' in errorCause && 
+               errorCause.code === 'UND_ERR_BODY_TIMEOUT')
+          
+          if (isTimeoutError) {
             streamController.enqueue(
               encoder.encode(`data: ${JSON.stringify({ 
                 type: 'error', 
-                message: 'Request timeout - content generation is taking longer than expected. Please try again or check the FastAPI server logs.' 
+                message: 'Stream timeout - content generation is taking longer than expected. The connection timed out while waiting for data. Please try again with a shorter topic or check the FastAPI server logs.',
+                error_code: 'STREAM_TIMEOUT',
+                hint: 'This usually happens when content generation takes more than 5 minutes without sending data. Try breaking your topic into smaller parts.'
               })}\n\n`)
             )
           } else {
             streamController.enqueue(
               encoder.encode(`data: ${JSON.stringify({ 
                 type: 'error', 
-                message: errorMessage 
+                message: errorMessage,
+                error_code: 'STREAM_ERROR'
               })}\n\n`)
             )
           }
