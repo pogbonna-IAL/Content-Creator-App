@@ -160,7 +160,7 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         
         # Auto-send verification email on signup
         import secrets
-        from .services.email_provider import send_verification_email
+        from .services.email_provider import send_verification_email, get_email_provider
         
         try:
             # Generate verification token
@@ -175,12 +175,26 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             frontend_url = config.FRONTEND_URL or "http://localhost:3000"
             verification_url = f"{frontend_url}/verify-email?token={verification_token}"
             
-            # Send verification email
-            send_verification_email(new_user.email, verification_url)
-            logger.info(f"Verification email sent to new user {new_user.id} ({new_user.email})")
+            # Check if email provider is available
+            email_provider = get_email_provider()
+            if not email_provider.is_available():
+                logger.warning(f"Email provider not available - verification email will not be sent to {new_user.email}")
+                logger.warning("Configure SMTP environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD) for production email sending")
+            else:
+                # Send verification email
+                email_sent = send_verification_email(new_user.email, verification_url)
+                if email_sent:
+                    logger.info(f"✓ Verification email sent to new user {new_user.id} ({new_user.email})")
+                else:
+                    logger.warning(f"Failed to send verification email to new user {new_user.id} - email provider returned False")
+        except AttributeError as e:
+            # Handle missing config attribute
+            logger.error(f"Configuration error: {e}. Make sure FRONTEND_URL is set in config.py or environment variables")
+            logger.error("Verification email not sent due to configuration error")
         except Exception as e:
             # Log error but don't fail signup if email sending fails
-            logger.error(f"Failed to send verification email to new user {new_user.id}: {e}")
+            logger.error(f"Failed to send verification email to new user {new_user.id}: {e}", exc_info=True)
+            logger.warning("Signup completed successfully, but verification email was not sent")
             # Continue with signup even if email fails
         
         # Audit log
@@ -650,27 +664,59 @@ async def request_email_verification(
     db.commit()
     
     # Build verification URL
-    frontend_url = config.FRONTEND_URL or "http://localhost:3000"
+    try:
+        frontend_url = config.FRONTEND_URL or "http://localhost:3000"
+    except AttributeError:
+        logger.error("FRONTEND_URL not found in config. Using default localhost URL")
+        frontend_url = "http://localhost:3000"
+    
     verification_url = f"{frontend_url}/verify-email?token={verification_token}"
+    
+    # Check if email provider is available
+    from .services.email_provider import get_email_provider
+    email_provider = get_email_provider()
+    
+    if not email_provider.is_available():
+        logger.warning(f"Email provider not available - verification email will not be sent to {current_user.email}")
+        logger.warning("Configure SMTP environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD) for production email sending")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email service is not configured. Please contact support."
+        )
     
     # Send verification email
     try:
-        send_verification_email(current_user.email, verification_url)
-        logger.info(f"Verification email sent to user {current_user.id}")
-        
-        # Audit log
-        audit_service = get_audit_log_service(db)
-        audit_service.log_email_verification_sent(
-            user_id=current_user.id,
-            email_hash=audit_service._hash_pii(current_user.email)
+        email_sent = send_verification_email(current_user.email, verification_url)
+        if email_sent:
+            logger.info(f"✓ Verification email sent to user {current_user.id} ({current_user.email})")
+            
+            # Audit log
+            audit_service = get_audit_log_service(db)
+            audit_service.log_email_verification_sent(
+                user_id=current_user.id,
+                email_hash=audit_service._hash_pii(current_user.email)
+            )
+            
+            return {
+                "message": "Verification email sent",
+                "email": current_user.email
+            }
+        else:
+            logger.error(f"Email provider returned False when sending verification email to {current_user.email}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email"
+            )
+    except HTTPException:
+        raise
+    except AttributeError as e:
+        logger.error(f"Configuration error: {e}. Make sure FRONTEND_URL is set in config.py or environment variables")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Configuration error: FRONTEND_URL not set"
         )
-        
-        return {
-            "message": "Verification email sent",
-            "email": current_user.email
-        }
     except Exception as e:
-        logger.error(f"Failed to send verification email: {e}")
+        logger.error(f"Failed to send verification email: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send verification email"

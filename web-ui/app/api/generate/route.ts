@@ -279,13 +279,14 @@ export async function POST(request: NextRequest) {
           const readStream = async () => {
             try {
               let lastActivity = Date.now()
-              // Send keep-alive more frequently (every 15 seconds) to prevent undici body timeout
+              // Send keep-alive more frequently (every 5 seconds) to prevent undici body timeout
               // This ensures the connection stays active even during long pauses in content generation
+              // Backend also sends keep-alive every 5 seconds, so this is a backup
               const keepAliveInterval = setInterval(() => {
                 // Always send keep-alive comment to prevent any timeout
                 streamController.enqueue(encoder.encode(': keep-alive\n\n'))
                 lastActivity = Date.now()
-              }, 15000) // Every 15 seconds - more frequent to prevent timeout
+              }, 5000) // Every 5 seconds - very frequent to prevent timeout
 
               try {
                 while (true) {

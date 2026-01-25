@@ -40,6 +40,10 @@ class Config:
         "FRONTEND_CALLBACK_URL", 
         "http://localhost:3000/auth/callback"
     )
+    FRONTEND_URL: str = os.getenv(
+        "FRONTEND_URL",
+        "http://localhost:3000"  # Base frontend URL for email links (verification, etc.)
+    )
     API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
     
     # CORS

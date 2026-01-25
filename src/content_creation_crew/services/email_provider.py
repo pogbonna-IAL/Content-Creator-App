@@ -180,14 +180,29 @@ def get_email_provider() -> EmailProvider:
         
         # Check if SMTP is configured
         smtp_host = os.getenv("SMTP_HOST")
-        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_port_str = os.getenv("SMTP_PORT", "587")
+        try:
+            smtp_port = int(smtp_port_str)
+        except ValueError:
+            logger.warning(f"Invalid SMTP_PORT value: {smtp_port_str}, using default 587")
+            smtp_port = 587
         smtp_user = os.getenv("SMTP_USER")
         smtp_password = os.getenv("SMTP_PASSWORD")
         smtp_from = os.getenv("SMTP_FROM_ADDRESS", "noreply@example.com")
         
+        # Check which environment variables are missing
+        missing_vars = []
+        if not smtp_host:
+            missing_vars.append("SMTP_HOST")
+        if not smtp_user:
+            missing_vars.append("SMTP_USER")
+        if not smtp_password:
+            missing_vars.append("SMTP_PASSWORD")
+        
         if smtp_host and smtp_user and smtp_password:
             # Production: Use SMTP
             logger.info(f"✓ Email provider: SMTP ({smtp_host}:{smtp_port})")
+            logger.info(f"  From address: {smtp_from}")
             _email_provider = SMTPEmailProvider(
                 host=smtp_host,
                 port=smtp_port,
@@ -198,7 +213,15 @@ def get_email_provider() -> EmailProvider:
             )
         else:
             # Development: Use dev logger
-            logger.info("✓ Email provider: DevEmailProvider (logs to console)")
+            logger.warning("⚠ Email provider: DevEmailProvider (logs to console only)")
+            if missing_vars:
+                logger.warning(f"  Missing SMTP configuration: {', '.join(missing_vars)}")
+                logger.warning("  Set these environment variables to enable email sending:")
+                logger.warning("    - SMTP_HOST (e.g., smtp.gmail.com)")
+                logger.warning("    - SMTP_PORT (e.g., 587)")
+                logger.warning("    - SMTP_USER (your email)")
+                logger.warning("    - SMTP_PASSWORD (your email password or app password)")
+                logger.warning("    - SMTP_FROM_ADDRESS (optional, defaults to noreply@example.com)")
             _email_provider = DevEmailProvider()
     
     return _email_provider
