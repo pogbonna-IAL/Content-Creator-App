@@ -19,15 +19,22 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 # First copy everything (respects .dockerignore)
 COPY . .
 
-# Ensure lib/env.ts exists - handle both build contexts
-# Create it using echo commands to avoid heredoc parsing issues
+# Ensure lib/env.ts and lib/api-client.ts exist - handle both build contexts
+# First try to copy from web-ui/lib if we're building from root
+# Then create missing files if needed
 RUN mkdir -p ./lib && \
-    if [ -f "lib/env.ts" ]; then \
-      echo "✓ lib/env.ts exists"; \
-    elif [ -d "web-ui" ] && [ -f "web-ui/lib/env.ts" ]; then \
-      cp -r web-ui/lib/* ./lib/ && \
-      echo "✓ lib/env.ts copied from web-ui/lib/"; \
-    else \
+    if [ -d "web-ui" ] && [ -d "web-ui/lib" ]; then \
+      cp -r web-ui/lib/* ./lib/ 2>/dev/null || true && \
+      echo "✓ lib files copied from web-ui/lib/"; \
+    fi && \
+    if [ -f "lib/env.ts" ] && [ -f "lib/api-client.ts" ]; then \
+      echo "✓ lib/env.ts and lib/api-client.ts exist"; \
+    elif [ -f "lib/env.ts" ]; then \
+      echo "⚠ lib/env.ts exists but lib/api-client.ts is missing - will create"; \
+    elif [ -f "lib/api-client.ts" ]; then \
+      echo "⚠ lib/api-client.ts exists but lib/env.ts is missing - will create"; \
+    fi && \
+    if [ ! -f "lib/env.ts" ]; then \
       echo "/**" > ./lib/env.ts && \
       echo " * Environment variable validation and configuration" >> ./lib/env.ts && \
       echo " * This file validates NEXT_PUBLIC_API_URL and exports API_URL for use throughout the app" >> ./lib/env.ts && \
@@ -114,7 +121,186 @@ RUN mkdir -p ./lib && \
       echo "}" >> ./lib/env.ts && \
       echo "✓ lib/env.ts created"; \
     fi && \
-    test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1)
+    if [ -f "lib/api-client.ts" ]; then \
+      echo "✓ lib/api-client.ts exists"; \
+    else \
+      echo "/**" > ./lib/api-client.ts && \
+      echo " * API client helper with automatic Authorization header injection" >> ./lib/api-client.ts && \
+      echo " * This handles cross-subdomain authentication by using Authorization headers" >> ./lib/api-client.ts && \
+      echo " * instead of relying solely on cookies." >> ./lib/api-client.ts && \
+      echo " */" >> ./lib/api-client.ts && \
+      echo "" >> ./lib/api-client.ts && \
+      echo "import { getApiUrl } from './env'" >> ./lib/api-client.ts && \
+      echo "" >> ./lib/api-client.ts && \
+      echo "/**" >> ./lib/api-client.ts && \
+      echo " * Get the auth token from localStorage" >> ./lib/api-client.ts && \
+      echo " */" >> ./lib/api-client.ts && \
+      echo "export function getAuthToken(): string | null {" >> ./lib/api-client.ts && \
+      echo "  if (typeof window === 'undefined') return null" >> ./lib/api-client.ts && \
+      echo "  return localStorage.getItem('auth_token')" >> ./lib/api-client.ts && \
+      echo "}" >> ./lib/api-client.ts && \
+      echo "" >> ./lib/api-client.ts && \
+      echo "/**" >> ./lib/api-client.ts && \
+      echo " * Create fetch options with Authorization header if token is available" >> ./lib/api-client.ts && \
+      echo " */" >> ./lib/api-client.ts && \
+      echo "export function createAuthHeaders(additionalHeaders: HeadersInit = {}): HeadersInit {" >> ./lib/api-client.ts && \
+      echo "  const token = getAuthToken()" >> ./lib/api-client.ts && \
+      echo "  const headers: Record<string, string> = {}" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  // Convert additionalHeaders to a plain object if it's a Headers object" >> ./lib/api-client.ts && \
+      echo "  if (additionalHeaders instanceof Headers) {" >> ./lib/api-client.ts && \
+      echo "    additionalHeaders.forEach((value, key) => {" >> ./lib/api-client.ts && \
+      echo "      headers[key] = value" >> ./lib/api-client.ts && \
+      echo "    })" >> ./lib/api-client.ts && \
+      echo "  } else if (Array.isArray(additionalHeaders)) {" >> ./lib/api-client.ts && \
+      echo "    // Handle array of [key, value] pairs" >> ./lib/api-client.ts && \
+      echo "    additionalHeaders.forEach(([key, value]) => {" >> ./lib/api-client.ts && \
+      echo "      headers[key] = value" >> ./lib/api-client.ts && \
+      echo "    })" >> ./lib/api-client.ts && \
+      echo "  } else if (additionalHeaders) {" >> ./lib/api-client.ts && \
+      echo "    // Handle plain object" >> ./lib/api-client.ts && \
+      echo "    Object.assign(headers, additionalHeaders)" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  if (token) {" >> ./lib/api-client.ts && \
+      echo "    headers['Authorization'] = \`Bearer \${token}\`" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  return headers" >> ./lib/api-client.ts && \
+      echo "}" >> ./lib/api-client.ts && \
+      echo "" >> ./lib/api-client.ts && \
+      echo "/**" >> ./lib/api-client.ts && \
+      echo " * Fetch wrapper that automatically adds Authorization header" >> ./lib/api-client.ts && \
+      echo " */" >> ./lib/api-client.ts && \
+      echo "export async function authFetch(" >> ./lib/api-client.ts && \
+      echo "  url: string," >> ./lib/api-client.ts && \
+      echo "  options: RequestInit = {}" >> ./lib/api-client.ts && \
+      echo "): Promise<Response> {" >> ./lib/api-client.ts && \
+      echo "  const headers = createAuthHeaders(options.headers)" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  // Log request details for debugging" >> ./lib/api-client.ts && \
+      echo "  if (typeof window !== 'undefined') {" >> ./lib/api-client.ts && \
+      echo "    const authHeader = (headers as Record<string, string>)['Authorization']" >> ./lib/api-client.ts && \
+      echo "    console.log('[authFetch] Making request:', {" >> ./lib/api-client.ts && \
+      echo "      url," >> ./lib/api-client.ts && \
+      echo "      method: options.method || 'GET'," >> ./lib/api-client.ts && \
+      echo "      hasAuth: !!authHeader," >> ./lib/api-client.ts && \
+      echo "      credentials: 'include'," >> ./lib/api-client.ts && \
+      echo "    })" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  try {" >> ./lib/api-client.ts && \
+      echo "    const response = await fetch(url, {" >> ./lib/api-client.ts && \
+      echo "      ...options," >> ./lib/api-client.ts && \
+      echo "      headers," >> ./lib/api-client.ts && \
+      echo "      credentials: 'include', // Still include cookies as fallback" >> ./lib/api-client.ts && \
+      echo "    })" >> ./lib/api-client.ts && \
+      echo "    " >> ./lib/api-client.ts && \
+      echo "    if (typeof window !== 'undefined') {" >> ./lib/api-client.ts && \
+      echo "      console.log('[authFetch] Response:', {" >> ./lib/api-client.ts && \
+      echo "        url," >> ./lib/api-client.ts && \
+      echo "        status: response.status," >> ./lib/api-client.ts && \
+      echo "        statusText: response.statusText," >> ./lib/api-client.ts && \
+      echo "        ok: response.ok," >> ./lib/api-client.ts && \
+      echo "      })" >> ./lib/api-client.ts && \
+      echo "    }" >> ./lib/api-client.ts && \
+      echo "    " >> ./lib/api-client.ts && \
+      echo "    return response" >> ./lib/api-client.ts && \
+      echo "  } catch (error) {" >> ./lib/api-client.ts && \
+      echo "    // Enhanced error logging" >> ./lib/api-client.ts && \
+      echo "    if (typeof window !== 'undefined') {" >> ./lib/api-client.ts && \
+      echo "      console.error('[authFetch] Fetch failed:', {" >> ./lib/api-client.ts && \
+      echo "        url," >> ./lib/api-client.ts && \
+      echo "        error: error instanceof Error ? error.message : String(error)," >> ./lib/api-client.ts && \
+      echo "        errorType: error instanceof TypeError ? 'TypeError' : 'Unknown'," >> ./lib/api-client.ts && \
+      echo "        isNetworkError: error instanceof TypeError && error.message.includes('fetch')," >> ./lib/api-client.ts && \
+      echo "      })" >> ./lib/api-client.ts && \
+      echo "    }" >> ./lib/api-client.ts && \
+      echo "    " >> ./lib/api-client.ts && \
+      echo "    // Re-throw with more context" >> ./lib/api-client.ts && \
+      echo "    throw new Error(" >> ./lib/api-client.ts && \
+      echo "      \`Failed to fetch \${url}: \${error instanceof Error ? error.message : String(error)}\`" >> ./lib/api-client.ts && \
+      echo "    )" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "}" >> ./lib/api-client.ts && \
+      echo "" >> ./lib/api-client.ts && \
+      echo "/**" >> ./lib/api-client.ts && \
+      echo " * Helper to make authenticated API calls" >> ./lib/api-client.ts && \
+      echo " */" >> ./lib/api-client.ts && \
+      echo "export async function apiCall(" >> ./lib/api-client.ts && \
+      echo "  endpoint: string," >> ./lib/api-client.ts && \
+      echo "  options: RequestInit = {}" >> ./lib/api-client.ts && \
+      echo "): Promise<Response> {" >> ./lib/api-client.ts && \
+      echo "  const url = getApiUrl(endpoint)" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  // Validate URL before making request" >> ./lib/api-client.ts && \
+      echo "  if (!url || url.trim() === '') {" >> ./lib/api-client.ts && \
+      echo "    throw new Error(\`Invalid API URL constructed from endpoint: \${endpoint}\`)" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  // Validate URL format" >> ./lib/api-client.ts && \
+      echo "  let isValidUrl = false" >> ./lib/api-client.ts && \
+      echo "  if (url.startsWith('http://') || url.startsWith('https://')) {" >> ./lib/api-client.ts && \
+      echo "    try {" >> ./lib/api-client.ts && \
+      echo "      new URL(url)" >> ./lib/api-client.ts && \
+      echo "      isValidUrl = true" >> ./lib/api-client.ts && \
+      echo "    } catch {" >> ./lib/api-client.ts && \
+      echo "      // Invalid absolute URL" >> ./lib/api-client.ts && \
+      echo "      console.error('[apiCall] Invalid absolute URL:', url)" >> ./lib/api-client.ts && \
+      echo "      throw new Error(\`Invalid API URL: \${url}\`)" >> ./lib/api-client.ts && \
+      echo "    }" >> ./lib/api-client.ts && \
+      echo "  } else if (url.startsWith('/')) {" >> ./lib/api-client.ts && \
+      echo "    // Relative URL is valid" >> ./lib/api-client.ts && \
+      echo "    isValidUrl = true" >> ./lib/api-client.ts && \
+      echo "  } else {" >> ./lib/api-client.ts && \
+      echo "    console.warn('[apiCall] URL format might be invalid:', url)" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  // Log the full URL being called" >> ./lib/api-client.ts && \
+      echo "  if (typeof window !== 'undefined') {" >> ./lib/api-client.ts && \
+      echo "    console.log('[apiCall] Calling endpoint:', {" >> ./lib/api-client.ts && \
+      echo "      endpoint," >> ./lib/api-client.ts && \
+      echo "      fullUrl: url," >> ./lib/api-client.ts && \
+      echo "      isValidUrl," >> ./lib/api-client.ts && \
+      echo "    })" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "  " >> ./lib/api-client.ts && \
+      echo "  try {" >> ./lib/api-client.ts && \
+      echo "    return await authFetch(url, options)" >> ./lib/api-client.ts && \
+      echo "  } catch (error) {" >> ./lib/api-client.ts && \
+      echo "    // Provide more helpful error messages" >> ./lib/api-client.ts && \
+      echo "    const errorMessage = error instanceof Error ? error.message : String(error)" >> ./lib/api-client.ts && \
+      echo "    " >> ./lib/api-client.ts && \
+      echo "    // Check if it's a network/CORS error" >> ./lib/api-client.ts && \
+      echo "    if (errorMessage.includes('Failed to fetch') || error instanceof TypeError) {" >> ./lib/api-client.ts && \
+      echo "      const apiUrl = typeof window !== 'undefined' " >> ./lib/api-client.ts && \
+      echo "        ? (window as any).__API_URL__ || 'http://localhost:8000'" >> ./lib/api-client.ts && \
+      echo "        : 'http://localhost:8000'" >> ./lib/api-client.ts && \
+      echo "      " >> ./lib/api-client.ts && \
+      echo "      const helpfulMessage = \`Network error: Cannot connect to API at \${url}. \` +" >> ./lib/api-client.ts && \
+      echo "        \`Please ensure:\\n\` +" >> ./lib/api-client.ts && \
+      echo "        \`1. The API server is running at \${apiUrl}\\n\` +" >> ./lib/api-client.ts && \
+      echo "        \`2. CORS is properly configured on the API server\\n\` +" >> ./lib/api-client.ts && \
+      echo "        \`3. The API URL is correct (check NEXT_PUBLIC_API_URL environment variable)\`" >> ./lib/api-client.ts && \
+      echo "      " >> ./lib/api-client.ts && \
+      echo "      console.error('[apiCall]', helpfulMessage)" >> ./lib/api-client.ts && \
+      echo "      " >> ./lib/api-client.ts && \
+      echo "      // Create a more informative error" >> ./lib/api-client.ts && \
+      echo "      const enhancedError = new Error(helpfulMessage)" >> ./lib/api-client.ts && \
+      echo "      ;(enhancedError as any).originalError = error" >> ./lib/api-client.ts && \
+      echo "      ;(enhancedError as any).url = url" >> ./lib/api-client.ts && \
+      echo "      ;(enhancedError as any).endpoint = endpoint" >> ./lib/api-client.ts && \
+      echo "      throw enhancedError" >> ./lib/api-client.ts && \
+      echo "    }" >> ./lib/api-client.ts && \
+      echo "    " >> ./lib/api-client.ts && \
+      echo "    // Re-throw other errors as-is" >> ./lib/api-client.ts && \
+      echo "    throw error" >> ./lib/api-client.ts && \
+      echo "  }" >> ./lib/api-client.ts && \
+      echo "}" >> ./lib/api-client.ts && \
+      echo "✓ lib/api-client.ts created"; \
+    fi && \
+    test -f lib/env.ts || (echo "ERROR: lib/env.ts still missing!" && exit 1) && \
+    test -f lib/api-client.ts || (echo "ERROR: lib/api-client.ts still missing!" && exit 1)
 
 # Set environment variables for build
 # CRITICAL: Set DOCKER_BUILD=true to skip strict validation during Docker builds
