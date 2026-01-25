@@ -270,40 +270,12 @@ const nextConfig = {
         // Hook into the resolve phase - this runs before the normal resolution
         // Use 'before' stage to ensure it runs before other resolvers
         resolver.hooks.resolve.tapAsync('EnvResolverPlugin', (request, resolveContext, callback) => {
-          // Only handle @/lib/env requests
-          if (request.request === '@/lib/env') {
-            // Check if file exists
-            if (fs.existsSync(libEnvTsPath)) {
-              // Replace the request with the actual file path (without extension)
-              // Webpack will add the .ts extension automatically based on resolve.extensions
-              const resolvedPath = libEnvPath.replace(/\\/g, '/')
-              
-              // Modify the request in place - this will be used by subsequent resolvers
-              request.request = resolvedPath
-              
-              console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/env to', resolvedPath)
-              
-              // Continue with normal resolution - webpack will now resolve the new path
-              // Don't call doResolve again to avoid recursion - just modify and continue
-              callback()
-              return
-            } else {
-              console.warn('[WEBPACK] EnvResolverPlugin: lib/env.ts not found at', libEnvTsPath)
-            }
-          }
+          // Don't modify @/lib/env or @/lib/api-client requests
+          // Let webpack's alias system handle them - it's already configured correctly
+          // The alias will resolve @/lib/env -> lib/env and @/lib/api-client -> lib/api-client
+          // which webpack can then resolve relative to the project root
           
-          // Handle @/lib/api-client requests
-          if (request.request === '@/lib/api-client') {
-            // Always redirect - don't check file existence (file might not exist yet during build)
-            // Webpack will handle the actual file resolution
-            const resolvedPath = apiClientPath.replace(/\\/g, '/')
-            request.request = resolvedPath
-            console.log('[WEBPACK] EnvResolverPlugin: Redirecting @/lib/api-client to', resolvedPath)
-            callback()
-            return
-          }
-          
-          // For all other requests, continue normally
+          // For all requests, continue normally and let webpack's alias resolution work
           callback()
         })
       }
@@ -325,11 +297,10 @@ const nextConfig = {
       const replacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
         /^@\/lib\/env$/,
         (resource) => {
-          // Replace @/lib/env with the absolute path (without .ts extension)
-          // Webpack will add the extension automatically based on resolve.extensions
-          const resolvedPath = libEnvPath.replace(/\\/g, '/')
-          resource.request = resolvedPath
-          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with', resolvedPath)
+          // Use relative path from project root (lib/env) so webpack can resolve it
+          // Webpack will resolve this via resolve.modules which includes projectRoot
+          resource.request = 'lib/env'
+          console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/env with lib/env')
         }
       )
       
@@ -340,14 +311,13 @@ const nextConfig = {
     }
     
     // Add plugin for @/lib/api-client
-    // Don't check file existence - webpack will handle resolution
-    // The file should exist, but checking might fail in Docker builds
+    // Use relative path from project root (lib/api-client) so webpack can resolve it
     const apiClientReplacementPlugin = new webpackInstance.NormalModuleReplacementPlugin(
       /^@\/lib\/api-client$/,
       (resource) => {
-        const resolvedPath = apiClientPath.replace(/\\/g, '/')
-        resource.request = resolvedPath
-        console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with', resolvedPath)
+        // Use relative path from project root - webpack will resolve via resolve.modules
+        resource.request = 'lib/api-client'
+        console.log('[WEBPACK] NormalModuleReplacementPlugin: Replacing @/lib/api-client with lib/api-client')
       }
     )
     config.plugins.unshift(apiClientReplacementPlugin)
