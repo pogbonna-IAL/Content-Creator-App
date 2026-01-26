@@ -1182,8 +1182,48 @@ async def run_generation_async(
                 llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = e
                 executor_done = True
-                print(f"[RAILWAY_DEBUG] Job {job_id}: LLM_EXEC ERROR - {type(e).__name__}: {str(e)}", file=sys.stdout, flush=True)
-                logger.error(f"[LLM_EXEC] Job {job_id}: ERROR after {llm_exec_duration:.2f}s: {type(e).__name__}: {str(e)}", exc_info=True)
+                
+                # Check for rate limit errors
+                error_msg = str(e)
+                error_type = type(e).__name__
+                
+                # Detect rate limit errors from OpenAI
+                is_rate_limit = False
+                retry_after = None
+                error_str_lower = error_msg.lower()
+                if ('rate limit' in error_str_lower or 
+                    '429' in error_msg or 
+                    'rate_limit' in error_str_lower or
+                    'rate_limit_exceeded' in error_str_lower or
+                    'tokens per min' in error_str_lower or
+                    'requests per min' in error_str_lower):
+                    is_rate_limit = True
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: RATE LIMIT ERROR detected", file=sys.stdout, flush=True)
+                    # Try to extract retry-after time from error message
+                    import re
+                    # Pattern 1: "try again in 3h55m26.4s"
+                    retry_match = re.search(r'try again in ([\d.]+[hms]+)', error_msg, re.IGNORECASE)
+                    if retry_match:
+                        retry_after = retry_match.group(1)
+                    # Pattern 2: "Please try again in 3h55m26.4s"
+                    if not retry_after:
+                        retry_match = re.search(r'Please try again in ([\d.]+[hms]+)', error_msg, re.IGNORECASE)
+                        if retry_match:
+                            retry_after = retry_match.group(1)
+                    # Also check for TPM/RPM limits
+                    limit_match = re.search(r'Limit (\d+), Used (\d+), Requested (\d+)', error_msg)
+                    if limit_match:
+                        limit, used, requested = limit_match.groups()
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Rate limit details - Limit: {limit}, Used: {used}, Requested: {requested}", file=sys.stdout, flush=True)
+                
+                print(f"[RAILWAY_DEBUG] Job {job_id}: LLM_EXEC ERROR - {error_type}: {error_msg[:200]}", file=sys.stdout, flush=True)
+                logger.error(f"[LLM_EXEC] Job {job_id}: ERROR after {llm_exec_duration:.2f}s: {error_type}: {error_msg}", exc_info=True)
+                
+                # Store rate limit info in executor_error for later handling
+                if is_rate_limit:
+                    executor_error.rate_limit = True
+                    executor_error.retry_after = retry_after
+                
                 sys.stdout.flush()
                 sys.stderr.flush()
         
@@ -1238,6 +1278,37 @@ async def run_generation_async(
                     })
                     raise executor_error
                 else:
+                    # Check for rate limit errors
+                    error_msg = str(executor_error)
+                    is_rate_limit = getattr(executor_error, 'rate_limit', False) or 'rate limit' in error_msg.lower() or '429' in error_msg
+                    retry_after = getattr(executor_error, 'retry_after', None)
+                    
+                    if is_rate_limit:
+                        # Create user-friendly rate limit error message
+                        rate_limit_msg = "OpenAI API rate limit exceeded. "
+                        if retry_after:
+                            rate_limit_msg += f"Please try again in {retry_after}. "
+                        else:
+                            rate_limit_msg += "Please try again in a few hours. "
+                        rate_limit_msg += "You can increase your rate limit by adding a payment method to your OpenAI account."
+                        
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Sending rate limit error to client", file=sys.stdout, flush=True)
+                        logger.error(f"Job {job_id}: Rate limit error - {error_msg}")
+                        sse_store.add_event(job_id, 'error', {
+                            'job_id': job_id,
+                            'message': rate_limit_msg,
+                            'error_type': 'rate_limit',
+                            'retry_after': retry_after,
+                            'hint': 'Add a payment method to your OpenAI account to increase rate limits: https://platform.openai.com/account/billing'
+                        })
+                        # Update job status
+                        content_service.update_job_status(
+                            job_id,
+                            JobStatus.FAILED.value,
+                            finished_at=datetime.utcnow()
+                        )
+                        return  # Don't raise, error already sent via SSE
+                    
                     raise executor_error
         except (TimeoutError, asyncio.TimeoutError) as e:
             error_msg = f"Content generation timed out after {timeout_seconds} seconds. The generation process took longer than the configured timeout."
