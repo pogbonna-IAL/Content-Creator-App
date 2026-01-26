@@ -30,7 +30,11 @@ function VerifyEmailContent() {
     // Verify email with token
     const verifyEmail = async () => {
       try {
-        const response = await apiCall('api/auth/verify-email/confirm', {
+        // Use the correct endpoint path - ensure it points to backend API
+        const endpoint = 'api/auth/verify-email/confirm'
+        console.log('[verify-email] Calling endpoint:', endpoint)
+        
+        const response = await apiCall(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -38,35 +42,66 @@ function VerifyEmailContent() {
           body: JSON.stringify({ token }),
         })
 
-        const data = await response.json()
+        console.log('[verify-email] Response status:', response.status, response.statusText)
 
-        if (response.ok) {
-          setStatus('success')
-          setMessage('Your email has been verified successfully!')
-          
-          // Refresh auth status to get updated user data
-          await verifyAuthStatus()
-          
-          // Redirect to dashboard after 2 seconds
-          setTimeout(() => {
-            router.push('/')
-          }, 2000)
-        } else {
-          if (data.detail?.includes('expired')) {
+        // Handle non-OK responses
+        if (!response.ok) {
+          let errorData: any = {}
+          try {
+            errorData = await response.json()
+          } catch (e) {
+            // Response might not be JSON
+            const text = await response.text()
+            console.error('[verify-email] Non-JSON error response:', text)
+            errorData = { detail: text || `Server returned ${response.status} ${response.statusText}` }
+          }
+
+          console.error('[verify-email] Error response:', errorData)
+
+          // Handle 404 specifically
+          if (response.status === 404) {
+            setStatus('error')
+            setMessage('Verification endpoint not found. Please ensure the API server is running and NEXT_PUBLIC_API_URL is configured correctly.')
+            setLoading(false)
+            return
+          }
+
+          if (errorData.detail?.includes('expired') || errorData.message?.includes('expired')) {
             setStatus('expired')
             setMessage('This verification link has expired. Please request a new verification email.')
           } else {
             setStatus('error')
-            setMessage(data.detail || 'Failed to verify email. The link may be invalid or already used.')
+            setMessage(errorData.detail || errorData.message || 'Failed to verify email. The link may be invalid or already used.')
           }
+          setLoading(false)
+          return
         }
+
+        const data = await response.json()
+        console.log('[verify-email] Success response:', data)
+
+        setStatus('success')
+        setMessage('Your email has been verified successfully!')
+        
+        // Refresh auth status to get updated user data
+        await verifyAuthStatus()
+        
+        // Redirect to dashboard after 2 seconds
+        setTimeout(() => {
+          router.push('/')
+        }, 2000)
       } catch (error) {
-        console.error('Email verification error:', error)
+        console.error('[verify-email] Exception:', error)
         const errorMessage = error instanceof Error ? error.message : 'An error occurred'
-        setStatus('error')
-        setMessage(errorMessage.includes('Failed to fetch')
-          ? 'Cannot connect to server. Please check your connection and try again.'
-          : 'An error occurred while verifying your email. Please try again.')
+        
+        // Check if it's a network/404 error
+        if (errorMessage.includes('Failed to fetch') || errorMessage.includes('404')) {
+          setStatus('error')
+          setMessage('Cannot connect to the API server. Please ensure NEXT_PUBLIC_API_URL is configured correctly and the backend server is running.')
+        } else {
+          setStatus('error')
+          setMessage('An error occurred while verifying your email. Please try again.')
+        }
       } finally {
         setLoading(false)
       }
@@ -78,25 +113,48 @@ function VerifyEmailContent() {
   const handleResendEmail = async () => {
     try {
       setLoading(true)
-      const response = await apiCall('api/auth/verify-email/request', {
+      const endpoint = 'api/auth/verify-email/request'
+      console.log('[verify-email] Resending email via endpoint:', endpoint)
+      
+      const response = await apiCall(endpoint, {
         method: 'POST',
       })
 
-      const data = await response.json()
+      console.log('[verify-email] Resend response status:', response.status)
 
-      if (response.ok) {
-        setMessage('A new verification email has been sent to your email address.')
-        setStatus('success')
-      } else {
-        setMessage(data.detail || 'Failed to send verification email. Please try again.')
+      if (!response.ok) {
+        let errorData: any = {}
+        try {
+          errorData = await response.json()
+        } catch (e) {
+          const text = await response.text()
+          errorData = { detail: text || `Server returned ${response.status} ${response.statusText}` }
+        }
+
+        if (response.status === 404) {
+          setMessage('Verification endpoint not found. Please ensure the API server is running and NEXT_PUBLIC_API_URL is configured correctly.')
+        } else {
+          setMessage(errorData.detail || errorData.message || 'Failed to send verification email. Please try again.')
+        }
         setStatus('error')
+        setLoading(false)
+        return
       }
+
+      const data = await response.json()
+      console.log('[verify-email] Resend success:', data)
+
+      setMessage('A new verification email has been sent to your email address.')
+      setStatus('success')
     } catch (error) {
-      console.error('Resend email error:', error)
+      console.error('[verify-email] Resend exception:', error)
       const errorMessage = error instanceof Error ? error.message : 'An error occurred'
-      setMessage(errorMessage.includes('Failed to fetch')
-        ? 'Cannot connect to server. Please check your connection and try again.'
-        : 'An error occurred. Please try again.')
+      
+      if (errorMessage.includes('Failed to fetch') || errorMessage.includes('404')) {
+        setMessage('Cannot connect to the API server. Please ensure NEXT_PUBLIC_API_URL is configured correctly and the backend server is running.')
+      } else {
+        setMessage('An error occurred. Please try again.')
+      }
       setStatus('error')
     } finally {
       setLoading(false)
