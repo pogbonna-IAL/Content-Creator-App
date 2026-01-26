@@ -196,9 +196,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['researcher'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -206,9 +207,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['writer'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -216,9 +218,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['editor'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -226,9 +229,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['social_media_specialist'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -236,9 +240,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['audio_content_specialist'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -246,9 +251,10 @@ class ContentCreationCrew():
         agent = Agent(
             config=self.agents_config['video_content_specialist'],
             llm=self.llm,
-            verbose=False  # Reduced verbosity for faster execution
+            verbose=False,  # Reduced verbosity for faster execution
+            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}'")
+        logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     # To learn more about structured task outputs,

@@ -1345,15 +1345,19 @@ async def run_generation_async(
                     timeout_msg += "This may happen when generating multiple content types (blog, social, audio, video). "
                     timeout_msg += "Try generating fewer content types at once or increase the timeout limit."
                     
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Sending timeout error to client", file=sys.stdout, flush=True)
-                    logger.error(f"Job {job_id}: {error_msg}")
-                    sse_store.add_event(job_id, 'error', {
+                    error_event_data = {
+                        'type': 'error',  # Ensure type is set for frontend parsing
                         'job_id': job_id,
                         'message': timeout_msg,
                         'error_type': 'timeout',
                         'timeout_seconds': timeout_seconds,
                         'hint': 'Try generating fewer content types at once, or increase CREWAI_TIMEOUT in backend configuration'
-                    })
+                    }
+                    
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Sending timeout error to client: {timeout_msg[:100]}", file=sys.stdout, flush=True)
+                    logger.error(f"Job {job_id}: {error_msg}")
+                    event_id = sse_store.add_event(job_id, 'error', error_event_data)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Timeout error event added to SSE store with ID {event_id}", file=sys.stdout, flush=True)
                     # Update job status
                     content_service.update_job_status(
                         job_id,
