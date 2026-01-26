@@ -151,12 +151,26 @@ export default function Home() {
         headers['Authorization'] = `Bearer ${token}`
       }
       
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers,
-        credentials: 'include', // Include cookies as fallback
-        body: JSON.stringify({ topic }),
-      })
+      let response: Response
+      try {
+        response = await fetch('/api/generate', {
+          method: 'POST',
+          headers,
+          credentials: 'include', // Include cookies as fallback
+          body: JSON.stringify({ topic }),
+        })
+      } catch (fetchError) {
+        // Handle network-level errors (connection refused, DNS failure, etc.)
+        console.error('Fetch network error:', fetchError)
+        if (fetchError instanceof TypeError) {
+          // TypeError usually means network error (connection refused, CORS, etc.)
+          const networkErrorMsg = fetchError.message.includes('network') 
+            ? fetchError.message 
+            : `Network error: ${fetchError.message}`
+          throw new Error(`Cannot connect to server: ${networkErrorMsg}. Please ensure the API server is running and try again.`)
+        }
+        throw fetchError
+      }
 
       if (!response.ok) {
         // Handle authentication errors specifically
@@ -403,8 +417,36 @@ export default function Home() {
         }
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred'
       console.error('Generation error:', err)
+      
+      // Provide more helpful error messages based on error type
+      let errorMessage = 'An error occurred while generating content'
+      
+      if (err instanceof TypeError) {
+        if (err.message.includes('network') || err.message.includes('fetch')) {
+          errorMessage = 'Network error: Cannot connect to the server. Please check:\n' +
+            '1. The API server is running\n' +
+            '2. Your internet connection is active\n' +
+            '3. Try refreshing the page and generating again'
+        } else {
+          errorMessage = `Connection error: ${err.message}`
+        }
+      } else if (err instanceof Error) {
+        // Check for specific error messages
+        if (err.message.includes('Failed to fetch')) {
+          errorMessage = 'Cannot connect to the server. The API may be down or unreachable. Please try again later.'
+        } else if (err.message.includes('timeout')) {
+          errorMessage = 'Request timed out. The content generation is taking longer than expected. Please try again.'
+        } else if (err.message.includes('Authentication')) {
+          errorMessage = 'Authentication failed. Please log in again.'
+          router.push('/auth')
+        } else {
+          errorMessage = err.message
+        }
+      } else {
+        errorMessage = String(err)
+      }
+      
       setError(errorMessage)
       setOutput('') // Clear output on error
     } finally {

@@ -255,12 +255,44 @@ export async function POST(request: NextRequest) {
             }
           }
 
+          // Track controller state to prevent double-close errors
+          let controllerClosed = false
+          
+          const safeEnqueue = (data: Uint8Array) => {
+            if (!controllerClosed) {
+              try {
+                streamController.enqueue(data)
+              } catch (e) {
+                // Controller might be closed by client disconnect
+                if (e instanceof TypeError && (e.message.includes('closed') || e.message.includes('Invalid state'))) {
+                  controllerClosed = true
+                  console.log('Stream controller closed by client')
+                } else {
+                  throw e
+                }
+              }
+            }
+          }
+          
+          const safeClose = () => {
+            if (!controllerClosed) {
+              try {
+                streamController.close()
+                controllerClosed = true
+              } catch (e) {
+                // Already closed - ignore
+                controllerClosed = true
+                console.log('Stream controller already closed:', e instanceof Error ? e.message : String(e))
+              }
+            }
+          }
+
           if (!response.ok) {
             const errorText = await response.text()
-            streamController.enqueue(
+            safeEnqueue(
               encoder.encode(`data: ${JSON.stringify({ type: 'error', message: errorText })}\n\n`)
             )
-            streamController.close()
+            safeClose()
             return
           }
 
@@ -268,24 +300,41 @@ export async function POST(request: NextRequest) {
           const decoder = new TextDecoder()
 
           if (!reader) {
-            streamController.enqueue(
+            safeEnqueue(
               encoder.encode(`data: ${JSON.stringify({ type: 'error', message: 'No response body' })}\n\n`)
             )
-            streamController.close()
+            safeClose()
             return
           }
-
+          
           // Read stream with timeout handling and keep-alive
           const readStream = async () => {
+            let keepAliveInterval: NodeJS.Timeout | null = null
             try {
               let lastActivity = Date.now()
               // Send keep-alive more frequently (every 5 seconds) to prevent undici body timeout
               // This ensures the connection stays active even during long pauses in content generation
               // Backend also sends keep-alive every 5 seconds, so this is a backup
-              const keepAliveInterval = setInterval(() => {
-                // Always send keep-alive comment to prevent any timeout
-                streamController.enqueue(encoder.encode(': keep-alive\n\n'))
-                lastActivity = Date.now()
+              keepAliveInterval = setInterval(() => {
+                // Only send keep-alive if controller is still open
+                if (!controllerClosed) {
+                  try {
+                    safeEnqueue(encoder.encode(': keep-alive\n\n'))
+                    lastActivity = Date.now()
+                  } catch (e) {
+                    // Controller closed, clear interval
+                    if (keepAliveInterval) {
+                      clearInterval(keepAliveInterval)
+                      keepAliveInterval = null
+                    }
+                  }
+                } else {
+                  // Controller closed, clear interval
+                  if (keepAliveInterval) {
+                    clearInterval(keepAliveInterval)
+                    keepAliveInterval = null
+                  }
+                }
               }, 5000) // Every 5 seconds - very frequent to prevent timeout
 
               try {
@@ -293,8 +342,11 @@ export async function POST(request: NextRequest) {
                   const { done, value } = await reader.read()
                   
                   if (done) {
-                    clearInterval(keepAliveInterval)
-                    streamController.close()
+                    if (keepAliveInterval) {
+                      clearInterval(keepAliveInterval)
+                      keepAliveInterval = null
+                    }
+                    safeClose()
                     break
                   }
 
@@ -303,20 +355,30 @@ export async function POST(request: NextRequest) {
 
                   // Forward the SSE data to the client
                   const chunk = decoder.decode(value, { stream: true })
-                  streamController.enqueue(encoder.encode(chunk))
+                  safeEnqueue(encoder.encode(chunk))
                 }
               } finally {
-                clearInterval(keepAliveInterval)
+                // Ensure interval is cleared
+                if (keepAliveInterval) {
+                  clearInterval(keepAliveInterval)
+                  keepAliveInterval = null
+                }
               }
             } catch (readError) {
+              // Ensure interval is cleared on error
+              if (keepAliveInterval) {
+                clearInterval(keepAliveInterval)
+                keepAliveInterval = null
+              }
+              
               if (readError instanceof Error && readError.name === 'AbortError') {
-                streamController.enqueue(
+                safeEnqueue(
                   encoder.encode(`data: ${JSON.stringify({ 
                     type: 'error', 
                     message: 'Request timeout - content generation took too long (30 minutes)' 
                   })}\n\n`)
                 )
-                streamController.close()
+                safeClose()
               } else {
                 throw readError
               }
@@ -341,25 +403,31 @@ export async function POST(request: NextRequest) {
                'code' in errorCause && 
                errorCause.code === 'UND_ERR_BODY_TIMEOUT')
           
-          if (isTimeoutError) {
-            streamController.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ 
-                type: 'error', 
-                message: 'Stream timeout - content generation is taking longer than expected. The connection timed out while waiting for data. Please try again with a shorter topic or check the FastAPI server logs.',
-                error_code: 'STREAM_TIMEOUT',
-                hint: 'This usually happens when content generation takes more than 5 minutes without sending data. Try breaking your topic into smaller parts.'
-              })}\n\n`)
-            )
-          } else {
-            streamController.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ 
-                type: 'error', 
-                message: errorMessage,
-                error_code: 'STREAM_ERROR'
-              })}\n\n`)
-            )
+          // Use safe enqueue/close functions (they're in scope from the start function)
+          try {
+            if (isTimeoutError) {
+              safeEnqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'error', 
+                  message: 'Stream timeout - content generation is taking longer than expected. The connection timed out while waiting for data. Please try again with a shorter topic or check the FastAPI server logs.',
+                  error_code: 'STREAM_TIMEOUT',
+                  hint: 'This usually happens when content generation takes more than 5 minutes without sending data. Try breaking your topic into smaller parts.'
+                })}\n\n`)
+              )
+            } else {
+              safeEnqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'error', 
+                  message: errorMessage,
+                  error_code: 'STREAM_ERROR'
+                })}\n\n`)
+              )
+            }
+            safeClose()
+          } catch (finalError) {
+            // If safe functions fail, controller is likely already closed
+            console.log('Failed to send error message to client (controller may be closed):', finalError instanceof Error ? finalError.message : String(finalError))
           }
-          streamController.close()
         }
       },
     })

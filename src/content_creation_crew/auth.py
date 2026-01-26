@@ -13,6 +13,9 @@ from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorization
 from sqlalchemy.orm import Session
 from .database import get_db, User
 
+# Module-level flag to prevent repeated blacklist import warnings
+_blacklist_import_warning_logged = False
+
 # Import config for SECRET_KEY (will be imported after config is initialized)
 # Use lazy import to avoid circular dependency
 def get_secret_key():
@@ -414,10 +417,15 @@ async def get_current_user(
             # Re-raise HTTP exceptions (token is blacklisted)
             raise
         except ImportError as e:
-            logger.warning(f"Token blacklist module not available: {e}. Continuing without blacklist check.")
+            # Only log once at module level to avoid spam on every request
+            global _blacklist_import_warning_logged
+            if not _blacklist_import_warning_logged:
+                logger.debug(f"Token blacklist module not available: {e}. Continuing without blacklist check (this is OK if Redis is not configured).")
+                _blacklist_import_warning_logged = True
             # Continue without blacklist check if module not available
         except Exception as e:
-            logger.error(f"Error checking token blacklist: {e}")
+            # Only log actual errors, not expected import failures
+            logger.debug(f"Error checking token blacklist: {e}. Continuing without blacklist check.")
             # Continue anyway - don't block auth if blacklist check fails
     
     logger.debug(f"Looking up user with ID: {user_id}")

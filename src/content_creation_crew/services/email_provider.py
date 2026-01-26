@@ -213,15 +213,16 @@ def get_email_provider() -> EmailProvider:
             )
         else:
             # Development: Use dev logger
-            logger.warning("⚠ Email provider: DevEmailProvider (logs to console only)")
+            # Use info level instead of warning - this is expected in development
+            logger.info("📧 Email provider: DevEmailProvider (logs to console only - expected in development)")
             if missing_vars:
-                logger.warning(f"  Missing SMTP configuration: {', '.join(missing_vars)}")
-                logger.warning("  Set these environment variables to enable email sending:")
-                logger.warning("    - SMTP_HOST (e.g., smtp.gmail.com)")
-                logger.warning("    - SMTP_PORT (e.g., 587)")
-                logger.warning("    - SMTP_USER (your email)")
-                logger.warning("    - SMTP_PASSWORD (your email password or app password)")
-                logger.warning("    - SMTP_FROM_ADDRESS (optional, defaults to noreply@example.com)")
+                logger.info(f"  Missing SMTP configuration: {', '.join(missing_vars)}")
+                logger.info("  To enable email sending in production, set these environment variables:")
+                logger.info("    - SMTP_HOST (e.g., smtp.gmail.com)")
+                logger.info("    - SMTP_PORT (e.g., 587)")
+                logger.info("    - SMTP_USER (your email)")
+                logger.info("    - SMTP_PASSWORD (your email password or app password)")
+                logger.info("    - SMTP_FROM_ADDRESS (optional, defaults to noreply@example.com)")
             _email_provider = DevEmailProvider()
     
     return _email_provider
