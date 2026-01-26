@@ -444,6 +444,7 @@ async def stream_job_progress(
     
     async def generate_stream():
         """Generate SSE stream for job progress"""
+        nonlocal job  # Ensure we can modify the outer scope 'job' variable
         try:
             # Replay missed events if last_event_id provided
             if last_event_id_int:
