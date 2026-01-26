@@ -30,8 +30,9 @@ function VerifyEmailContent() {
     // Verify email with token
     const verifyEmail = async () => {
       try {
-        // Use the correct endpoint path - ensure it points to backend API
-        const endpoint = 'api/auth/verify-email/confirm'
+        // Use Next.js API route that proxies to backend
+        // This ensures the request works even if NEXT_PUBLIC_API_URL is not set
+        const endpoint = '/api/auth/verify-email/confirm'
         console.log('[verify-email] Calling endpoint:', endpoint)
         
         const response = await apiCall(endpoint, {
@@ -113,7 +114,8 @@ function VerifyEmailContent() {
   const handleResendEmail = async () => {
     try {
       setLoading(true)
-      const endpoint = 'api/auth/verify-email/request'
+      // Use Next.js API route that proxies to backend
+      const endpoint = '/api/auth/verify-email/request'
       console.log('[verify-email] Resending email via endpoint:', endpoint)
       
       const response = await apiCall(endpoint, {

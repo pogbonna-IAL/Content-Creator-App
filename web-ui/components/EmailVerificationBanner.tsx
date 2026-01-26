@@ -21,7 +21,8 @@ export default function EmailVerificationBanner() {
     setMessage(null)
     
     try {
-      const response = await apiCall('api/auth/verify-email/request', {
+      // Use Next.js API route that proxies to backend
+      const response = await apiCall('/api/auth/verify-email/request', {
         method: 'POST',
       })
 
