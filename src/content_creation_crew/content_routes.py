@@ -679,8 +679,10 @@ async def stream_job_progress(
                         
                         if len(current_artifacts) > last_artifact_count:
                             # New artifacts created
+                            print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
                             new_artifacts = current_artifacts[last_artifact_count:]
                             for artifact in new_artifacts:
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}", file=sys.stdout, flush=True)
                                 # Send artifact_ready event
                                 event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
                                 
@@ -715,10 +717,12 @@ async def stream_job_progress(
                                         'content_field': content_field
                                     }
                                     content_event_id = sse_store.add_event(job_id, 'content', content_event_data)
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Yielding content event for {artifact.type}, length={len(artifact.content_text)}", file=sys.stdout, flush=True)
                                     yield f"id: {content_event_id}\n"
                                     yield f"event: content\n"
                                     yield f"data: {json.dumps(content_event_data)}\n\n"
                                     flush_buffers()  # Flush content events immediately
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Content event yielded and flushed", file=sys.stdout, flush=True)
                                     logger.info(f"[STREAM_CONTENT] Job {job_id}: Sent content event for {artifact.type}, length={len(artifact.content_text)}")
                             
                             last_artifact_count = len(current_artifacts)
@@ -1257,19 +1261,23 @@ async def run_generation_async(
         })
         
         # Extract and validate content
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting content extraction from CrewAI result", file=sys.stdout, flush=True)
         logger.info(f"[EXTRACTION] Job {job_id}: Starting content extraction from CrewAI result")
         extraction_start = time.time()
         raw_content = await api_server_module.extract_content_async(result, topic, logger)
         extraction_duration = time.time() - extraction_start
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Content extraction completed, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
         logger.info(f"[EXTRACTION] Job {job_id}: Content extraction completed in {extraction_duration:.2f}s, content length={len(raw_content) if raw_content else 0}")
         
         # Validate and create blog artifact
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting blog content validation", file=sys.stdout, flush=True)
         logger.info(f"[VALIDATION] Job {job_id}: Starting blog content validation")
         validation_start = time.time()
         is_valid, validated_model, content, was_repaired = validate_and_repair_content(
             'blog', raw_content, model_name, allow_repair=True
         )
         validation_duration = time.time() - validation_start
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Blog validation completed, valid={is_valid}, content_length={len(content) if content else 0}", file=sys.stdout, flush=True)
         logger.info(f"[VALIDATION] Job {job_id}: Blog validation completed in {validation_duration:.3f}s, valid={is_valid}, repaired={was_repaired}")
         
         if not is_valid:
@@ -1319,6 +1327,7 @@ async def run_generation_async(
                     )
                     artifact_duration = time.time() - artifact_start
                     # Send artifact ready event
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact created, sending SSE events", file=sys.stdout, flush=True)
                     sse_store.add_event(job_id, 'artifact_ready', {
                         'job_id': job_id,
                         'artifact_type': 'blog',
@@ -1331,6 +1340,7 @@ async def run_generation_async(
                         'progress': 100,  # Blog is complete
                         'artifact_type': 'blog'
                     })
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact SSE events added to store, content_length={len(content)}", file=sys.stdout, flush=True)
                     logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
             else:
                 # Moderation disabled, create artifact directly
