@@ -87,8 +87,9 @@ class Config:
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     
-    # CrewAI execution timeout (in seconds, default 5 minutes)
-    CREWAI_TIMEOUT: int = int(os.getenv("CREWAI_TIMEOUT", "300"))
+    # CrewAI execution timeout (in seconds, default 3 minutes for Phase 1 optimization)
+    # Phase 1: Reduced from 300s to 180s for faster failure detection while maintaining reliability
+    CREWAI_TIMEOUT: int = int(os.getenv("CREWAI_TIMEOUT", "180"))
     
     # Video rendering feature flag
     ENABLE_VIDEO_RENDERING: bool = os.getenv("ENABLE_VIDEO_RENDERING", "false").lower() in ("true", "1", "yes")

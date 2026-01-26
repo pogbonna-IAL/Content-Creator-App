@@ -8,10 +8,10 @@ research_task:
 
 writing_task:
   description: >
-    Write blog post about {topic} using research. Include: title, intro (100 words), 3 sections (150 words each), conclusion (50 words).
-    Total: ~600 words. Use research provided - don't wait.
+    Write blog post about {topic} using research. Include: title, intro (80-100 words), 2-3 sections (120-150 words each), conclusion (40-50 words).
+    Total: ~450-500 words. Use research provided immediately - don't wait. Be efficient.
   expected_output: >
-    Blog post (~600 words): Title, intro, 3 sections, conclusion. Ready for editing.
+    Blog post (~450-500 words): Title, intro, 2-3 sections, conclusion. Ready for editing.
   agent: writer
   context:
     - research_task

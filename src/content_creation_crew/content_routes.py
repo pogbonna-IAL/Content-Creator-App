@@ -758,12 +758,14 @@ async def run_generation_async(
                     'step': 'research'
                 })
                 
+                # Phase 1: Use timeout from config (180s) for faster failure detection
+                # This prevents jobs from hanging while maintaining reliability
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         None,
                         lambda: crew_obj.kickoff(inputs={'topic': topic})
                     ),
-                    timeout=timeout_seconds
+                    timeout=timeout_seconds  # 180 seconds from config
                 )
                 llm_success = True
                 executor_done = True

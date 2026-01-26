@@ -28,26 +28,27 @@ class ContentCreationCrew():
         import yaml
         from pathlib import Path
         
-        # Set LiteLLM timeout to 30 minutes (1800 seconds) for long-running content generation
+        # Set LiteLLM timeout to 3 minutes (180 seconds) for Phase 1 speed optimization
+        # Phase 1: Reduced from 1800s to 180s to match CREWAI_TIMEOUT and prevent hanging
         # These must be set before importing/using LiteLLM
-        os.environ['LITELLM_REQUEST_TIMEOUT'] = '1800'
-        os.environ['LITELLM_TIMEOUT'] = '1800'
-        os.environ['LITELLM_CONNECTION_TIMEOUT'] = '1800'
+        os.environ['LITELLM_REQUEST_TIMEOUT'] = '180'
+        os.environ['LITELLM_TIMEOUT'] = '180'
+        os.environ['LITELLM_CONNECTION_TIMEOUT'] = '60'  # Faster connection timeout
         
         # Also try setting via litellm if available
         try:
             import litellm
             # Set timeout in litellm settings
-            litellm.request_timeout = 1800
-            litellm.timeout = 1800
+            litellm.request_timeout = 180
+            litellm.timeout = 180
             litellm.drop_params = True  # Don't drop timeout params
             
             # Configure httpx timeout for Ollama connections
-            # httpx has a default timeout of 600 seconds, we need to override it
+            # Phase 1: Reduced timeout for faster failure detection
             try:
                 import httpx
                 # Set environment variable for httpx default timeout
-                os.environ['HTTPX_DEFAULT_TIMEOUT'] = '1800'
+                os.environ['HTTPX_DEFAULT_TIMEOUT'] = '180'
             except (ImportError, AttributeError):
                 pass
         except ImportError:
@@ -60,34 +61,37 @@ class ContentCreationCrew():
         model = self._get_model_for_tier(tier)
         
         # Initialize the LLM with tier-appropriate model
-        # Optimize for speed: lower temperature = faster, more deterministic responses
+        # Phase 1: Optimize for speed - lower temperature = faster, more deterministic responses
         tier_config = self.tier_config.get(tier, {})
-        temperature = 0.2 if tier == 'free' else 0.4  # Even lower temp for free tier = faster
+        # Phase 1: Use 0.2 temperature for all tiers for faster, consistent generation
+        temperature = 0.2  # Unified temperature for all tiers
         
         # Get Ollama base URL from config
         from .config import config
         ollama_base_url = config.OLLAMA_BASE_URL
         
-        # Set max_tokens limit based on tier to prevent overly long generations
+        # Phase 1: Reduce max_tokens by 25% for faster generation while maintaining quality
+        # Original limits: free=2000, basic=3000, pro=4000, enterprise=6000
+        # New limits: free=1500, basic=2250, pro=3000, enterprise=4500
         max_tokens_map = {
-            'free': 2000,      # Limit free tier to 2000 tokens for faster generation
-            'basic': 3000,     # Basic tier: 3000 tokens
-            'pro': 4000,        # Pro tier: 4000 tokens
-            'enterprise': 6000 # Enterprise: 6000 tokens
+            'free': 1500,      # Reduced from 2000 (25% reduction)
+            'basic': 2250,     # Reduced from 3000 (25% reduction)
+            'pro': 3000,       # Reduced from 4000 (25% reduction)
+            'enterprise': 4500 # Reduced from 6000 (25% reduction)
         }
-        max_tokens = max_tokens_map.get(tier, 2000)
+        max_tokens = max_tokens_map.get(tier, 1500)
         
         self.llm = LLM(
             model=model,
             base_url=ollama_base_url,
             temperature=temperature,  # Lower temperature for faster execution
-            # Pass timeout configuration - LiteLLM should pass this to httpx
+            # Phase 1: Reduced timeouts to match CREWAI_TIMEOUT (180s)
             config={
-                "timeout": 1800.0,  # Total timeout in seconds
-                "request_timeout": 1800.0,  # Request timeout
-                "connection_timeout": 60.0,  # Connection timeout
+                "timeout": 180.0,  # Total timeout in seconds (reduced from 1800)
+                "request_timeout": 180.0,  # Request timeout (reduced from 1800)
+                "connection_timeout": 30.0,  # Connection timeout (reduced from 60)
                 "temperature": temperature,  # Also set in config for compatibility
-                "max_tokens": max_tokens,  # Limit tokens for faster generation
+                "max_tokens": max_tokens,  # Reduced token limits for faster generation
             }
         )
     
@@ -106,9 +110,23 @@ class ContentCreationCrew():
         return {}
     
     def _get_model_for_tier(self, tier: str) -> str:
-        """Get appropriate LLM model for subscription tier"""
+        """
+        Get appropriate LLM model for subscription tier
+        Phase 1: Use smaller, faster models for free tier to improve speed
+        """
         tier_config = self.tier_config.get(tier, {})
-        model = tier_config.get('model', 'ollama/llama3.2:1b')
+        
+        # Phase 1: Use smaller models for free tier, keep larger models for paid tiers
+        # This improves speed for free tier while maintaining quality for paid users
+        model_map = {
+            'free': 'ollama/llama3.2:1b',      # Smallest, fastest model for free tier
+            'basic': 'ollama/llama3.2:3b',     # Medium model for basic tier
+            'pro': 'ollama/llama3.2:3b',       # Medium model for pro tier
+            'enterprise': 'ollama/llama3.1:8b' # Larger model for enterprise tier
+        }
+        
+        # Check tier config first, then fall back to model_map, then default
+        model = tier_config.get('model') or model_map.get(tier, 'ollama/llama3.2:1b')
         return model
     
     def _get_max_parallel_tasks(self) -> int:
@@ -279,18 +297,10 @@ class ContentCreationCrew():
         
         tasks.extend(optional_tasks)
         
-        # Determine process type based on tier
-        # Use hierarchical process for better parallel execution (Quick Win #1)
-        # Higher tiers can process multiple optional tasks in parallel
-        max_parallel = self._get_max_parallel_tasks()
-        
-        # Default to hierarchical for better performance (allows parallel optional tasks)
-        # Only use sequential for free tier with no optional tasks
-        if max_parallel == 1 and len(optional_tasks) == 0:
-            process = Process.sequential
-        else:
-            # Use hierarchical process for parallel execution of optional tasks
-            process = Process.hierarchical
+        # Phase 1: Always use hierarchical process for better parallel execution
+        # This allows optional tasks to run in parallel after editing_task completes
+        # Improves overall generation speed without quality impact
+        process = Process.hierarchical
         
         return Crew(
             agents=agents,  # Manually collected agents
