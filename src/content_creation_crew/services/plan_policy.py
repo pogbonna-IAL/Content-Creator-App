@@ -121,6 +121,11 @@ class PlanPolicy:
         Returns:
             Plan name: 'free', 'basic', 'pro', or 'enterprise'
         """
+        # Admin users get 'pro' tier for faster generation
+        if hasattr(self.user, 'is_admin') and self.user.is_admin:
+            logger.info(f"Admin user {self.user.id} ({self.user.email}) assigned 'pro' tier for faster generation")
+            return SubscriptionPlan.PRO.value
+        
         subscription = self._get_subscription()
         if subscription:
             return subscription.plan

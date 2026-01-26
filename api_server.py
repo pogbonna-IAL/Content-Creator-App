@@ -1137,12 +1137,12 @@ async def extract_content_async(result, topic: str, logger) -> str:
         return content
     
     # Fallback to file-based extraction (slower, but more reliable for some cases)
+    # Removed 1-second delay - check file immediately
     logger.info("Direct extraction failed, trying file-based extraction...")
-    await asyncio.sleep(1)  # Reduced wait time since we tried result first
     
-    # Try reading the file multiple times
+    # Try reading the file multiple times (reduced attempts for faster failure)
     output_file = Path("content_output.md")
-    for attempt in range(5):  # Reduced attempts since we prioritize result objects
+    for attempt in range(3):  # Reduced from 5 to 3 attempts for faster failure
         if output_file.exists():
             try:
                 file_content = output_file.read_text(encoding='utf-8')
@@ -1205,7 +1205,9 @@ async def extract_content_async(result, topic: str, logger) -> str:
                         
             except Exception as e:
                 logger.warning(f"Error reading file (attempt {attempt + 1}): {e}")
-        await asyncio.sleep(0.5)
+        # Removed sleep delay - check immediately for faster failure
+        if attempt < 2:  # Only wait between attempts, not after last attempt
+            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
     
     # Final fallback: extract from result object (should have been tried first, but just in case)
     if not content or len(content.strip()) < 10:
@@ -1228,12 +1230,10 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
         logger.info(f"Successfully extracted social media content from result object, length: {len(content)}")
         return content
     
-    # Fallback to file-based extraction
-    await asyncio.sleep(1)
-    
+    # Fallback to file-based extraction (removed 1s delay for faster extraction)
     # Try reading the social media output file
     output_file = Path("social_media_output.md")
-    for attempt in range(10):
+    for attempt in range(3):  # Reduced from 10 to 3 attempts for faster failure
         if output_file.exists():
             try:
                 file_content = output_file.read_text(encoding='utf-8')
@@ -1296,7 +1296,9 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
                         
             except Exception as e:
                 logger.warning(f"Error reading social media file (attempt {attempt + 1}): {e}")
-        await asyncio.sleep(0.5)
+        # Removed sleep delay - check immediately for faster failure
+        if attempt < 2:  # Only wait between attempts, not after last attempt
+            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:
@@ -1319,12 +1321,10 @@ async def extract_audio_content_async(result, topic: str, logger) -> str:
         logger.info(f"Successfully extracted audio content from result object, length: {len(content)}")
         return content
     
-    # Fallback to file-based extraction
-    await asyncio.sleep(1)
-    
+    # Fallback to file-based extraction (removed 1s delay for faster extraction)
     # Try reading the audio output file
     output_file = Path("audio_output.md")
-    for attempt in range(10):
+    for attempt in range(3):  # Reduced from 10 to 3 attempts for faster failure
         if output_file.exists():
             try:
                 file_content = output_file.read_text(encoding='utf-8')
@@ -1387,7 +1387,9 @@ async def extract_audio_content_async(result, topic: str, logger) -> str:
                         
             except Exception as e:
                 logger.warning(f"Error reading audio file (attempt {attempt + 1}): {e}")
-        await asyncio.sleep(0.5)
+        # Removed sleep delay - check immediately for faster failure
+        if attempt < 2:  # Only wait between attempts, not after last attempt
+            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:
@@ -1410,12 +1412,10 @@ async def extract_video_content_async(result, topic: str, logger) -> str:
         logger.info(f"Successfully extracted video content from result object, length: {len(content)}")
         return content
     
-    # Fallback to file-based extraction
-    await asyncio.sleep(1)
-    
+    # Fallback to file-based extraction (removed 1s delay for faster extraction)
     # Try reading the video output file
     output_file = Path("video_output.md")
-    for attempt in range(10):
+    for attempt in range(3):  # Reduced from 10 to 3 attempts for faster failure
         if output_file.exists():
             try:
                 file_content = output_file.read_text(encoding='utf-8')
@@ -1478,7 +1478,9 @@ async def extract_video_content_async(result, topic: str, logger) -> str:
                         
             except Exception as e:
                 logger.warning(f"Error reading video file (attempt {attempt + 1}): {e}")
-        await asyncio.sleep(0.5)
+        # Removed sleep delay - check immediately for faster failure
+        if attempt < 2:  # Only wait between attempts, not after last attempt
+            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:
