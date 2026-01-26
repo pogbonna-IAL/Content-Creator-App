@@ -376,12 +376,12 @@ export async function POST(request: NextRequest) {
                   }
 
                   chunkCount++
-                  // Log first few chunks and periodically after that
-                  if (chunkCount <= 3 || chunkCount % 20 === 0) {
+                  // Log ALL chunks for first 10, then every 10th chunk to catch initial events
+                  if (chunkCount <= 10 || chunkCount % 10 === 0) {
                     console.log(`Stream chunk #${chunkCount} read:`, {
                       done: false,
                       valueLength: value?.length,
-                      preview: value ? decoder.decode(value.slice(0, Math.min(100, value.length)), { stream: true }) : 'null'
+                      preview: value ? decoder.decode(value.slice(0, Math.min(200, value.length)), { stream: true }) : 'null'
                     })
                   }
 
@@ -390,8 +390,16 @@ export async function POST(request: NextRequest) {
 
                   // Forward the SSE data to the client
                   const chunk = decoder.decode(value, { stream: true })
-                  if (chunkCount <= 3 || chunkCount % 20 === 0) {
-                    console.log(`Decoded chunk #${chunkCount} (first 200 chars):`, chunk.substring(0, 200))
+                  // Log ALL chunks for first 10, then every 10th chunk
+                  if (chunkCount <= 10 || chunkCount % 10 === 0) {
+                    console.log(`Decoded chunk #${chunkCount} (full content):`, chunk)
+                    // Also check if this chunk contains data events
+                    if (chunk.includes('data: ')) {
+                      console.log(`✓ Chunk #${chunkCount} contains data event!`)
+                    }
+                    if (chunk.includes('event: ')) {
+                      console.log(`✓ Chunk #${chunkCount} contains event type!`)
+                    }
                   }
                   safeEnqueue(encoder.encode(chunk))
                 }

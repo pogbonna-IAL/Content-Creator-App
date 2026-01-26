@@ -230,7 +230,17 @@ export default function Home() {
 
         // Decode the chunk
         const chunk = decoder.decode(value, { stream: true })
-        console.log('Received chunk:', chunk.substring(0, 100))
+        // Log first 10 chunks fully, then periodically
+        const chunkNum = (buffer.match(/\n\n/g) || []).length + 1
+        if (chunkNum <= 10 || chunkNum % 10 === 0) {
+          console.log(`Frontend received chunk #${chunkNum}:`, chunk)
+          if (chunk.includes('data: ')) {
+            console.log(`✓ Frontend chunk #${chunkNum} contains data event!`)
+          }
+          if (chunk.includes('event: ')) {
+            console.log(`✓ Frontend chunk #${chunkNum} contains event type!`)
+          }
+        }
         buffer += chunk
         
         // Process complete SSE messages (SSE format: "data: {...}\n\n")
