@@ -309,7 +309,17 @@ async def create_generation_job(
             logger.error(f"[ASYNC_TASK] Task for job {job.id} failed in callback: {type(e).__name__}: {str(e)}")
     
     task.add_done_callback(task_done_callback)
-    logger.info(f"[ASYNC_TASK] Created async task for job {job.id}, task_id={id(task)}")
+    
+    # Verify task is running and log details
+    logger.info(f"[JOB_CREATE] Created async task for job {job.id}, task_id={id(task)}, topic='{topic[:50]}...'")
+    if task.done():
+        logger.warning(f"[JOB_CREATE] Task for job {job.id} completed immediately (unexpected)")
+        try:
+            task.result()  # Check if it completed with an error
+        except Exception as e:
+            logger.error(f"[JOB_CREATE] Task for job {job.id} failed immediately: {type(e).__name__}: {str(e)}")
+    else:
+        logger.info(f"[JOB_CREATE] Task for job {job.id} is running asynchronously")
     
     # Return job info
     return _job_to_response(job)
@@ -433,6 +443,13 @@ async def stream_job_progress(
     # Get SSE event store
     sse_store = get_sse_store()
     
+    # Import flush utilities for immediate data delivery
+    from content_creation_crew.streaming_utils import flush_buffers
+    
+    # Log stream start
+    client_host = request.client.host if request.client else 'unknown'
+    logger.info(f"[STREAM_START] Starting SSE stream for job {job_id}, client={client_host}, user_id={current_user.id}")
+    
     # Get Last-Event-ID from header (use query param if header not available)
     last_event_id = request.headers.get("Last-Event-ID") or last_event_id
     last_event_id_int = None
@@ -445,6 +462,7 @@ async def stream_job_progress(
     async def generate_stream():
         """Generate SSE stream for job progress"""
         nonlocal job  # Ensure we can modify the outer scope 'job' variable
+        logger.info(f"[STREAM_GENERATOR] Generator started for job {job_id}")
         try:
             # Replay missed events if last_event_id provided
             if last_event_id_int:
@@ -453,6 +471,7 @@ async def stream_job_progress(
                     yield f"id: {event['id']}\n"
                     yield f"event: {event['type']}\n"
                     yield f"data: {json.dumps(event['data'])}\n\n"
+                    flush_buffers()  # Flush after each event for immediate delivery
             
             # Send initial job status if not already sent
             if not last_event_id_int:
@@ -461,6 +480,8 @@ async def stream_job_progress(
                 yield f"id: {event_id}\n"
                 yield f"event: job_started\n"
                 yield f"data: {json.dumps(event_data)}\n\n"
+                flush_buffers()  # Critical: Flush immediately after initial event
+                logger.info(f"[STREAM_GENERATOR] Sent initial job_started event for job {job_id}")
             
             # Poll for job updates
             last_status = job.status
@@ -492,6 +513,7 @@ async def stream_job_progress(
                                 yield f"id: {event_id}\n"
                                 yield f"event: error\n"
                                 yield f"data: {json.dumps(error_data)}\n\n"
+                                flush_buffers()
                                 logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
                                 break
                         except Exception as fresh_error:
@@ -502,6 +524,7 @@ async def stream_job_progress(
                             yield f"id: {event_id}\n"
                             yield f"event: error\n"
                             yield f"data: {json.dumps(error_data)}\n\n"
+                            flush_buffers()
                             break
                     
                     # Log every 20 polls (every 10 seconds) to track progress
@@ -517,6 +540,7 @@ async def stream_job_progress(
                     current_time = time.time()
                     if current_time - last_keepalive_time >= keepalive_interval:
                         yield ": keep-alive\n\n"
+                        flush_buffers()  # Flush keep-alive for immediate delivery
                         last_keepalive_time = current_time
                     
                     # Check for status changes
@@ -527,6 +551,7 @@ async def stream_job_progress(
                         yield f"id: {event_id}\n"
                         yield f"event: {event_type}\n"
                         yield f"data: {json.dumps(event_data)}\n\n"
+                        flush_buffers()  # Flush status change events immediately
                         last_status = job.status
                         
                         # If completed or failed, send final event and exit
@@ -560,6 +585,7 @@ async def stream_job_progress(
                                     yield f"id: {event_id}\n"
                                     yield f"event: complete\n"
                                     yield f"data: {json.dumps(artifact_data)}\n\n"
+                                    flush_buffers()  # Flush completion event immediately
                                 except Exception as artifact_error:
                                     logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
                             break
@@ -587,6 +613,7 @@ async def stream_job_progress(
                                 yield f"id: {event_id}\n"
                                 yield f"event: artifact_ready\n"
                                 yield f"data: {json.dumps(event_data)}\n\n"
+                                flush_buffers()  # Flush artifact events immediately
                             last_artifact_count = len(current_artifacts)
                     except Exception as artifact_query_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
@@ -603,6 +630,7 @@ async def stream_job_progress(
                         yield f"id: {event_id}\n"
                         yield f"event: error\n"
                         yield f"data: {json.dumps(error_data)}\n\n"
+                        flush_buffers()  # Flush error events immediately
                     except Exception as yield_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to yield error event: {type(yield_error).__name__}: {str(yield_error)}")
                         # If we can't yield, the connection is likely broken - exit
@@ -619,6 +647,7 @@ async def stream_job_progress(
                 yield f"id: {event_id}\n"
                 yield f"event: error\n"
                 yield f"data: {json.dumps(error_data)}\n\n"
+                flush_buffers()  # Flush final error event
             except Exception:
                 # Can't send error - connection is broken
                 pass
@@ -629,7 +658,8 @@ async def stream_job_progress(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Content-Type": "text/event-stream; charset=utf-8",  # Explicit content type
         }
     )
 

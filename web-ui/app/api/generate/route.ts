@@ -285,6 +285,7 @@ export async function POST(request: NextRequest) {
 
           let response: Response
           try {
+            console.log('Fetching stream from:', getApiUrl(`v1/content/jobs/${jobId}/stream`))
             response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions)
           } finally {
             clearTimeout(timeoutId)
@@ -296,8 +297,18 @@ export async function POST(request: NextRequest) {
             }
           }
 
+          // Log stream response details
+          console.log('Stream response received:', {
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries()),
+            hasBody: !!response.body
+          })
+
           if (!response.ok) {
             const errorText = await response.text()
+            console.error('Stream response not OK:', errorText)
             safeEnqueue(
               encoder.encode(`data: ${JSON.stringify({ type: 'error', message: errorText })}\n\n`)
             )
@@ -309,12 +320,15 @@ export async function POST(request: NextRequest) {
           const decoder = new TextDecoder()
 
           if (!reader) {
+            console.error('No reader available - response body is null')
             safeEnqueue(
               encoder.encode(`data: ${JSON.stringify({ type: 'error', message: 'No response body' })}\n\n`)
             )
             safeClose()
             return
           }
+
+          console.log('Stream reader obtained, starting to read chunks...')
           
           // Read stream with timeout handling and keep-alive
           const readStream = async () => {
@@ -347,10 +361,12 @@ export async function POST(request: NextRequest) {
               }, 5000) // Every 5 seconds - very frequent to prevent timeout
 
               try {
+                let chunkCount = 0
                 while (true) {
                   const { done, value } = await reader.read()
                   
                   if (done) {
+                    console.log('Stream ended (done=true), total chunks received:', chunkCount)
                     if (keepAliveInterval) {
                       clearInterval(keepAliveInterval)
                       keepAliveInterval = null
@@ -359,11 +375,24 @@ export async function POST(request: NextRequest) {
                     break
                   }
 
+                  chunkCount++
+                  // Log first few chunks and periodically after that
+                  if (chunkCount <= 3 || chunkCount % 20 === 0) {
+                    console.log(`Stream chunk #${chunkCount} read:`, {
+                      done: false,
+                      valueLength: value?.length,
+                      preview: value ? decoder.decode(value.slice(0, Math.min(100, value.length)), { stream: true }) : 'null'
+                    })
+                  }
+
                   // Update last activity time
                   lastActivity = Date.now()
 
                   // Forward the SSE data to the client
                   const chunk = decoder.decode(value, { stream: true })
+                  if (chunkCount <= 3 || chunkCount % 20 === 0) {
+                    console.log(`Decoded chunk #${chunkCount} (first 200 chars):`, chunk.substring(0, 200))
+                  }
                   safeEnqueue(encoder.encode(chunk))
                 }
               } finally {
