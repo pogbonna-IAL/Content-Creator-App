@@ -394,15 +394,22 @@ export async function POST(request: NextRequest) {
           console.error('Error details:', errorMessage)
           console.error('Error cause:', errorCause)
           
-          // Check if it's a timeout error (including nested cause with UND_ERR_BODY_TIMEOUT code)
+          // Check error types
+          const errorCode = errorCause && typeof errorCause === 'object' && 'code' in errorCause ? errorCause.code : null
           const isTimeoutError = errorMessage.includes('UND_ERR_BODY_TIMEOUT') || 
               errorMessage.includes('Body Timeout') ||
               errorMessage.includes('body timeout') ||
               errorMessage.includes('BodyTimeoutError') ||
               errorMessage.includes('timeout') ||
+              errorCode === 'UND_ERR_BODY_TIMEOUT'
+          
+          const isSocketError = errorMessage.includes('terminated') ||
+              errorMessage.includes('SocketError') ||
+              errorMessage.includes('other side closed') ||
+              errorCode === 'UND_ERR_SOCKET' ||
               (errorCause && typeof errorCause === 'object' && 
                'code' in errorCause && 
-               errorCause.code === 'UND_ERR_BODY_TIMEOUT')
+               errorCause.code === 'UND_ERR_SOCKET')
           
           // Use safe enqueue/close functions (they're in scope from the start function)
           try {
@@ -415,12 +422,23 @@ export async function POST(request: NextRequest) {
                   hint: 'This usually happens when content generation takes more than 5 minutes without sending data. Try breaking your topic into smaller parts.'
                 })}\n\n`)
               )
+            } else if (isSocketError) {
+              // Socket closed - backend likely closed the connection
+              safeEnqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'error', 
+                  message: 'Connection closed by server. The backend may have encountered an error or the job may have failed. Please check the server logs and try again.',
+                  error_code: 'STREAM_CLOSED',
+                  hint: 'This usually happens when the backend encounters an error during content generation. Check the backend logs for details.'
+                })}\n\n`)
+              )
             } else {
               safeEnqueue(
                 encoder.encode(`data: ${JSON.stringify({ 
                   type: 'error', 
                   message: errorMessage,
-                  error_code: 'STREAM_ERROR'
+                  error_code: 'STREAM_ERROR',
+                  error_details: errorCode ? { code: errorCode } : undefined
                 })}\n\n`)
               )
             }

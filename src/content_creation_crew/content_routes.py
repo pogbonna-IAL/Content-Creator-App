@@ -444,110 +444,183 @@ async def stream_job_progress(
     
     async def generate_stream():
         """Generate SSE stream for job progress"""
-        # Replay missed events if last_event_id provided
-        if last_event_id_int:
-            missed_events = sse_store.get_events_since(job_id, last_event_id_int)
-            for event in missed_events:
-                yield f"id: {event['id']}\n"
-                yield f"event: {event['type']}\n"
-                yield f"data: {json.dumps(event['data'])}\n\n"
-        
-        # Send initial job status if not already sent
-        if not last_event_id_int:
-            event_data = {'type': 'job_started', 'job_id': job_id, 'status': job.status}
-            event_id = sse_store.add_event(job_id, 'job_started', event_data)
-            yield f"id: {event_id}\n"
-            yield f"event: job_started\n"
-            yield f"data: {json.dumps(event_data)}\n\n"
-        
-        # Poll for job updates
-        last_status = job.status
-        last_artifact_count = 0
-        last_keepalive_time = time.time()
-        keepalive_interval = 5.0  # Send keep-alive every 5 seconds to prevent timeout
-        poll_count = 0
-        stream_start_time = time.time()
-        
-        logger.info(f"[STREAM_POLL] Starting polling loop for job {job_id}, initial status={job.status}")
-        
-        while True:
-            poll_count += 1
-            # Refresh job from database
-            db.refresh(job)
+        try:
+            # Replay missed events if last_event_id provided
+            if last_event_id_int:
+                missed_events = sse_store.get_events_since(job_id, last_event_id_int)
+                for event in missed_events:
+                    yield f"id: {event['id']}\n"
+                    yield f"event: {event['type']}\n"
+                    yield f"data: {json.dumps(event['data'])}\n\n"
             
-            # Log every 20 polls (every 10 seconds) to track progress
-            if poll_count % 20 == 0:
-                elapsed = time.time() - stream_start_time
-                artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
-                logger.info(f"[STREAM_POLL] Job {job_id}: Poll #{poll_count}, status={job.status}, elapsed={elapsed:.1f}s, artifacts={artifact_count}")
-            
-            # Send keep-alive comment if enough time has passed (prevents undici body timeout)
-            current_time = time.time()
-            if current_time - last_keepalive_time >= keepalive_interval:
-                yield ": keep-alive\n\n"
-                last_keepalive_time = current_time
-            
-            # Check for status changes
-            if job.status != last_status:
-                event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
-                event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
-                event_id = sse_store.add_event(job_id, event_type, event_data)
+            # Send initial job status if not already sent
+            if not last_event_id_int:
+                event_data = {'type': 'job_started', 'job_id': job_id, 'status': job.status}
+                event_id = sse_store.add_event(job_id, 'job_started', event_data)
                 yield f"id: {event_id}\n"
-                yield f"event: {event_type}\n"
+                yield f"event: job_started\n"
                 yield f"data: {json.dumps(event_data)}\n\n"
-                last_status = job.status
-                
-                # If completed or failed, send final event and exit
-                if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
-                    # Send artifacts if completed
-                    if job.status == JobStatus.COMPLETED.value:
-                        artifacts = db.query(ContentArtifact).filter(
+            
+            # Poll for job updates
+            last_status = job.status
+            last_artifact_count = 0
+            last_keepalive_time = time.time()
+            keepalive_interval = 5.0  # Send keep-alive every 5 seconds to prevent timeout
+            poll_count = 0
+            stream_start_time = time.time()
+            
+            logger.info(f"[STREAM_POLL] Starting polling loop for job {job_id}, initial status={job.status}")
+            
+            while True:
+                try:
+                    poll_count += 1
+                    # Refresh job from database (with error handling)
+                    try:
+                        db.refresh(job)
+                    except Exception as db_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Database refresh failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
+                        # Try to get a fresh job from database
+                        try:
+                            fresh_job = db.query(ContentJob).filter(ContentJob.id == job_id).first()
+                            if fresh_job:
+                                job = fresh_job
+                            else:
+                                # Job not found - send error and exit
+                                error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
+                                event_id = sse_store.add_event(job_id, 'error', error_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: error\n"
+                                yield f"data: {json.dumps(error_data)}\n\n"
+                                logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
+                                break
+                        except Exception as fresh_error:
+                            logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get fresh job: {type(fresh_error).__name__}: {str(fresh_error)}", exc_info=True)
+                            # Send error event and exit
+                            error_data = {'type': 'error', 'job_id': job_id, 'message': 'Database error occurred'}
+                            event_id = sse_store.add_event(job_id, 'error', error_data)
+                            yield f"id: {event_id}\n"
+                            yield f"event: error\n"
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            break
+                    
+                    # Log every 20 polls (every 10 seconds) to track progress
+                    if poll_count % 20 == 0:
+                        elapsed = time.time() - stream_start_time
+                        try:
+                            artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                        except Exception:
+                            artifact_count = -1  # Error querying artifacts
+                        logger.info(f"[STREAM_POLL] Job {job_id}: Poll #{poll_count}, status={job.status}, elapsed={elapsed:.1f}s, artifacts={artifact_count}")
+                    
+                    # Send keep-alive comment if enough time has passed (prevents undici body timeout)
+                    current_time = time.time()
+                    if current_time - last_keepalive_time >= keepalive_interval:
+                        yield ": keep-alive\n\n"
+                        last_keepalive_time = current_time
+                    
+                    # Check for status changes
+                    if job.status != last_status:
+                        event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
+                        event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
+                        event_id = sse_store.add_event(job_id, event_type, event_data)
+                        yield f"id: {event_id}\n"
+                        yield f"event: {event_type}\n"
+                        yield f"data: {json.dumps(event_data)}\n\n"
+                        last_status = job.status
+                        
+                        # If completed or failed, send final event and exit
+                        if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
+                            elapsed = time.time() - stream_start_time
+                            try:
+                                artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                            except Exception:
+                                artifact_count = -1
+                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: Status changed to {job.status} after {elapsed:.1f}s, total polls={poll_count}, artifacts={artifact_count}")
+                            
+                            # Send artifacts if completed
+                            if job.status == JobStatus.COMPLETED.value:
+                                try:
+                                    artifacts = db.query(ContentArtifact).filter(
+                                        ContentArtifact.job_id == job_id
+                                    ).all()
+                                    artifact_data = {
+                                        'type': 'complete',
+                                        'job_id': job_id,
+                                        'artifacts': [
+                                            {
+                                                'type': a.type,
+                                                'content_text': a.content_text[:500] if a.content_text else None,  # Preview only
+                                                'created_at': a.created_at.isoformat() if a.created_at else None
+                                            }
+                                            for a in artifacts
+                                        ]
+                                    }
+                                    event_id = sse_store.add_event(job_id, 'complete', artifact_data)
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: complete\n"
+                                    yield f"data: {json.dumps(artifact_data)}\n\n"
+                                except Exception as artifact_error:
+                                    logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
+                            break
+                    
+                    # Check for new artifacts
+                    try:
+                        current_artifacts = db.query(ContentArtifact).filter(
                             ContentArtifact.job_id == job_id
                         ).all()
-                        artifact_data = {
-                            'type': 'complete',
-                            'job_id': job_id,
-                            'artifacts': [
-                                {
-                                    'type': a.type,
-                                    'content_text': a.content_text[:500] if a.content_text else None,  # Preview only
-                                    'created_at': a.created_at.isoformat() if a.created_at else None
-                                }
-                                for a in artifacts
-                            ]
-                        }
-                        event_id = sse_store.add_event(job_id, 'complete', artifact_data)
+                        
+                        if len(current_artifacts) > last_artifact_count:
+                            # New artifacts created
+                            new_artifacts = current_artifacts[last_artifact_count:]
+                            for artifact in new_artifacts:
+                                event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
+                                
+                                # Include metadata for voiceover_audio artifacts
+                                if artifact.type == 'voiceover_audio' and artifact.content_json:
+                                    event_data['metadata'] = artifact.content_json
+                                    if artifact.content_json.get('storage_key'):
+                                        storage = get_storage_provider()
+                                        event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
+                                
+                                event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: artifact_ready\n"
+                                yield f"data: {json.dumps(event_data)}\n\n"
+                            last_artifact_count = len(current_artifacts)
+                    except Exception as artifact_query_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
+                    
+                    # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
+                    await asyncio.sleep(0.5)
+                except Exception as poll_error:
+                    # Handle errors during polling
+                    logger.error(f"[STREAM_ERROR] Job {job_id}: Error during poll #{poll_count}: {type(poll_error).__name__}: {str(poll_error)}", exc_info=True)
+                    # Send error event but continue polling (client can decide to reconnect)
+                    error_data = {'type': 'error', 'job_id': job_id, 'message': f'Polling error: {str(poll_error)}'}
+                    try:
+                        event_id = sse_store.add_event(job_id, 'error', error_data)
                         yield f"id: {event_id}\n"
-                        yield f"event: complete\n"
-                        yield f"data: {json.dumps(artifact_data)}\n\n"
-                    break
-            
-            # Check for new artifacts
-            current_artifacts = db.query(ContentArtifact).filter(
-                ContentArtifact.job_id == job_id
-            ).all()
-            
-            if len(current_artifacts) > last_artifact_count:
-                # New artifacts created
-                new_artifacts = current_artifacts[last_artifact_count:]
-                for artifact in new_artifacts:
-                    event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
-                    
-                    # Include metadata for voiceover_audio artifacts
-                    if artifact.type == 'voiceover_audio' and artifact.content_json:
-                        event_data['metadata'] = artifact.content_json
-                        if artifact.content_json.get('storage_key'):
-                            storage = get_storage_provider()
-                            event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
-                    
-                    event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
-                    yield f"id: {event_id}\n"
-                    yield f"event: artifact_ready\n"
-                    yield f"data: {json.dumps(event_data)}\n\n"
-                last_artifact_count = len(current_artifacts)
-            
-            # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
-            await asyncio.sleep(0.5)
+                        yield f"event: error\n"
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                    except Exception as yield_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to yield error event: {type(yield_error).__name__}: {str(yield_error)}")
+                        # If we can't yield, the connection is likely broken - exit
+                        break
+                    # Wait before retrying
+                    await asyncio.sleep(0.5)
+        except Exception as stream_error:
+            # Handle errors in the stream generator itself
+            logger.error(f"[STREAM_ERROR] Job {job_id}: Fatal error in stream generator: {type(stream_error).__name__}: {str(stream_error)}", exc_info=True)
+            # Try to send a final error event
+            try:
+                error_data = {'type': 'error', 'job_id': job_id, 'message': f'Stream error: {str(stream_error)}'}
+                event_id = sse_store.add_event(job_id, 'error', error_data)
+                yield f"id: {event_id}\n"
+                yield f"event: error\n"
+                yield f"data: {json.dumps(error_data)}\n\n"
+            except Exception:
+                # Can't send error - connection is broken
+                pass
     
     return StreamingResponse(
         generate_stream(),
