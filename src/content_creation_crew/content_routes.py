@@ -616,23 +616,32 @@ async def stream_job_progress(
                                     artifacts = db.query(ContentArtifact).filter(
                                         ContentArtifact.job_id == job_id
                                     ).all()
+                                    # Build complete event with full content from all artifacts
                                     artifact_data = {
                                         'type': 'complete',
                                         'job_id': job_id,
-                                        'artifacts': [
-                                            {
-                                                'type': a.type,
-                                                'content_text': a.content_text[:500] if a.content_text else None,  # Preview only
-                                                'created_at': a.created_at.isoformat() if a.created_at else None
-                                            }
-                                            for a in artifacts
-                                        ]
+                                        'status': JobStatus.COMPLETED.value,
+                                        'message': 'Content generation completed successfully'
                                     }
+                                    
+                                    # Include full content from each artifact type
+                                    for artifact in artifacts:
+                                        if artifact.content_text:
+                                            if artifact.type == 'blog':
+                                                artifact_data['content'] = artifact.content_text
+                                            elif artifact.type == 'social':
+                                                artifact_data['social_media_content'] = artifact.content_text
+                                            elif artifact.type == 'audio':
+                                                artifact_data['audio_content'] = artifact.content_text
+                                            elif artifact.type == 'video':
+                                                artifact_data['video_content'] = artifact.content_text
+                                    
                                     event_id = sse_store.add_event(job_id, 'complete', artifact_data)
                                     yield f"id: {event_id}\n"
                                     yield f"event: complete\n"
                                     yield f"data: {json.dumps(artifact_data)}\n\n"
                                     flush_buffers()  # Flush completion event immediately
+                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event with content from {len(artifacts)} artifacts")
                                 except Exception as artifact_error:
                                     logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
                             break
@@ -647,6 +656,7 @@ async def stream_job_progress(
                             # New artifacts created
                             new_artifacts = current_artifacts[last_artifact_count:]
                             for artifact in new_artifacts:
+                                # Send artifact_ready event
                                 event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
                                 
                                 # Include metadata for voiceover_audio artifacts
@@ -661,6 +671,31 @@ async def stream_job_progress(
                                 yield f"event: artifact_ready\n"
                                 yield f"data: {json.dumps(event_data)}\n\n"
                                 flush_buffers()  # Flush artifact events immediately
+                                
+                                # Send content event if artifact has text content
+                                if artifact.content_text and artifact.type in ['blog', 'social', 'audio', 'video']:
+                                    content_field = {
+                                        'blog': 'content',
+                                        'social': 'social_media_content',
+                                        'audio': 'audio_content',
+                                        'video': 'video_content'
+                                    }.get(artifact.type, 'content')
+                                    
+                                    content_event_data = {
+                                        'type': 'content',
+                                        'job_id': job_id,
+                                        'chunk': artifact.content_text,  # Send full content
+                                        'progress': 100,  # Content is complete
+                                        'artifact_type': artifact.type,
+                                        'content_field': content_field
+                                    }
+                                    content_event_id = sse_store.add_event(job_id, 'content', content_event_data)
+                                    yield f"id: {content_event_id}\n"
+                                    yield f"event: content\n"
+                                    yield f"data: {json.dumps(content_event_data)}\n\n"
+                                    flush_buffers()  # Flush content events immediately
+                                    logger.info(f"[STREAM_CONTENT] Job {job_id}: Sent content event for {artifact.type}, length={len(artifact.content_text)}")
+                            
                             last_artifact_count = len(current_artifacts)
                     except Exception as artifact_query_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
@@ -1218,6 +1253,13 @@ async def run_generation_async(
                         'artifact_type': 'blog',
                         'message': 'Blog content generated'
                     })
+                    # Send content event with the actual blog content
+                    sse_store.add_event(job_id, 'content', {
+                        'job_id': job_id,
+                        'chunk': content,  # Send full content as a single chunk
+                        'progress': 100,  # Blog is complete
+                        'artifact_type': 'blog'
+                    })
                     logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
             else:
                 # Moderation disabled, create artifact directly
@@ -1234,6 +1276,13 @@ async def run_generation_async(
                     'job_id': job_id,
                     'artifact_type': 'blog',
                     'message': 'Blog content generated'
+                })
+                # Send content event with the actual blog content
+                sse_store.add_event(job_id, 'content', {
+                    'job_id': job_id,
+                    'chunk': content,  # Send full content as a single chunk
+                    'progress': 100,  # Blog is complete
+                    'artifact_type': 'blog'
                 })
                 logger.info(f"Job {job_id}: Blog artifact created")
         
@@ -1315,6 +1364,19 @@ async def run_generation_async(
                                 'artifact_type': content_type,
                                 'message': f'{content_type.capitalize()} content generated'
                             })
+                            # Send content event with the actual content
+                            content_field = {
+                                'social': 'social_media_content',
+                                'audio': 'audio_content',
+                                'video': 'video_content'
+                            }.get(content_type, 'content')
+                            sse_store.add_event(job_id, 'content', {
+                                'job_id': job_id,
+                                'chunk': validated_content,  # Send full content as a single chunk
+                                'progress': 100,  # Content is complete
+                                'artifact_type': content_type,
+                                'content_field': content_field  # Help frontend identify which field to use
+                            })
                             logger.info(f"Job {job_id}: {content_type} artifact created")
         
         # Update job status to completed
@@ -1324,11 +1386,26 @@ async def run_generation_async(
             finished_at=datetime.utcnow()
         )
         
-        # Send completion event
+        # Get all artifacts for completion event
+        artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+        artifact_content = {}
+        for artifact in artifacts:
+            if artifact.content_text:
+                if artifact.type == 'blog':
+                    artifact_content['content'] = artifact.content_text
+                elif artifact.type == 'social':
+                    artifact_content['social_media_content'] = artifact.content_text
+                elif artifact.type == 'audio':
+                    artifact_content['audio_content'] = artifact.content_text
+                elif artifact.type == 'video':
+                    artifact_content['video_content'] = artifact.content_text
+        
+        # Send completion event with all content
         sse_store.add_event(job_id, 'complete', {
             'job_id': job_id,
             'status': JobStatus.COMPLETED.value,
-            'message': 'Content generation completed successfully'
+            'message': 'Content generation completed successfully',
+            **artifact_content  # Include all artifact content
         })
         
         # Increment usage
