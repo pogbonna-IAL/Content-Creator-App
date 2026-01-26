@@ -1163,10 +1163,18 @@ async def run_generation_async(
                 executor_done = True
                 print(f"[RAILWAY_DEBUG] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s", file=sys.stdout, flush=True)
                 logger.info(f"[LLM_EXEC] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}", file=sys.stdout, flush=True)
                 logger.debug(f"[LLM_EXEC] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}")
                 if hasattr(result, 'tasks_output') and result.tasks_output:
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Number of task outputs: {len(result.tasks_output)}", file=sys.stdout, flush=True)
                     logger.debug(f"[LLM_EXEC] Job {job_id}: Number of task outputs: {len(result.tasks_output)}")
+                    # Log task output details
+                    for i, task_output in enumerate(result.tasks_output):
+                        task_desc = getattr(task_output, 'description', 'unknown')[:50] if hasattr(task_output, 'description') else 'unknown'
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Task {i+1}: {task_desc}", file=sys.stdout, flush=True)
+                else:
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: No tasks_output found in result", file=sys.stdout, flush=True)
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task marked as done, result stored", file=sys.stdout, flush=True)
                 sys.stdout.flush()
                 sys.stderr.flush()
             except asyncio.TimeoutError:
@@ -1250,6 +1258,7 @@ async def run_generation_async(
                 
                 if done:
                     # Executor completed
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task completed, breaking from wait loop", file=sys.stdout, flush=True)
                     break
                 else:
                     # Timeout - executor still running, send progress update
@@ -1265,7 +1274,9 @@ async def run_generation_async(
                         last_progress_time = time.time()
             
             # Ensure executor completed
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Waiting for executor task to complete...", file=sys.stdout, flush=True)
             await executor_task
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task awaited, checking for errors...", file=sys.stdout, flush=True)
             
             if executor_error:
                 if isinstance(executor_error, TimeoutError):
@@ -1325,6 +1336,7 @@ async def run_generation_async(
             LLMMetrics.record_call(model_name, llm_duration, success=llm_success)
         
         # Send progress update
+        print(f"[RAILWAY_DEBUG] Job {job_id}: No executor error, proceeding to extraction phase", file=sys.stdout, flush=True)
         sse_store.add_event(job_id, 'agent_progress', {
             'job_id': job_id,
             'message': 'Extracting and validating content...',
@@ -1332,7 +1344,7 @@ async def run_generation_async(
         })
         
         # Extract and validate content
-        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting content extraction from CrewAI result", file=sys.stdout, flush=True)
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting content extraction from CrewAI result, result type={type(result)}", file=sys.stdout, flush=True)
         logger.info(f"[EXTRACTION] Job {job_id}: Starting content extraction from CrewAI result")
         extraction_start = time.time()
         raw_content = await api_server_module.extract_content_async(result, topic, logger)
