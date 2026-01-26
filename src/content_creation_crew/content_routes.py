@@ -603,7 +603,11 @@ async def run_generation_async(
         
         # Get model name
         model_name = policy.get_model_name()
-        logger.info(f"Job {job_id}: Starting generation with model {model_name}, timeout={timeout_seconds}s")
+        plan = policy.get_plan()
+        logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
+        logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Model='{model_name}', Timeout={timeout_seconds}s")
+        logger.info(f"[JOB_START] Job {job_id}: Content types requested: {content_types}")
+        logger.debug(f"[JOB_START] Job {job_id}: User ID={user_id}, Organization ID={policy._get_user_org_id()}")
         
         # Check cache BEFORE running CrewAI (Performance Optimization)
         from .services.content_cache import get_cache
@@ -720,11 +724,16 @@ async def run_generation_async(
             return  # Skip CrewAI execution
         
         # Cache miss - proceed with CrewAI generation
-        logger.info(f"Job {job_id}: Cache miss, running CrewAI generation")
+        logger.info(f"[CACHE] Job {job_id}: Cache miss, running CrewAI generation")
+        logger.debug(f"[CACHE] Job {job_id}: Cache key would be: topic='{topic}', types={content_types}, version={PROMPT_VERSION}, model={model_name}")
         
         # Run generation
+        logger.info(f"[CREW_INIT] Job {job_id}: Initializing ContentCreationCrew with tier='{plan}', content_types={content_types}")
+        crew_init_start = time.time()
         crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
         crew_obj = crew_instance._build_crew(content_types=content_types)
+        crew_init_duration = time.time() - crew_init_start
+        logger.info(f"[CREW_INIT] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s")
         
         # Send progress update
         sse_store.add_event(job_id, 'agent_progress', {
@@ -758,6 +767,10 @@ async def run_generation_async(
                     'step': 'research'
                 })
                 
+                logger.info(f"[LLM_EXEC] Job {job_id}: Starting CrewAI kickoff with topic='{topic}'")
+                logger.info(f"[LLM_EXEC] Job {job_id}: Using model '{model_name}' with timeout={timeout_seconds}s")
+                llm_exec_start = time.time()
+                
                 # Phase 1: Use timeout from config (180s) for faster failure detection
                 # This prevents jobs from hanging while maintaining reliability
                 result = await asyncio.wait_for(
@@ -767,15 +780,25 @@ async def run_generation_async(
                     ),
                     timeout=timeout_seconds  # 180 seconds from config
                 )
+                
+                llm_exec_duration = time.time() - llm_exec_start
                 llm_success = True
                 executor_done = True
-                logger.info(f"Job {job_id}: CrewAI execution completed successfully")
+                logger.info(f"[LLM_EXEC] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s")
+                logger.debug(f"[LLM_EXEC] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}")
+                if hasattr(result, 'tasks_output') and result.tasks_output:
+                    logger.debug(f"[LLM_EXEC] Job {job_id}: Number of task outputs: {len(result.tasks_output)}")
             except asyncio.TimeoutError:
+                llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = TimeoutError(f"Content generation timed out after {timeout_seconds} seconds")
                 executor_done = True
+                logger.error(f"[LLM_EXEC] Job {job_id}: TIMEOUT after {llm_exec_duration:.2f}s (limit: {timeout_seconds}s)")
+                logger.error(f"[LLM_EXEC] Job {job_id}: Model '{model_name}' exceeded timeout threshold")
             except Exception as e:
+                llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = e
                 executor_done = True
+                logger.error(f"[LLM_EXEC] Job {job_id}: ERROR after {llm_exec_duration:.2f}s: {type(e).__name__}: {str(e)}", exc_info=True)
         
         # Start executor task
         executor_task = asyncio.create_task(run_executor_with_progress())
@@ -851,18 +874,31 @@ async def run_generation_async(
         })
         
         # Extract and validate content
+        logger.info(f"[EXTRACTION] Job {job_id}: Starting content extraction from CrewAI result")
+        extraction_start = time.time()
         raw_content = await api_server_module.extract_content_async(result, topic, logger)
+        extraction_duration = time.time() - extraction_start
+        logger.info(f"[EXTRACTION] Job {job_id}: Content extraction completed in {extraction_duration:.2f}s, content length={len(raw_content) if raw_content else 0}")
         
         # Validate and create blog artifact
+        logger.info(f"[VALIDATION] Job {job_id}: Starting blog content validation")
+        validation_start = time.time()
         is_valid, validated_model, content, was_repaired = validate_and_repair_content(
             'blog', raw_content, model_name, allow_repair=True
         )
+        validation_duration = time.time() - validation_start
+        logger.info(f"[VALIDATION] Job {job_id}: Blog validation completed in {validation_duration:.3f}s, valid={is_valid}, repaired={was_repaired}")
+        
         if not is_valid:
+            logger.warning(f"[VALIDATION] Job {job_id}: Blog content validation failed, using cleaned raw content")
             content = api_server_module.clean_content(raw_content)
+            logger.debug(f"[VALIDATION] Job {job_id}: Cleaned content length={len(content) if content else 0}")
         
         if content and len(content.strip()) > 10:
             # Moderate output before saving artifact
             if config.ENABLE_CONTENT_MODERATION:
+                logger.info(f"[MODERATION] Job {job_id}: Starting blog content moderation")
+                moderation_start = time.time()
                 from .services.moderation_service import get_moderation_service
                 moderation_service = get_moderation_service()
                 moderation_result = moderation_service.moderate_output(
@@ -870,6 +906,8 @@ async def run_generation_async(
                     'blog',
                     context={"job_id": job_id, "user_id": user_id}
                 )
+                moderation_duration = time.time() - moderation_start
+                logger.info(f"[MODERATION] Job {job_id}: Blog moderation completed in {moderation_duration:.3f}s, passed={moderation_result.passed}")
                 
                 if not moderation_result.passed:
                     # Send moderation blocked event
@@ -887,6 +925,7 @@ async def run_generation_async(
                         'job_id': job_id,
                         'artifact_type': 'blog'
                     })
+                    artifact_start = time.time()
                     content_service.create_artifact(
                         job_id,
                         'blog',
@@ -895,13 +934,14 @@ async def run_generation_async(
                         prompt_version=PROMPT_VERSION,
                         model_used=model_name
                     )
+                    artifact_duration = time.time() - artifact_start
                     # Send artifact ready event
                     sse_store.add_event(job_id, 'artifact_ready', {
                         'job_id': job_id,
                         'artifact_type': 'blog',
                         'message': 'Blog content generated'
                     })
-                    logger.info(f"Job {job_id}: Blog artifact created")
+                    logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
             else:
                 # Moderation disabled, create artifact directly
                 content_service.create_artifact(
@@ -1018,7 +1058,9 @@ async def run_generation_async(
         for content_type in content_types:
             policy.increment_usage(content_type)
         
-        logger.info(f"Job {job_id} completed successfully")
+        total_duration = time.time() - llm_start_time
+        logger.info(f"[JOB_COMPLETE] Job {job_id}: Completed successfully in {total_duration:.2f}s")
+        logger.info(f"[JOB_COMPLETE] Job {job_id}: Summary - model={model_name}, topic='{topic}', content_types={content_types}")
         
         # Track job success metric
         try:
@@ -1029,7 +1071,9 @@ async def run_generation_async(
         
     except (TimeoutError, asyncio.TimeoutError) as e:
         error_msg = str(e) if str(e) else f"Content generation timed out after {timeout_seconds} seconds"
-        logger.error(f"Job {job_id} failed: {error_msg}", exc_info=True)
+        total_duration = time.time() - llm_start_time if 'llm_start_time' in locals() else 0
+        logger.error(f"[JOB_FAILED] Job {job_id}: TIMEOUT after {total_duration:.2f}s (limit: {timeout_seconds}s): {error_msg}", exc_info=True)
+        logger.error(f"[JOB_FAILED] Job {job_id}: Timeout details - model={model_name if 'model_name' in locals() else 'unknown'}, topic='{topic if 'topic' in locals() else 'unknown'}'")
         if session:
             try:
                 # Refresh session if needed
@@ -1058,7 +1102,9 @@ async def run_generation_async(
                 logger.error(f"Failed to update job status after timeout: {update_error}")
     except Exception as e:
         error_msg = f"Content generation failed: {str(e)}"
-        logger.error(f"Job {job_id} failed: {error_msg}", exc_info=True)
+        total_duration = time.time() - llm_start_time if 'llm_start_time' in locals() else 0
+        logger.error(f"[JOB_FAILED] Job {job_id}: FAILED after {total_duration:.2f}s: {error_msg}", exc_info=True)
+        logger.error(f"[JOB_FAILED] Job {job_id}: Error details - model={model_name if 'model_name' in locals() else 'unknown'}, topic='{topic if 'topic' in locals() else 'unknown'}', error_type={type(e).__name__}")
         if session:
             try:
                 # Refresh session if needed

@@ -1127,18 +1127,29 @@ def extract_content_from_result(result, task_name: str = None) -> str:
 async def extract_content_async(result, topic: str, logger) -> str:
     """Extract content from result asynchronously - optimized to use result objects first"""
     content = ""
+    extraction_method = None
+    
+    logger.debug(f"[EXTRACT] Starting blog content extraction for topic='{topic}'")
+    logger.debug(f"[EXTRACT] Result type: {type(result)}, has tasks_output: {hasattr(result, 'tasks_output')}")
     
     # First, try extracting directly from result object (fastest, no I/O)
-    logger.info("Attempting direct extraction from result object...")
+    logger.info("[EXTRACT] Attempting direct extraction from result object...")
+    extract_start = time.time()
     content = extract_content_from_result(result, 'editing')
+    extract_duration = time.time() - extract_start
     
     if content and len(content.strip()) > 10:
-        logger.info(f"Successfully extracted content from result object, length: {len(content)}")
+        extraction_method = "result_object"
+        logger.info(f"[EXTRACT] Successfully extracted content from result object in {extract_duration:.3f}s, length={len(content)}")
+        logger.debug(f"[EXTRACT] Content preview (first 200 chars): {content[:200]}...")
         return content
+    
+    logger.debug(f"[EXTRACT] Direct extraction result: length={len(content) if content else 0}, duration={extract_duration:.3f}s")
     
     # Fallback to file-based extraction (slower, but more reliable for some cases)
     # Removed 1-second delay - check file immediately
-    logger.info("Direct extraction failed, trying file-based extraction...")
+    logger.info("[EXTRACT] Direct extraction failed, trying file-based extraction...")
+    file_extract_start = time.time()
     
     # Try reading the file multiple times (reduced attempts for faster failure)
     output_file = Path("content_output.md")
@@ -1211,12 +1222,24 @@ async def extract_content_async(result, topic: str, logger) -> str:
     
     # Final fallback: extract from result object (should have been tried first, but just in case)
     if not content or len(content.strip()) < 10:
-        logger.info("File content empty or too short, using result object extraction")
+        logger.warning("[EXTRACT] File content empty or too short, retrying result object extraction")
+        fallback_start = time.time()
         content = extract_content_from_result(result, 'editing')
+        fallback_duration = time.time() - fallback_start
+        if content and len(content.strip()) > 10:
+            extraction_method = "result_object_fallback"
+            logger.info(f"[EXTRACT] Fallback extraction succeeded in {fallback_duration:.3f}s, length={len(content)}")
+        else:
+            logger.error(f"[EXTRACT] Fallback extraction also failed, duration={fallback_duration:.3f}s")
     
-    logger.info(f"Final extracted content length: {len(content) if content else 0}")
+    file_extract_duration = time.time() - file_extract_start if 'file_extract_start' in locals() else 0
+    extraction_method = extraction_method or "file_based"
+    
+    logger.info(f"[EXTRACT] Final extraction result: method={extraction_method}, length={len(content) if content else 0}, total_duration={file_extract_duration:.3f}s")
     if content:
-        logger.info(f"Content preview: {content[:300]}")
+        logger.debug(f"[EXTRACT] Content preview (first 300 chars): {content[:300]}...")
+    else:
+        logger.error("[EXTRACT] No content extracted - extraction failed completely")
     
     return content
 

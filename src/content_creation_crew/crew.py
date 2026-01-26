@@ -12,6 +12,9 @@ from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
 from crewai import LLM
+import logging
+
+logger = logging.getLogger(__name__)
 # If you want to run a snippet of code before or after the crew starts,
 # you can use the @before_kickoff and @after_kickoff decorators
 # https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
@@ -60,6 +63,10 @@ class ContentCreationCrew():
         self.tier_config = self._load_tier_config()
         model = self._get_model_for_tier(tier)
         
+        logger.info(f"[LLM_INIT] Initializing LLM for tier '{tier}' with model '{model}'")
+        logger.debug(f"[LLM_INIT] Content types requested: {content_types}")
+        logger.debug(f"[LLM_INIT] Tier config loaded: {bool(self.tier_config)}")
+        
         # Initialize the LLM with tier-appropriate model
         # Phase 1: Optimize for speed - lower temperature = faster, more deterministic responses
         tier_config = self.tier_config.get(tier, {})
@@ -69,6 +76,8 @@ class ContentCreationCrew():
         # Get Ollama base URL from config
         from .config import config
         ollama_base_url = config.OLLAMA_BASE_URL
+        
+        logger.debug(f"[LLM_INIT] Ollama base URL: {ollama_base_url}")
         
         # Phase 1: Reduce max_tokens by 25% for faster generation while maintaining quality
         # Original limits: free=2000, basic=3000, pro=4000, enterprise=6000
@@ -81,19 +90,25 @@ class ContentCreationCrew():
         }
         max_tokens = max_tokens_map.get(tier, 1500)
         
+        llm_config = {
+            "timeout": 180.0,  # Total timeout in seconds (reduced from 1800)
+            "request_timeout": 180.0,  # Request timeout (reduced from 1800)
+            "connection_timeout": 30.0,  # Connection timeout (reduced from 60)
+            "temperature": temperature,  # Also set in config for compatibility
+            "max_tokens": max_tokens,  # Reduced token limits for faster generation
+        }
+        
+        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout={llm_config['timeout']}s")
+        
         self.llm = LLM(
             model=model,
             base_url=ollama_base_url,
             temperature=temperature,  # Lower temperature for faster execution
             # Phase 1: Reduced timeouts to match CREWAI_TIMEOUT (180s)
-            config={
-                "timeout": 180.0,  # Total timeout in seconds (reduced from 1800)
-                "request_timeout": 180.0,  # Request timeout (reduced from 1800)
-                "connection_timeout": 30.0,  # Connection timeout (reduced from 60)
-                "temperature": temperature,  # Also set in config for compatibility
-                "max_tokens": max_tokens,  # Reduced token limits for faster generation
-            }
+            config=llm_config
         )
+        
+        logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}'")
     
     def _load_tier_config(self) -> dict:
         """Load tier configuration from YAML file"""
@@ -142,51 +157,63 @@ class ContentCreationCrew():
     # https://docs.crewai.com/concepts/agents#agent-tools
     @agent
     def researcher(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['researcher'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}'")
+        return agent
 
     @agent
     def writer(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['writer'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}'")
+        return agent
 
     @agent
     def editor(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['editor'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}'")
+        return agent
 
     @agent
     def social_media_specialist(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['social_media_specialist'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}'")
+        return agent
 
     @agent
     def audio_content_specialist(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['audio_content_specialist'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}'")
+        return agent
 
     @agent
     def video_content_specialist(self) -> Agent:
-        return Agent(
+        agent = Agent(
             config=self.agents_config['video_content_specialist'],
             llm=self.llm,
             verbose=False  # Reduced verbosity for faster execution
         )
+        logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}'")
+        return agent
 
     # To learn more about structured task outputs,
     # task dependencies, and task callbacks, check out the documentation:
@@ -302,12 +329,20 @@ class ContentCreationCrew():
         # Improves overall generation speed without quality impact
         process = Process.hierarchical
         
-        return Crew(
+        logger.info(f"[CREW_BUILD] Building crew with {len(agents)} agents and {len(tasks)} tasks")
+        logger.debug(f"[CREW_BUILD] Agents: {[agent.role if hasattr(agent, 'role') else 'unknown' for agent in agents]}")
+        logger.debug(f"[CREW_BUILD] Tasks: {[task.description[:50] if hasattr(task, 'description') else 'unknown' for task in tasks]}")
+        logger.info(f"[CREW_BUILD] Process type: {process}")
+        
+        crew = Crew(
             agents=agents,  # Manually collected agents
             tasks=tasks,  # Only include requested tasks
             process=process,
             verbose=False,  # Reduced verbosity for faster execution
         )
+        
+        logger.info(f"[CREW_BUILD] Crew built successfully")
+        return crew
     
     @crew
     def crew(self) -> Crew:
