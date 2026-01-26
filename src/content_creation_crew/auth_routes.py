@@ -173,7 +173,31 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             
             # Build verification URL
             frontend_url = config.FRONTEND_URL or "http://localhost:3000"
+            
+            # Clean and validate FRONTEND_URL
+            # Remove any trailing slashes
+            frontend_url = frontend_url.rstrip('/')
+            
+            # Remove /auth/callback if present (common mistake - this is FRONTEND_CALLBACK_URL, not FRONTEND_URL)
+            if '/auth/callback' in frontend_url:
+                logger.warning(f"FRONTEND_URL contains /auth/callback, removing it. Original: {frontend_url}")
+                frontend_url = frontend_url.replace('/auth/callback', '').rstrip('/')
+                logger.info(f"Cleaned FRONTEND_URL to: {frontend_url}")
+            
+            # Validate FRONTEND_URL doesn't point to API server
+            if '/api' in frontend_url or 'api-staging' in frontend_url or 'api-production' in frontend_url:
+                logger.warning(f"FRONTEND_URL appears to point to API server: {frontend_url}")
+                logger.warning("This will cause verification links to fail. FRONTEND_URL should point to the frontend domain.")
+                # Try to fix common mistake: replace api subdomain with frontend subdomain
+                if 'api-staging' in frontend_url:
+                    frontend_url = frontend_url.replace('api-staging', 'staging').replace('api-production', 'production')
+                    logger.info(f"Attempting to fix FRONTEND_URL to: {frontend_url}")
+                elif 'api-production' in frontend_url:
+                    frontend_url = frontend_url.replace('api-production', 'production')
+                    logger.info(f"Attempting to fix FRONTEND_URL to: {frontend_url}")
+            
             verification_url = f"{frontend_url}/verify-email?token={verification_token}"
+            logger.info(f"Generated verification URL: {verification_url[:80]}... (frontend_url: {frontend_url})")
             
             # Check if email provider is available
             email_provider = get_email_provider()
@@ -670,7 +694,30 @@ async def request_email_verification(
         logger.error("FRONTEND_URL not found in config. Using default localhost URL")
         frontend_url = "http://localhost:3000"
     
+    # Clean and validate FRONTEND_URL
+    # Remove any trailing slashes
+    frontend_url = frontend_url.rstrip('/')
+    
+    # Remove /auth/callback if present (common mistake - this is FRONTEND_CALLBACK_URL, not FRONTEND_URL)
+    if '/auth/callback' in frontend_url:
+        logger.warning(f"FRONTEND_URL contains /auth/callback, removing it. Original: {frontend_url}")
+        frontend_url = frontend_url.replace('/auth/callback', '').rstrip('/')
+        logger.info(f"Cleaned FRONTEND_URL to: {frontend_url}")
+    
+    # Validate FRONTEND_URL doesn't point to API server
+    if '/api' in frontend_url or 'api-staging' in frontend_url or 'api-production' in frontend_url:
+        logger.warning(f"FRONTEND_URL appears to point to API server: {frontend_url}")
+        logger.warning("This will cause verification links to fail. FRONTEND_URL should point to the frontend domain.")
+        # Try to fix common mistake: replace api subdomain with frontend subdomain
+        if 'api-staging' in frontend_url:
+            frontend_url = frontend_url.replace('api-staging', 'staging').replace('api-production', 'production')
+            logger.info(f"Attempting to fix FRONTEND_URL to: {frontend_url}")
+        elif 'api-production' in frontend_url:
+            frontend_url = frontend_url.replace('api-production', 'production')
+            logger.info(f"Attempting to fix FRONTEND_URL to: {frontend_url}")
+    
     verification_url = f"{frontend_url}/verify-email?token={verification_token}"
+    logger.info(f"Generated verification URL: {verification_url[:80]}... (frontend_url: {frontend_url})")
     
     # Check if email provider is available
     from .services.email_provider import get_email_provider
