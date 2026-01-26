@@ -12,6 +12,10 @@ os.environ['LITELLM_REQUEST_TIMEOUT'] = '1800'
 os.environ['LITELLM_TIMEOUT'] = '1800'
 os.environ['LITELLM_CONNECTION_TIMEOUT'] = '1800'
 
+# Disable CrewAI tracing to prevent interactive prompts (critical for serverless/containerized environments)
+os.environ['CREWAI_TRACING_ENABLED'] = 'false'
+os.environ['CREWAI_TRACING'] = 'false'
+
 # Also configure litellm directly if available
 try:
     import litellm

@@ -997,12 +997,21 @@ async def run_generation_async(
                             prompt_version=PROMPT_VERSION,
                             model_used=model_name
                         )
-                        sse_store.add_event(job_id, 'artifact_ready', {
-                            'job_id': job_id,
-                            'artifact_type': 'blog',
-                            'message': 'Blog content from cache',
-                            'cached': True
-                        })
+                    sse_store.add_event(job_id, 'artifact_ready', {
+                        'job_id': job_id,
+                        'artifact_type': 'blog',
+                        'message': 'Blog content from cache',
+                        'cached': True
+                    })
+                    # Send content event with actual blog content
+                    sse_store.add_event(job_id, 'content', {
+                        'job_id': job_id,
+                        'chunk': content,
+                        'progress': 100,
+                        'artifact_type': 'blog',
+                        'content_field': 'content',
+                        'cached': True
+                    })
                 else:
                     content_service.create_artifact(
                         job_id,
@@ -1016,6 +1025,15 @@ async def run_generation_async(
                         'job_id': job_id,
                         'artifact_type': 'blog',
                         'message': 'Blog content from cache',
+                        'cached': True
+                    })
+                    # Send content event with actual blog content
+                    sse_store.add_event(job_id, 'content', {
+                        'job_id': job_id,
+                        'chunk': content,
+                        'progress': 100,
+                        'artifact_type': 'blog',
+                        'content_field': 'content',
                         'cached': True
                     })
             
@@ -1053,21 +1071,58 @@ async def run_generation_async(
                         'message': f'{content_type} content from cache',
                         'cached': True
                     })
+                    # Send content event with actual content
+                    content_field = {
+                        'social': 'social_media_content',
+                        'audio': 'audio_content',
+                        'video': 'video_content'
+                    }.get(content_type, 'content')
+                    sse_store.add_event(job_id, 'content', {
+                        'job_id': job_id,
+                        'chunk': validated_content,
+                        'progress': 100,
+                        'artifact_type': content_type,
+                        'content_field': content_field,
+                        'cached': True
+                    })
             
-            # Mark job as completed
-            content_service.update_job_status(
-                job_id,
-                JobStatus.COMPLETED.value,
-                finished_at=datetime.utcnow()
-            )
-            sse_store.add_event(job_id, 'complete', {
-                'job_id': job_id,
-                'status': JobStatus.COMPLETED.value,
-                'message': 'Content generated from cache',
-                'cached': True
-            })
-            logger.info(f"Job {job_id}: Completed using cached content")
-            return  # Skip CrewAI execution
+            # Verify all requested content types are present in cache
+            missing_content_types = []
+            cache_key_map = {
+                'blog': 'content',
+                'social': 'social_media_content',
+                'audio': 'audio_content',
+                'video': 'video_content'
+            }
+            for content_type in content_types:
+                cache_key = cache_key_map.get(content_type)
+                if cache_key and not cached_content.get(cache_key):
+                    missing_content_types.append(content_type)
+            
+            if missing_content_types:
+                logger.info(f"Job {job_id}: Partial cache hit - missing types: {missing_content_types}, proceeding with generation for missing types")
+                # Don't return - continue with generation for missing content types
+                # Store which content types were cached so we can skip them during extraction
+                cached_content_types_set = set(content_types) - set(missing_content_types)
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Partial cache hit, generating missing types: {missing_content_types}, cached types: {cached_content_types_set}", file=sys.stdout, flush=True)
+            else:
+                cached_content_types_set = set(content_types)  # All types cached
+            else:
+                # All content types are cached - mark job as completed
+                content_service.update_job_status(
+                    job_id,
+                    JobStatus.COMPLETED.value,
+                    finished_at=datetime.utcnow()
+                )
+                sse_store.add_event(job_id, 'complete', {
+                    'job_id': job_id,
+                    'status': JobStatus.COMPLETED.value,
+                    'message': 'Content generated from cache',
+                    'cached': True
+                })
+                logger.info(f"Job {job_id}: Completed using cached content")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: All content types cached, skipping generation", file=sys.stdout, flush=True)
+                return  # Skip CrewAI execution
         
         # Cache miss - proceed with CrewAI generation
         logger.info(f"[CACHE] Job {job_id}: Cache miss, running CrewAI generation")
@@ -1191,6 +1246,8 @@ async def run_generation_async(
             """Run executor and send periodic progress updates"""
             nonlocal executor_done, result, executor_error, llm_success
             
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Executor function started", file=sys.stdout, flush=True)
+            
             try:
                 # Send research started
                 sse_store.add_event(job_id, 'agent_progress', {
@@ -1295,7 +1352,9 @@ async def run_generation_async(
                 sys.stderr.flush()
         
         # Start executor task
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Creating executor task...", file=sys.stdout, flush=True)
         executor_task = asyncio.create_task(run_executor_with_progress())
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task created, entering wait loop (timeout={timeout_seconds}s)", file=sys.stdout, flush=True)
         
         # Send periodic progress updates while executor is running
         progress_steps = [
@@ -1307,7 +1366,9 @@ async def run_generation_async(
         last_progress_time = time.time()
         
         try:
+            wait_loop_count = 0
             while not executor_done:
+                wait_loop_count += 1
                 # Wait for either executor completion or 10 seconds (whichever comes first)
                 done, pending = await asyncio.wait(
                     [executor_task],
@@ -1317,11 +1378,13 @@ async def run_generation_async(
                 
                 if done:
                     # Executor completed
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task completed, breaking from wait loop", file=sys.stdout, flush=True)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task completed, breaking from wait loop (waited {wait_loop_count * 10}s)", file=sys.stdout, flush=True)
                     break
                 else:
                     # Timeout - executor still running, send progress update
                     elapsed = time.time() - last_progress_time
+                    elapsed_total = wait_loop_count * 10.0
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor still running, elapsed={elapsed_total:.1f}s, executor_done={executor_done}", file=sys.stdout, flush=True)
                     if elapsed >= 10.0 and step_index < len(progress_steps):
                         step, message = progress_steps[step_index]
                         sse_store.add_event(job_id, 'agent_progress', {
@@ -1334,8 +1397,16 @@ async def run_generation_async(
             
             # Ensure executor completed
             print(f"[RAILWAY_DEBUG] Job {job_id}: Waiting for executor task to complete...", file=sys.stdout, flush=True)
-            await executor_task
+            try:
+                await executor_task
+            except Exception as await_error:
+                print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR awaiting executor task: {type(await_error).__name__}: {str(await_error)[:200]}", file=sys.stdout, flush=True)
+                logger.error(f"Job {job_id}: Error awaiting executor task: {await_error}", exc_info=True)
+                if executor_error is None:
+                    executor_error = await_error
+            
             print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task awaited, checking for errors...", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] Job {job_id}: executor_error={executor_error}, executor_done={executor_done}, result is None={result is None}", file=sys.stdout, flush=True)
             
             if executor_error:
                 if isinstance(executor_error, TimeoutError):
@@ -1415,6 +1486,7 @@ async def run_generation_async(
         
         # Send progress update
         print(f"[RAILWAY_DEBUG] Job {job_id}: No executor error, proceeding to extraction phase", file=sys.stdout, flush=True)
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Pre-extraction check - executor_done={executor_done}, result is None={result is None}, executor_error={executor_error}", file=sys.stdout, flush=True)
         
         # Verify result is available
         if result is None:
@@ -1549,9 +1621,17 @@ async def run_generation_async(
                 logger.info(f"Job {job_id}: Blog artifact created")
         
         # Extract and validate other content types
+        # Skip content types that were already processed from cache
+        cached_content_types_set = locals().get('cached_content_types_set', set())
+        
         for content_type in content_types:
-            if content_type == 'blog':
+            if content_type == 'blog' or content_type in cached_content_types_set:
+                if content_type in cached_content_types_set:
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Skipping {content_type} - already processed from cache", file=sys.stdout, flush=True)
                 continue
+            
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Processing {content_type} content extraction", file=sys.stdout, flush=True)
+            logger.info(f"[EXTRACTION] Job {job_id}: Processing {content_type} content extraction")
             
             raw_content_func = {
                 'social': api_server_module.extract_social_media_content_async,
@@ -1560,7 +1640,9 @@ async def run_generation_async(
             }.get(content_type)
             
             if raw_content_func:
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Calling {content_type} extraction function", file=sys.stdout, flush=True)
                 raw_content = await raw_content_func(result, topic, logger)
+                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} extraction completed, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
                 if raw_content:
                     is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
                         content_type, raw_content, model_name, allow_repair=True

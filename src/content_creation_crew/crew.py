@@ -386,6 +386,7 @@ class ContentCreationCrew():
             process=process,
             manager_llm=self.llm,  # Required for hierarchical process
             verbose=False,  # Reduced verbosity for faster execution
+            tracing=False,  # Disable tracing to prevent interactive prompts (critical for Railway/serverless)
         )
         
         print(f"[RAILWAY_DEBUG] Crew built successfully", file=sys.stdout, flush=True)
