@@ -845,9 +845,11 @@ async def run_generation_async(
     timeout_seconds = config.CREWAI_TIMEOUT
     
     # Immediate logging with flush for Railway visibility
+    # Use print() for critical messages as logger might be buffered
+    print(f"[RAILWAY_DEBUG] Job {job_id} started: topic='{topic}', plan='{plan}'", file=sys.stdout, flush=True)
     logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
     logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', User={user_id}")
-    print(f"[RAILWAY_DEBUG] Job {job_id} started: topic='{topic}', plan='{plan}'", file=sys.stdout, flush=True)
+    # Force flush after logger calls
     sys.stdout.flush()
     sys.stderr.flush()
     
@@ -882,6 +884,8 @@ async def run_generation_async(
         # Get model name
         model_name = policy.get_model_name()
         plan = policy.get_plan()
+        # Use print() for critical messages as logger might be buffered
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Model='{model_name}', Timeout={timeout_seconds}s, Content types={content_types}", file=sys.stdout, flush=True)
         logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
         logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Model='{model_name}', Timeout={timeout_seconds}s")
         logger.info(f"[JOB_START] Job {job_id}: Content types requested: {content_types}")
@@ -1008,6 +1012,7 @@ async def run_generation_async(
         logger.debug(f"[CACHE] Job {job_id}: Cache key would be: topic='{topic}', types={content_types}, version={PROMPT_VERSION}, model={model_name}")
         
         # Validate LLM configuration before attempting initialization
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Validating LLM configuration - OPENAI_API_KEY={'SET' if config.OPENAI_API_KEY else 'NOT SET'}, OLLAMA_BASE_URL={'SET' if config.OLLAMA_BASE_URL else 'NOT SET'}", file=sys.stdout, flush=True)
         logger.info(f"[CREW_INIT] Job {job_id}: Validating LLM configuration before initialization")
         sys.stdout.flush()
         sys.stderr.flush()
@@ -1050,6 +1055,7 @@ async def run_generation_async(
                 return
         
         # Run generation
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Initializing ContentCreationCrew with tier='{plan}', content_types={content_types}", file=sys.stdout, flush=True)
         logger.info(f"[CREW_INIT] Job {job_id}: Initializing ContentCreationCrew with tier='{plan}', content_types={content_types}")
         sys.stdout.flush()
         sys.stderr.flush()
@@ -1058,6 +1064,7 @@ async def run_generation_async(
             crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
             crew_obj = crew_instance._build_crew(content_types=content_types)
             crew_init_duration = time.time() - crew_init_start
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s", file=sys.stdout, flush=True)
             logger.info(f"[CREW_INIT] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s")
             sys.stdout.flush()
             sys.stderr.flush()
@@ -1076,6 +1083,7 @@ async def run_generation_async(
             else:
                 detailed_error = f"LLM initialization failed: {error_msg}"
             
+            print(f"[RAILWAY_DEBUG] Job {job_id}: CREW_INIT FAILED - {error_type}: {detailed_error}", file=sys.stdout, flush=True)
             logger.error(f"[CREW_INIT] Job {job_id}: FAILED after {crew_init_duration:.2f}s: {detailed_error}", exc_info=True)
             logger.error(f"[CREW_INIT] Job {job_id}: Error type={error_type}, model={model_name}, provider={'OpenAI' if config.OPENAI_API_KEY else 'Ollama'}")
             sys.stdout.flush()
@@ -1129,6 +1137,7 @@ async def run_generation_async(
                     'step': 'research'
                 })
                 
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Starting CrewAI kickoff with topic='{topic}', model='{model_name}'", file=sys.stdout, flush=True)
                 logger.info(f"[LLM_EXEC] Job {job_id}: Starting CrewAI kickoff with topic='{topic}'")
                 logger.info(f"[LLM_EXEC] Job {job_id}: Using model '{model_name}' with timeout={timeout_seconds}s")
                 sys.stdout.flush()
@@ -1148,9 +1157,11 @@ async def run_generation_async(
                 llm_exec_duration = time.time() - llm_exec_start
                 llm_success = True
                 executor_done = True
+                print(f"[RAILWAY_DEBUG] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s", file=sys.stdout, flush=True)
                 logger.info(f"[LLM_EXEC] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s")
                 logger.debug(f"[LLM_EXEC] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}")
                 if hasattr(result, 'tasks_output') and result.tasks_output:
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Number of task outputs: {len(result.tasks_output)}", file=sys.stdout, flush=True)
                     logger.debug(f"[LLM_EXEC] Job {job_id}: Number of task outputs: {len(result.tasks_output)}")
                 sys.stdout.flush()
                 sys.stderr.flush()
@@ -1158,6 +1169,7 @@ async def run_generation_async(
                 llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = TimeoutError(f"Content generation timed out after {timeout_seconds} seconds")
                 executor_done = True
+                print(f"[RAILWAY_DEBUG] Job {job_id}: TIMEOUT after {llm_exec_duration:.2f}s (limit: {timeout_seconds}s)", file=sys.stdout, flush=True)
                 logger.error(f"[LLM_EXEC] Job {job_id}: TIMEOUT after {llm_exec_duration:.2f}s (limit: {timeout_seconds}s)")
                 logger.error(f"[LLM_EXEC] Job {job_id}: Model '{model_name}' exceeded timeout threshold")
                 sys.stdout.flush()
@@ -1166,6 +1178,7 @@ async def run_generation_async(
                 llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = e
                 executor_done = True
+                print(f"[RAILWAY_DEBUG] Job {job_id}: LLM_EXEC ERROR - {type(e).__name__}: {str(e)}", file=sys.stdout, flush=True)
                 logger.error(f"[LLM_EXEC] Job {job_id}: ERROR after {llm_exec_duration:.2f}s: {type(e).__name__}: {str(e)}", exc_info=True)
                 sys.stdout.flush()
                 sys.stderr.flush()

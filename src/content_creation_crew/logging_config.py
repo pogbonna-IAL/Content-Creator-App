@@ -37,6 +37,18 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every emit for Railway compatibility"""
+    
+    def emit(self, record):
+        """Emit a record and flush immediately"""
+        try:
+            super().emit(record)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 class StructuredFormatter(logging.Formatter):
     """Custom formatter that includes request ID and environment"""
     
@@ -87,8 +99,8 @@ def setup_logging(env: str = "dev", log_level: str = "INFO"):
     # Remove existing handlers
     root_logger.handlers.clear()
     
-    # Create console handler with immediate flushing
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Create console handler with immediate flushing (custom FlushingStreamHandler)
+    console_handler = FlushingStreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     
