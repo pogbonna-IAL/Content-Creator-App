@@ -298,6 +298,14 @@ app = FastAPI(
 # Add request ID middleware for structured logging (must be first)
 app.add_middleware(RequestIDMiddleware)
 
+# Add HTTP attributes logging middleware (after request ID, before other middleware)
+try:
+    from content_creation_crew.middleware.http_attributes_logger import HTTPAttributesLoggerMiddleware
+    app.add_middleware(HTTPAttributesLoggerMiddleware)
+    logger.info("✓ HTTP attributes logging middleware enabled")
+except Exception as e:
+    logger.warning(f"Failed to enable HTTP attributes logging middleware: {e}")
+
 # Add metrics collection middleware (after request ID, before other middleware)
 try:
     from content_creation_crew.middleware.metrics_middleware import MetricsMiddleware
