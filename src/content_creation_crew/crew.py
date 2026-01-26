@@ -373,13 +373,19 @@ class ContentCreationCrew():
         logger.debug(f"[CREW_BUILD] Tasks: {[task.description[:50] if hasattr(task, 'description') else 'unknown' for task in tasks]}")
         logger.info(f"[CREW_BUILD] Process type: {process}")
         
+        # Use print() for Railway visibility
+        import sys
+        print(f"[RAILWAY_DEBUG] Building Crew with process={process}, manager_llm={'SET' if self.llm else 'NOT SET'}", file=sys.stdout, flush=True)
+        
         crew = Crew(
             agents=agents,  # Manually collected agents
             tasks=tasks,  # Only include requested tasks
             process=process,
+            manager_llm=self.llm,  # Required for hierarchical process
             verbose=False,  # Reduced verbosity for faster execution
         )
         
+        print(f"[RAILWAY_DEBUG] Crew built successfully", file=sys.stdout, flush=True)
         logger.info(f"[CREW_BUILD] Crew built successfully")
         return crew
     
