@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { topic } = body
+    const { topic, content_types } = body
 
     // Forward cookies from client request to backend
     // The auth_token cookie is set by the backend and needs to be forwarded
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
     console.log('Auth token found, length:', token.length)
     console.log('Auth token first 20 chars:', token.substring(0, 20) + '...')
 
-    console.log('Next.js API route received topic:', topic)
+    console.log('Next.js API route received topic:', topic, 'content_types:', content_types)
 
     if (!topic || typeof topic !== 'string') {
       return new Response(
@@ -123,10 +123,18 @@ export async function POST(request: NextRequest) {
     })
 
     // Step 1: Create the job first
+    // Forward content_types if provided, otherwise backend will use plan defaults
+    const requestBody: { topic: string; content_types?: string[] } = { topic }
+    if (content_types && Array.isArray(content_types) && content_types.length > 0) {
+      requestBody.content_types = content_types
+    }
+    
+    console.log('Forwarding to backend:', { topic, content_types: requestBody.content_types })
+    
     const createJobResponse = await fetch(backendUrl, {
       method: 'POST',
       headers: authHeaders,
-      body: JSON.stringify({ topic }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!createJobResponse.ok) {

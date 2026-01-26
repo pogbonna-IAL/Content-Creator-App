@@ -618,8 +618,32 @@ async def stream_job_progress(
                     # Check for status changes
                     if job.status != last_status:
                         event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
-                        event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
-                        event_id = sse_store.add_event(job_id, event_type, event_data)
+                        
+                        # If job failed, get the actual error details from SSE store
+                        if job.status == JobStatus.FAILED.value:
+                            # Get recent error events from SSE store
+                            recent_events = sse_store.get_events_since(job_id, 0)  # Get all events
+                            error_events = [e for e in recent_events if e.get('type') == 'error']
+                            if error_events:
+                                # Use the most recent error event's data
+                                latest_error = error_events[-1]
+                                event_data = latest_error.get('data', {})
+                                # Ensure type and job_id are set
+                                event_data['type'] = 'error'
+                                event_data['job_id'] = job_id
+                                event_data['status'] = job.status
+                                event_id = latest_error.get('id')
+                                if not event_id:
+                                    event_id = sse_store.add_event(job_id, 'error', event_data)
+                            else:
+                                # No error event found, create generic one
+                                event_data = {'type': 'error', 'job_id': job_id, 'status': job.status, 'message': 'Job failed but no error details available. Check backend logs for details.'}
+                                event_id = sse_store.add_event(job_id, 'error', event_data)
+                        else:
+                            # For other status changes, create standard event
+                            event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
+                            event_id = sse_store.add_event(job_id, event_type, event_data)
+                        
                         yield f"id: {event_id}\n"
                         yield f"event: {event_type}\n"
                         yield f"data: {json.dumps(event_data)}\n\n"
@@ -748,6 +772,40 @@ async def stream_job_progress(
                         break
                     # Wait before retrying
                     await asyncio.sleep(0.5)
+            
+            # Before closing stream, check if job failed and send error if not already sent
+            try:
+                db.refresh(job)
+                if job.status == JobStatus.FAILED.value:
+                    # Check if we already sent an error event
+                    recent_events = sse_store.get_events_since(job_id, 0)
+                    error_events = [e for e in recent_events if e.get('type') == 'error']
+                    if error_events:
+                        # Error already sent, but make sure it's the latest
+                        latest_error = error_events[-1]
+                        error_data = latest_error.get('data', {})
+                        if error_data and error_data.get('message'):
+                            # Error already sent with message, we're good
+                            logger.info(f"[STREAM_END] Job {job_id}: Error event already sent, stream closing")
+                        else:
+                            # Error sent but no message, send it again with details
+                            error_data = {'type': 'error', 'job_id': job_id, 'status': job.status, 'message': 'Job failed. Check backend logs for details.'}
+                            event_id = sse_store.add_event(job_id, 'error', error_data)
+                            yield f"id: {event_id}\n"
+                            yield f"event: error\n"
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            flush_buffers()
+                    else:
+                        # No error event sent, send one now
+                        error_data = {'type': 'error', 'job_id': job_id, 'status': job.status, 'message': 'Job failed. Check backend logs for details.'}
+                        event_id = sse_store.add_event(job_id, 'error', error_data)
+                        yield f"id: {event_id}\n"
+                        yield f"event: error\n"
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        flush_buffers()
+                        logger.warning(f"[STREAM_END] Job {job_id}: Job failed but no error event was sent, sending now")
+            except Exception as final_check_error:
+                logger.error(f"[STREAM_ERROR] Job {job_id}: Error checking final job status: {type(final_check_error).__name__}: {str(final_check_error)}")
         except Exception as stream_error:
             # Handle errors in the stream generator itself
             logger.error(f"[STREAM_ERROR] Job {job_id}: Fatal error in stream generator: {type(stream_error).__name__}: {str(stream_error)}", exc_info=True)
@@ -1281,13 +1339,28 @@ async def run_generation_async(
             if executor_error:
                 if isinstance(executor_error, TimeoutError):
                     error_msg = str(executor_error)
+                    # Create user-friendly timeout message
+                    timeout_msg = f"Content generation timed out after {timeout_seconds} seconds. "
+                    timeout_msg += "The generation process took longer than the configured timeout. "
+                    timeout_msg += "This may happen when generating multiple content types (blog, social, audio, video). "
+                    timeout_msg += "Try generating fewer content types at once or increase the timeout limit."
+                    
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Sending timeout error to client", file=sys.stdout, flush=True)
                     logger.error(f"Job {job_id}: {error_msg}")
                     sse_store.add_event(job_id, 'error', {
                         'job_id': job_id,
-                        'message': error_msg,
-                        'error_type': 'timeout'
+                        'message': timeout_msg,
+                        'error_type': 'timeout',
+                        'timeout_seconds': timeout_seconds,
+                        'hint': 'Try generating fewer content types at once, or increase CREWAI_TIMEOUT in backend configuration'
                     })
-                    raise executor_error
+                    # Update job status
+                    content_service.update_job_status(
+                        job_id,
+                        JobStatus.FAILED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    return  # Don't raise, error already sent via SSE
                 else:
                     # Check for rate limit errors
                     error_msg = str(executor_error)

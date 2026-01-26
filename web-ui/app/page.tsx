@@ -155,13 +155,23 @@ export default function Home() {
         headers['Authorization'] = `Bearer ${token}`
       }
       
+      // Map selectedFeature to content_types array
+      // selectedFeature can be: 'blog', 'social', 'audio', 'video'
+      const contentTypes = selectedFeature === 'blog' ? ['blog'] :
+                          selectedFeature === 'social' ? ['social'] :
+                          selectedFeature === 'audio' ? ['audio'] :
+                          selectedFeature === 'video' ? ['video'] :
+                          ['blog'] // Default to blog if unknown
+      
+      console.log('Sending request with content_types:', contentTypes, 'selectedFeature:', selectedFeature)
+      
       let response: Response
       try {
         response = await fetch('/api/generate', {
           method: 'POST',
           headers,
           credentials: 'include', // Include cookies as fallback
-          body: JSON.stringify({ topic }),
+          body: JSON.stringify({ topic, content_types: contentTypes }),
         })
       } catch (fetchError) {
         // Handle network-level errors (connection refused, DNS failure, etc.)
@@ -221,13 +231,29 @@ export default function Home() {
             for (const line of lines) {
               if (line.startsWith('data: ')) {
                 try {
-                  const data = JSON.parse(line.slice(6))
+                  const jsonStr = line.slice(6).trim()
+                  if (!jsonStr) continue
+                  const data = JSON.parse(jsonStr)
                   console.log('Final data:', data)
                   if (data.type === 'complete' && data.content) {
                     accumulatedContent = data.content
                     setOutput(accumulatedContent)
                     setProgress(100)
                     setStatus('Content generation complete!')
+                  } else if (data.type === 'error') {
+                    // Handle error in final buffer
+                    const errorMsg = data.message || data.detail || 'Unknown error occurred'
+                    let displayError = `Content generation failed: ${errorMsg}`
+                    if (data.error_type) {
+                      displayError += `\n\nError Type: ${data.error_type}`
+                    }
+                    if (data.hint) {
+                      displayError += `\n\nHint: ${data.hint}`
+                    }
+                    setError(displayError)
+                    setIsGenerating(false)
+                    setStatus('Generation failed')
+                    setProgress(0)
                   }
                 } catch (e) {
                   console.error('Error parsing final buffer:', e)
@@ -235,6 +261,15 @@ export default function Home() {
               }
             }
           }
+          
+          // If stream ended but we have no content and no error, show a message
+          if (!accumulatedContent && !error) {
+            console.warn('Stream ended but no content or error received')
+            setError('Stream ended unexpectedly. No content was generated. This may indicate a timeout or server error. Please try again.')
+            setIsGenerating(false)
+            setStatus('Generation incomplete')
+          }
+          
           break
         }
 
