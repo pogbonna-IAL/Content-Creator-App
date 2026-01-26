@@ -2,7 +2,7 @@
 Content generation API routes (v1)
 Jobs-first persistence with SSE streaming support
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -259,10 +259,57 @@ async def create_generation_job(
     except ImportError:
         pass
     
-    # Start generation asynchronously (don't wait)
-    asyncio.create_task(
-        run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
-    )
+    # Start generation asynchronously with proper error handling
+    # Use asyncio.create_task() but wrap it to catch and log errors
+    async def run_with_error_handling():
+        """Wrapper to ensure async task errors are logged and handled"""
+        try:
+            logger.info(f"[ASYNC_TASK] Starting async generation task for job {job.id}")
+            await run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
+            logger.info(f"[ASYNC_TASK] Async generation task completed successfully for job {job.id}")
+        except Exception as e:
+            logger.error(f"[ASYNC_TASK] Async generation task FAILED for job {job.id}: {type(e).__name__}: {str(e)}", exc_info=True)
+            # Try to update job status to failed
+            try:
+                from .services.content_service import ContentService
+                from .database import SessionLocal
+                error_session = SessionLocal()
+                error_user = error_session.query(User).filter(User.id == current_user.id).first()
+                if error_user:
+                    error_content_service = ContentService(error_session, error_user)
+                    error_content_service.update_job_status(
+                        job.id,
+                        JobStatus.FAILED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    # Send error event to SSE store
+                    from .services.sse_store import get_sse_store
+                    sse_store = get_sse_store()
+                    sse_store.add_event(job.id, 'error', {
+                        'job_id': job.id,
+                        'message': f'Content generation failed: {str(e)}',
+                        'error_type': type(e).__name__
+                    })
+                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event")
+                error_session.close()
+            except Exception as update_error:
+                logger.error(f"[ASYNC_TASK] Failed to update job status after error: {update_error}", exc_info=True)
+    
+    # Create the task with error handling
+    # Add done callback to log completion/failure
+    task = asyncio.create_task(run_with_error_handling())
+    
+    def task_done_callback(fut):
+        """Callback to log task completion or failure"""
+        try:
+            fut.result()  # This will raise if the task failed
+            logger.info(f"[ASYNC_TASK] Task for job {job.id} completed successfully")
+        except Exception as e:
+            # Error already logged in run_with_error_handling, but log here too for visibility
+            logger.error(f"[ASYNC_TASK] Task for job {job.id} failed in callback: {type(e).__name__}: {str(e)}")
+    
+    task.add_done_callback(task_done_callback)
+    logger.info(f"[ASYNC_TASK] Created async task for job {job.id}, task_id={id(task)}")
     
     # Return job info
     return _job_to_response(job)
@@ -418,10 +465,21 @@ async def stream_job_progress(
         last_artifact_count = 0
         last_keepalive_time = time.time()
         keepalive_interval = 5.0  # Send keep-alive every 5 seconds to prevent timeout
+        poll_count = 0
+        stream_start_time = time.time()
+        
+        logger.info(f"[STREAM_POLL] Starting polling loop for job {job_id}, initial status={job.status}")
         
         while True:
+            poll_count += 1
             # Refresh job from database
             db.refresh(job)
+            
+            # Log every 20 polls (every 10 seconds) to track progress
+            if poll_count % 20 == 0:
+                elapsed = time.time() - stream_start_time
+                artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                logger.info(f"[STREAM_POLL] Job {job_id}: Poll #{poll_count}, status={job.status}, elapsed={elapsed:.1f}s, artifacts={artifact_count}")
             
             # Send keep-alive comment if enough time has passed (prevents undici body timeout)
             current_time = time.time()

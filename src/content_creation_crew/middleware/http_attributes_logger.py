@@ -70,11 +70,16 @@ class HTTPAttributesLoggerMiddleware(BaseHTTPMiddleware):
         
         # Extract request attributes
         # Try to get request ID from context first (set by RequestIDMiddleware), then headers
-        request_id = get_request_id() or request.headers.get("X-Request-ID") or request.headers.get("x-request-id")
+        request_id = get_request_id() or request.headers.get("X-Request-ID") or request.headers.get("x-request-id") or request.headers.get("X-Railway-Request-ID")
         host = request.headers.get("host") or request.url.hostname
         path = str(request.url.path)
         method = request.method
         client_ua = request.headers.get("user-agent", "unknown")
+        
+        # Extract Railway-specific headers if available
+        railway_request_id = request.headers.get("X-Railway-Request-ID")
+        src_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() if request.headers.get("X-Forwarded-For") else request.headers.get("X-Real-IP")
+        edge_region_header = request.headers.get("X-Railway-Edge") or request.headers.get("X-Edge-Region")
         
         # Calculate request size
         rx_bytes = self._get_request_size(request)
@@ -96,15 +101,21 @@ class HTTPAttributesLoggerMiddleware(BaseHTTPMiddleware):
             http_status = response.status_code
             tx_bytes = self._get_response_size(response)
             
-            # Check for upstream information in headers (if proxied)
-            upstream_rq_duration_header = response.headers.get("X-Upstream-Request-Duration")
+            # Check for upstream information in headers (if proxied by Railway)
+            # Railway may set these headers automatically
+            upstream_rq_duration_header = response.headers.get("X-Upstream-Request-Duration") or response.headers.get("X-Railway-Upstream-Duration")
             if upstream_rq_duration_header:
                 try:
                     upstream_rq_duration = float(upstream_rq_duration_header)
                 except (ValueError, TypeError):
                     pass
             
-            upstream_proto = response.headers.get("X-Upstream-Proto") or "HTTP/1.1"
+            # Extract upstream address from Railway headers if available
+            upstream_address_header = response.headers.get("X-Upstream-Address") or response.headers.get("X-Railway-Upstream-Address")
+            if upstream_address_header:
+                upstream_address = upstream_address_header
+            
+            upstream_proto = response.headers.get("X-Upstream-Proto") or response.headers.get("X-Railway-Upstream-Proto") or "HTTP/1.1"
             downstream_proto = "HTTP/2.0" if request.scope.get("http_version") == "2" else "HTTP/1.1"
             
             # Calculate total duration
@@ -147,6 +158,9 @@ class HTTPAttributesLoggerMiddleware(BaseHTTPMiddleware):
             raise
         
         # Build HTTP attributes log entry
+        # Use Railway request ID if available, otherwise use our generated one
+        final_request_id = railway_request_id or request_id
+        
         http_attributes = {
             "@host": host,
             "@path": path,
@@ -154,15 +168,23 @@ class HTTPAttributesLoggerMiddleware(BaseHTTPMiddleware):
             "@httpStatus": http_status,
             "@totalDuration": round(total_duration, 2),
             "@responseTime": round(response_time, 2),
-            "@requestId": request_id,
+            "@requestId": final_request_id,
             "@deploymentId": self.deployment_id,
             "@deploymentInstanceId": self.deployment_instance_id,
             "@txBytes": tx_bytes,
             "@rxBytes": rx_bytes,
             "@clientUa": client_ua,
-            "@edgeRegion": self.edge_region,
+            "@edgeRegion": edge_region_header or self.edge_region,
             "@downstreamProto": downstream_proto,
         }
+        
+        # Add source IP if available
+        if src_ip:
+            http_attributes["@srcIp"] = src_ip
+        
+        # Add Railway request ID separately if different from our request ID
+        if railway_request_id and railway_request_id != final_request_id:
+            http_attributes["@railwayRequestId"] = railway_request_id
         
         # Add optional attributes if available
         if upstream_rq_duration is not None:
