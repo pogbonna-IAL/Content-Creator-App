@@ -199,12 +199,13 @@ class RetentionNotificationService:
         try:
             # Find artifacts expiring soon that haven't been notified today
             # Use LEFT JOIN to exclude artifacts with notifications today
+            # Note: ContentJob, Membership, and Subscription models use 'org_id' not 'organization_id'
             artifacts = self.db.query(
                 ContentArtifact.id,
                 ContentArtifact.artifact_type,
                 ContentArtifact.created_at,
                 ContentJob.topic,
-                ContentJob.organization_id,
+                ContentJob.org_id.label('organization_id'),  # Alias org_id as organization_id for compatibility
                 User.id.label('user_id'),
                 User.email
             ).join(
@@ -215,7 +216,7 @@ class RetentionNotificationService:
                 Membership,
                 and_(
                     User.id == Membership.user_id,
-                    ContentJob.organization_id == Membership.organization_id
+                    ContentJob.org_id == Membership.org_id  # Use org_id for both
                 )
             ).outerjoin(
                 RetentionNotification,
@@ -225,7 +226,7 @@ class RetentionNotificationService:
                     RetentionNotification.notification_date == today
                 )
             ).filter(
-                ContentJob.organization_id == org_id,
+                ContentJob.org_id == org_id,  # Use org_id instead of organization_id
                 ContentArtifact.created_at < notification_date,
                 ContentArtifact.created_at >= deletion_cutoff,  # Not yet expired
                 User.email_verified == True,  # Only notify verified emails
@@ -240,7 +241,7 @@ class RetentionNotificationService:
                     user_artifacts[user_id] = {
                         'user_id': user_id,
                         'email': artifact.email,
-                        'org_id': artifact.organization_id,
+                        'org_id': artifact.organization_id,  # This is the aliased org_id
                         'plan': plan,
                         'artifacts': []
                     }
@@ -460,8 +461,9 @@ class RetentionNotificationService:
             
             for org in orgs:
                 # Get active subscription
+                # Note: Subscription model uses 'org_id' not 'organization_id'
                 active_sub = self.db.query(Subscription).filter(
-                    Subscription.organization_id == org.id,
+                    Subscription.org_id == org.id,
                     Subscription.status == 'active'
                 ).first()
                 
