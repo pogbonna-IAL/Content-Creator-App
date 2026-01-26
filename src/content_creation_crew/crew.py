@@ -117,9 +117,36 @@ class ContentCreationCrew():
         if not use_openai and ollama_base_url:
             llm_kwargs["base_url"] = ollama_base_url
         
-        self.llm = LLM(**llm_kwargs)
+        # Validate configuration before LLM initialization
+        if use_openai and not config.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is required for OpenAI models but is not set. Please set OPENAI_API_KEY in backend environment variables.")
         
-        logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}' using {'OpenAI' if use_openai else 'Ollama'}")
+        if not use_openai and not ollama_base_url:
+            raise ValueError("OLLAMA_BASE_URL is required for Ollama models but is not set. Please set OLLAMA_BASE_URL or OPENAI_API_KEY in backend environment variables.")
+        
+        # Initialize LLM with error handling
+        try:
+            self.llm = LLM(**llm_kwargs)
+            logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}' using {'OpenAI' if use_openai else 'Ollama'}")
+        except Exception as llm_error:
+            error_type = type(llm_error).__name__
+            error_msg = str(llm_error)
+            
+            # Provide more specific error messages
+            if use_openai:
+                if 'api key' in error_msg.lower() or 'authentication' in error_msg.lower():
+                    raise ValueError(f"OpenAI API authentication failed: {error_msg}. Please verify OPENAI_API_KEY is correct and has proper permissions.") from llm_error
+                elif 'invalid' in error_msg.lower() or 'not found' in error_msg.lower():
+                    raise ValueError(f"Invalid OpenAI model or configuration: {error_msg}. Model '{model}' may not be available or API key may be invalid.") from llm_error
+                else:
+                    raise ValueError(f"OpenAI LLM initialization failed: {error_msg}") from llm_error
+            else:
+                if 'connection' in error_msg.lower() or 'connect' in error_msg.lower():
+                    raise ValueError(f"Ollama connection failed: {error_msg}. Please ensure Ollama is running at {ollama_base_url} and model '{model}' is available.") from llm_error
+                elif 'not found' in error_msg.lower() or 'model' in error_msg.lower():
+                    raise ValueError(f"Ollama model not found: {error_msg}. Please ensure model '{model}' is pulled: ollama pull {model}") from llm_error
+                else:
+                    raise ValueError(f"Ollama LLM initialization failed: {error_msg}") from llm_error
     
     def _load_tier_config(self) -> dict:
         """Load tier configuration from YAML file"""

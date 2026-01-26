@@ -268,7 +268,22 @@ async def create_generation_job(
             await run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
             logger.info(f"[ASYNC_TASK] Async generation task completed successfully for job {job.id}")
         except Exception as e:
-            logger.error(f"[ASYNC_TASK] Async generation task FAILED for job {job.id}: {type(e).__name__}: {str(e)}", exc_info=True)
+            error_type = type(e).__name__
+            error_msg_raw = str(e) if str(e) else f"{error_type} occurred"
+            
+            # Build helpful error message
+            if 'OPENAI_API_KEY' in error_msg_raw or 'api key' in error_msg_raw.lower():
+                error_msg = f"LLM configuration error: {error_msg_raw}"
+                hint = "Set OPENAI_API_KEY in Railway backend service variables (not frontend .env)"
+            elif 'authentication' in error_msg_raw.lower() or 'unauthorized' in error_msg_raw.lower():
+                error_msg = f"Authentication error: {error_msg_raw}"
+                hint = "Verify OPENAI_API_KEY is correct and has proper permissions"
+            else:
+                error_msg = f'Content generation failed: {error_msg_raw}'
+                hint = "Check backend logs for detailed error information"
+            
+            logger.error(f"[ASYNC_TASK] Async generation task FAILED for job {job.id}: {error_type}: {error_msg}", exc_info=True)
+            
             # Try to update job status to failed
             try:
                 from .services.content_service import ContentService
@@ -282,15 +297,16 @@ async def create_generation_job(
                         JobStatus.FAILED.value,
                         finished_at=datetime.utcnow()
                     )
-                    # Send error event to SSE store
+                    # Send error event to SSE store with hint
                     from .services.sse_store import get_sse_store
                     sse_store = get_sse_store()
                     sse_store.add_event(job.id, 'error', {
                         'job_id': job.id,
-                        'message': f'Content generation failed: {str(e)}',
-                        'error_type': type(e).__name__
+                        'message': error_msg,
+                        'error_type': error_type,
+                        'hint': hint
                     })
-                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event")
+                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event with hint")
                 error_session.close()
             except Exception as update_error:
                 logger.error(f"[ASYNC_TASK] Failed to update job status after error: {update_error}", exc_info=True)
@@ -920,13 +936,81 @@ async def run_generation_async(
         logger.info(f"[CACHE] Job {job_id}: Cache miss, running CrewAI generation")
         logger.debug(f"[CACHE] Job {job_id}: Cache key would be: topic='{topic}', types={content_types}, version={PROMPT_VERSION}, model={model_name}")
         
+        # Validate LLM configuration before attempting initialization
+        logger.info(f"[CREW_INIT] Job {job_id}: Validating LLM configuration before initialization")
+        if not config.OPENAI_API_KEY and not config.OLLAMA_BASE_URL:
+            error_msg = "LLM provider not configured: OPENAI_API_KEY and OLLAMA_BASE_URL are both missing. Please set OPENAI_API_KEY in backend environment variables."
+            logger.error(f"[CREW_INIT] Job {job_id}: {error_msg}")
+            content_service.update_job_status(
+                job_id,
+                JobStatus.FAILED.value,
+                finished_at=datetime.utcnow()
+            )
+            sse_store.add_event(job_id, 'error', {
+                'job_id': job_id,
+                'message': error_msg,
+                'error_type': 'configuration_error',
+                'hint': 'Set OPENAI_API_KEY in Railway backend service variables (not frontend .env)'
+            })
+            return
+        
+        # Check OpenAI API key format if using OpenAI
+        if config.OPENAI_API_KEY:
+            if not config.OPENAI_API_KEY.startswith('sk-'):
+                error_msg = f"Invalid OPENAI_API_KEY format: API key should start with 'sk-'. Current key starts with '{config.OPENAI_API_KEY[:5]}...'"
+                logger.error(f"[CREW_INIT] Job {job_id}: {error_msg}")
+                content_service.update_job_status(
+                    job_id,
+                    JobStatus.FAILED.value,
+                    finished_at=datetime.utcnow()
+                )
+                sse_store.add_event(job_id, 'error', {
+                    'job_id': job_id,
+                    'message': error_msg,
+                    'error_type': 'configuration_error',
+                    'hint': 'Verify OPENAI_API_KEY is correct and starts with sk-'
+                })
+                return
+        
         # Run generation
         logger.info(f"[CREW_INIT] Job {job_id}: Initializing ContentCreationCrew with tier='{plan}', content_types={content_types}")
         crew_init_start = time.time()
-        crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
-        crew_obj = crew_instance._build_crew(content_types=content_types)
-        crew_init_duration = time.time() - crew_init_start
-        logger.info(f"[CREW_INIT] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s")
+        try:
+            crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
+            crew_obj = crew_instance._build_crew(content_types=content_types)
+            crew_init_duration = time.time() - crew_init_start
+            logger.info(f"[CREW_INIT] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s")
+        except Exception as crew_init_error:
+            crew_init_duration = time.time() - crew_init_start
+            error_type = type(crew_init_error).__name__
+            error_msg = str(crew_init_error) if str(crew_init_error) else f"{error_type} during crew initialization"
+            
+            # Provide more specific error messages based on error type
+            if 'api key' in error_msg.lower() or 'authentication' in error_msg.lower() or 'unauthorized' in error_msg.lower():
+                detailed_error = f"LLM authentication failed: {error_msg}. Please verify OPENAI_API_KEY is set correctly in backend environment."
+            elif 'connection' in error_msg.lower() or 'connect' in error_msg.lower():
+                detailed_error = f"LLM connection failed: {error_msg}. Please check network connectivity and LLM service availability."
+            elif 'timeout' in error_msg.lower():
+                detailed_error = f"LLM initialization timeout: {error_msg}. The LLM service may be unavailable or slow to respond."
+            else:
+                detailed_error = f"LLM initialization failed: {error_msg}"
+            
+            logger.error(f"[CREW_INIT] Job {job_id}: FAILED after {crew_init_duration:.2f}s: {detailed_error}", exc_info=True)
+            logger.error(f"[CREW_INIT] Job {job_id}: Error type={error_type}, model={model_name}, provider={'OpenAI' if config.OPENAI_API_KEY else 'Ollama'}")
+            
+            # Update job status and send error event
+            content_service.update_job_status(
+                job_id,
+                JobStatus.FAILED.value,
+                finished_at=datetime.utcnow()
+            )
+            sse_store.add_event(job_id, 'error', {
+                'job_id': job_id,
+                'message': detailed_error,
+                'error_type': error_type,
+                'hint': 'Check backend logs for detailed error information. Verify OPENAI_API_KEY is set in backend environment variables.'
+            })
+            return
         
         # Send progress update
         sse_store.add_event(job_id, 'agent_progress', {
@@ -1294,10 +1378,34 @@ async def run_generation_async(
             except Exception as update_error:
                 logger.error(f"Failed to update job status after timeout: {update_error}")
     except Exception as e:
-        error_msg = f"Content generation failed: {str(e)}"
+        error_type = type(e).__name__
+        error_msg_raw = str(e) if str(e) else f"{error_type} occurred"
         total_duration = time.time() - llm_start_time if 'llm_start_time' in locals() else 0
+        
+        # Build detailed error message with hints based on error content
+        if 'OPENAI_API_KEY' in error_msg_raw or 'api key' in error_msg_raw.lower() or 'authentication' in error_msg_raw.lower():
+            error_msg = f"LLM authentication failed: {error_msg_raw}"
+            hint = "Set OPENAI_API_KEY in Railway backend service variables (not frontend .env). Get your key from https://platform.openai.com/api-keys"
+        elif 'Ollama' in error_msg_raw or 'ollama' in error_msg_raw.lower() or ('connection' in error_msg_raw.lower() and 'ollama' in error_msg_raw.lower()):
+            error_msg = f"Ollama connection error: {error_msg_raw}"
+            hint = "Ensure Ollama is running and accessible, or set OPENAI_API_KEY to use OpenAI instead"
+        elif 'timeout' in error_msg_raw.lower():
+            error_msg = f"Content generation timeout: {error_msg_raw}"
+            hint = f"Generation exceeded {timeout_seconds}s limit. Try a simpler topic or check LLM service availability."
+        elif 'configuration' in error_msg_raw.lower() or 'not configured' in error_msg_raw.lower():
+            error_msg = f"Configuration error: {error_msg_raw}"
+            hint = "Check backend environment variables. Ensure OPENAI_API_KEY is set in Railway backend service variables."
+        elif 'ValueError' in error_type and ('required' in error_msg_raw.lower() or 'missing' in error_msg_raw.lower()):
+            error_msg = f"Missing configuration: {error_msg_raw}"
+            hint = "Verify all required environment variables are set in Railway backend service variables"
+        else:
+            error_msg = f"Content generation failed: {error_msg_raw}"
+            hint = "Check backend logs for detailed error information. Common causes: missing OPENAI_API_KEY, LLM service unavailable, or network issues."
+        
         logger.error(f"[JOB_FAILED] Job {job_id}: FAILED after {total_duration:.2f}s: {error_msg}", exc_info=True)
-        logger.error(f"[JOB_FAILED] Job {job_id}: Error details - model={model_name if 'model_name' in locals() else 'unknown'}, topic='{topic if 'topic' in locals() else 'unknown'}', error_type={type(e).__name__}")
+        logger.error(f"[JOB_FAILED] Job {job_id}: Error details - model={model_name if 'model_name' in locals() else 'unknown'}, topic='{topic if 'topic' in locals() else 'unknown'}', error_type={error_type}")
+        logger.error(f"[JOB_FAILED] Job {job_id}: Hint for user: {hint}")
+        
         if session:
             try:
                 # Refresh session if needed
@@ -1313,7 +1421,8 @@ async def run_generation_async(
                     sse_store.add_event(job_id, 'error', {
                         'job_id': job_id,
                         'message': error_msg,
-                        'error_type': type(e).__name__
+                        'error_type': error_type,
+                        'hint': hint
                     })
                     
                     # Track job failure metric
