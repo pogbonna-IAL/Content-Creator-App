@@ -163,6 +163,39 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder()
     const stream = new ReadableStream({
       async start(streamController) {
+        // Track controller state to prevent double-close errors
+        // Define these OUTSIDE the try block so they're available in catch
+        let controllerClosed = false
+        
+        const safeEnqueue = (data: Uint8Array) => {
+          if (!controllerClosed) {
+            try {
+              streamController.enqueue(data)
+            } catch (e) {
+              // Controller might be closed by client disconnect
+              if (e instanceof TypeError && (e.message.includes('closed') || e.message.includes('Invalid state'))) {
+                controllerClosed = true
+                console.log('Stream controller closed by client')
+              } else {
+                throw e
+              }
+            }
+          }
+        }
+        
+        const safeClose = () => {
+          if (!controllerClosed) {
+            try {
+              streamController.close()
+              controllerClosed = true
+            } catch (e) {
+              // Already closed - ignore
+              controllerClosed = true
+              console.log('Stream controller already closed:', e instanceof Error ? e.message : String(e))
+            }
+          }
+        }
+
         try {
           // Create AbortController with extended timeout (30 minutes)
           const abortController = new AbortController()
@@ -172,7 +205,7 @@ export async function POST(request: NextRequest) {
 
           // Configure fetch with extended timeout for streaming
           // Node.js fetch uses undici which has a default body timeout
-          // We need to ensure the connection stays alive
+          // We need to ensure the connection stays active
           const streamHeaders: Record<string, string> = {
             'Connection': 'keep-alive',
             'Authorization': `Bearer ${token}`,
@@ -252,38 +285,6 @@ export async function POST(request: NextRequest) {
             if (fetchOptions._restoreDispatcher) {
               // @ts-ignore
               fetchOptions._restoreDispatcher()
-            }
-          }
-
-          // Track controller state to prevent double-close errors
-          let controllerClosed = false
-          
-          const safeEnqueue = (data: Uint8Array) => {
-            if (!controllerClosed) {
-              try {
-                streamController.enqueue(data)
-              } catch (e) {
-                // Controller might be closed by client disconnect
-                if (e instanceof TypeError && (e.message.includes('closed') || e.message.includes('Invalid state'))) {
-                  controllerClosed = true
-                  console.log('Stream controller closed by client')
-                } else {
-                  throw e
-                }
-              }
-            }
-          }
-          
-          const safeClose = () => {
-            if (!controllerClosed) {
-              try {
-                streamController.close()
-                controllerClosed = true
-              } catch (e) {
-                // Already closed - ignore
-                controllerClosed = true
-                console.log('Stream controller already closed:', e instanceof Error ? e.message : String(e))
-              }
             }
           }
 
