@@ -95,22 +95,16 @@ class ContentCreationCrew():
         }
         max_tokens = max_tokens_map.get(tier, 1500)
         
-        llm_config = {
-            "timeout": 180.0,  # Total timeout in seconds (reduced from 1800)
-            "request_timeout": 180.0,  # Request timeout (reduced from 1800)
-            "connection_timeout": 30.0,  # Connection timeout (reduced from 60)
-            "temperature": temperature,  # Also set in config for compatibility
-            "max_tokens": max_tokens,  # Reduced token limits for faster generation
-        }
-        
-        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout={llm_config['timeout']}s, provider={'OpenAI' if use_openai else 'Ollama'}")
+        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout=180s, provider={'OpenAI' if use_openai else 'Ollama'}")
         
         # Build LLM initialization kwargs
+        # CrewAI's LLM class expects parameters directly, not wrapped in a 'config' dict
         llm_kwargs = {
             "model": model,
             "temperature": temperature,  # Lower temperature for faster execution
-            # Phase 1: Reduced timeouts to match CREWAI_TIMEOUT (180s)
-            "config": llm_config
+            "max_tokens": max_tokens,  # Reduced token limits for faster generation
+            # Timeout parameters are handled via environment variables and litellm settings
+            # Don't pass 'config' parameter as it's not supported by CrewAI's LLM class
         }
         
         # Only add base_url for Ollama models (OpenAI doesn't need it)
@@ -126,7 +120,10 @@ class ContentCreationCrew():
         
         # Initialize LLM with error handling
         try:
+            # Use print() for Railway visibility
+            print(f"[RAILWAY_DEBUG] Initializing LLM with kwargs: model={model}, temperature={temperature}, max_tokens={max_tokens}", file=sys.stdout, flush=True)
             self.llm = LLM(**llm_kwargs)
+            print(f"[RAILWAY_DEBUG] LLM instance created successfully", file=sys.stdout, flush=True)
             logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}' using {'OpenAI' if use_openai else 'Ollama'}")
         except Exception as llm_error:
             error_type = type(llm_error).__name__
