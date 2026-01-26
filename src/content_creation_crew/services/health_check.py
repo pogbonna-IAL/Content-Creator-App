@@ -345,7 +345,7 @@ class HealthChecker:
     
     async def check_llm(self) -> ComponentHealth:
         """
-        Check LLM provider (Ollama) connectivity
+        Check LLM provider (OpenAI or Ollama) connectivity
         
         Returns:
             ComponentHealth with LLM status
@@ -354,8 +354,62 @@ class HealthChecker:
         
         try:
             from ..config import config
-            import httpx
             
+            # Check OpenAI first if configured
+            if config.OPENAI_API_KEY:
+                try:
+                    import openai
+                    client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+                    # Lightweight test - list models (doesn't consume tokens)
+                    models = client.models.list()
+                    model_names = [model.id for model in models.data if 'gpt' in model.id.lower()]
+                    response_time = (time.time() - start_time) * 1000
+                    
+                    return ComponentHealth(
+                        name="llm",
+                        status=HealthStatus.OK,
+                        message="OpenAI API accessible",
+                        response_time_ms=response_time,
+                        details={
+                            "provider": "openai",
+                            "model_count": len(models.data),
+                            "gpt_models_available": len(model_names),
+                            "sample_models": model_names[:5] if model_names else []
+                        }
+                    )
+                except Exception as e:
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    response_time = (time.time() - start_time) * 1000
+                    
+                    # Check for specific OpenAI error types
+                    if "Invalid API key" in error_msg or "authentication" in error_msg.lower():
+                        return ComponentHealth(
+                            name="llm",
+                            status=HealthStatus.DEGRADED,
+                            message="OpenAI API authentication failed",
+                            response_time_ms=response_time,
+                            details={"provider": "openai", "error_type": error_type}
+                        )
+                    elif "rate limit" in error_msg.lower():
+                        return ComponentHealth(
+                            name="llm",
+                            status=HealthStatus.DEGRADED,
+                            message="OpenAI API rate limit reached",
+                            response_time_ms=response_time,
+                            details={"provider": "openai", "error_type": error_type}
+                        )
+                    else:
+                        return ComponentHealth(
+                            name="llm",
+                            status=HealthStatus.DEGRADED,
+                            message=f"OpenAI API error: {error_msg}",
+                            response_time_ms=response_time,
+                            details={"provider": "openai", "error_type": error_type}
+                        )
+            
+            # Fall back to Ollama if OpenAI not configured
+            import httpx
             ollama_url = config.OLLAMA_BASE_URL or config.OLLAMA_URL or "http://localhost:11434"
             
             # Skip health check if URL points to localhost or Docker service names in production
@@ -368,7 +422,8 @@ class HealthChecker:
                     details={
                         "provider": "ollama",
                         "url": ollama_url,
-                        "reason": "localhost/service name not accessible in Railway"
+                        "reason": "localhost/service name not accessible in Railway",
+                        "note": "Set OPENAI_API_KEY to use OpenAI instead"
                     }
                 )
             
@@ -405,7 +460,7 @@ class HealthChecker:
                 name="llm",
                 status=HealthStatus.DEGRADED,  # Changed from DOWN to DEGRADED - LLM is optional
                 message="LLM health check timed out",
-                details={"timeout_seconds": self.timeout_seconds, "provider": "ollama"}
+                details={"timeout_seconds": self.timeout_seconds, "provider": "ollama", "fallback": "OpenAI not configured"}
             )
         
         except (httpx.ConnectError, httpx.NetworkError, OSError) as e:

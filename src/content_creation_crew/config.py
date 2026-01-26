@@ -28,6 +28,11 @@ class Config:
     # This ensures deployments fail fast if secret is not configured
     SECRET_KEY: str = os.getenv("SECRET_KEY") or ""
     DATABASE_URL: str = os.getenv("DATABASE_URL") or ""  # Must be PostgreSQL - no default
+    
+    # LLM Provider Configuration
+    # OpenAI API Key (required if using OpenAI models like gpt-4o-mini)
+    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+    # Ollama Base URL (optional - only needed if using Ollama models)
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     MODEL_NAMES: Optional[str] = os.getenv("MODEL_NAMES")  # Comma-separated list of Ollama models to download
     
@@ -205,9 +210,11 @@ class Config:
         elif not self.DATABASE_URL.startswith("postgresql"):
             errors.append(f"DATABASE_URL must be a PostgreSQL connection string (got: {self.DATABASE_URL[:30]}...). SQLite is no longer supported.")
         
-        # OLLAMA_BASE_URL validation
-        if not self.OLLAMA_BASE_URL:
-            errors.append("OLLAMA_BASE_URL is required but not set")
+        # LLM Provider validation - at least one provider must be configured
+        if not self.OPENAI_API_KEY and not self.OLLAMA_BASE_URL:
+            errors.append("Either OPENAI_API_KEY or OLLAMA_BASE_URL must be set for LLM provider")
+        elif self.OPENAI_API_KEY and not self.OPENAI_API_KEY.startswith("sk-"):
+            errors.append("OPENAI_API_KEY appears to be invalid (should start with 'sk-')")
         
         # Payment webhook secrets required in staging/prod
         if self.ENV in ["staging", "prod"]:

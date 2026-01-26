@@ -6,7 +6,7 @@ This guide explains how to set up and run Content Creation Crew using Docker and
 
 - Docker Desktop (Windows/Mac) or Docker Engine + Docker Compose (Linux)
 - At least 4GB RAM available for Docker
-- Ollama installed and running on your host machine (or use Ollama in Docker)
+- OpenAI API Key (recommended) or Ollama installed and running (optional fallback)
 
 ## Quick Start
 
@@ -37,14 +37,24 @@ Edit `.env` and update the following:
 
 - **OAuth Credentials** (Optional): Add your OAuth client IDs and secrets if you want OAuth login
 
-- **OLLAMA_BASE_URL**: 
+- **OPENAI_API_KEY** (Recommended): Get from [OpenAI Platform](https://platform.openai.com/api-keys)
+  ```env
+  OPENAI_API_KEY=sk-your-api-key-here
+  ```
+
+- **OLLAMA_BASE_URL** (Optional - only if using Ollama instead of OpenAI): 
   - **Docker Desktop (Windows/Mac)**: `http://host.docker.internal:11434`
   - **Linux**: `http://host.docker.internal:11434` or `http://ollama:11434` if using Ollama in Docker
 
-### 3. Start Ollama (if not already running)
+### 3. LLM Provider Setup
 
-**Option A: Use Ollama on Host Machine**
-- Install Ollama on your host machine
+**Option A: Use OpenAI (Recommended)**
+- Get API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+- Add `OPENAI_API_KEY=sk-your-key` to `.env` file
+- No additional setup needed - ready to use!
+
+**Option B: Use Ollama (Optional Fallback)**
+- Install Ollama on your host machine or use Docker
 - Start Ollama: `ollama serve`
 - Pull required models:
   ```bash
@@ -52,13 +62,7 @@ Edit `.env` and update the following:
   ollama pull llama3.2:3b
   ollama pull llama3.1:8b
   ```
-
-**Option B: Use Ollama in Docker** (Uncomment ollama service in docker-compose.yml)
-- Uncomment the `ollama` service in `docker-compose.yml`
-- After starting, pull models:
-  ```bash
-  docker exec content-crew-ollama ollama pull llama3.2:1b
-  ```
+- Set `OLLAMA_BASE_URL` in `.env` file
 
 ### 4. Build and Start Services
 
@@ -202,8 +206,24 @@ docker-compose restart frontend
    If accessing from browser, use `http://localhost:8000`
    If frontend needs internal access, use `http://backend:8000`
 
-### Ollama Connection Issues
+### LLM Provider Issues
 
+**OpenAI API Issues:**
+1. **Check API Key**:
+   - Verify `OPENAI_API_KEY` is set in `.env` or Railway variables
+   - Ensure key starts with `sk-`
+   - Check API key has credits at [OpenAI Platform](https://platform.openai.com/)
+
+2. **Check API Status**:
+   - Visit https://status.openai.com/
+   - Review error messages in logs
+
+3. **Rate Limits**:
+   - Check if you've hit rate limits
+   - Consider upgrading OpenAI plan
+   - Implement request throttling
+
+**Ollama Connection Issues** (if using Ollama fallback):
 1. **Check Ollama is Running**:
    ```bash
    curl http://localhost:11434/api/tags

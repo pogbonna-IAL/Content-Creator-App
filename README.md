@@ -49,10 +49,10 @@ Transform any topic into comprehensive, multi-format content with intelligent AI
 
 | Tier | Blog | Social Media | Audio | Video | Model | Parallel Tasks |
 |------|------|--------------|-------|-------|-------|----------------|
-| **Free** | ✅ (5/month) | ❌ | ❌ | ❌ | llama3.2:1b | 1 |
-| **Basic** | ✅ (50/month) | ✅ (50/month) | ❌ | ❌ | llama3.2:3b | 2 |
-| **Pro** | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | llama3.1:8b | 4 |
-| **Enterprise** | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | llama3.1:70b | 8 |
+| **Free** | ✅ (10/month) | ✅ (10/month) | ✅ (5/month) | ✅ (5/month) | gpt-4o-mini | 1 |
+| **Basic** | ✅ (50/month) | ✅ (50/month) | ✅ (10/month) | ✅ (10/month) | gpt-4o-mini | 2 |
+| **Pro** | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | gpt-4o-mini | 4 |
+| **Enterprise** | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | ✅ (Unlimited) | gpt-4o-mini | 8 |
 
 ---
 
@@ -79,7 +79,7 @@ All Python dependencies are managed via `pyproject.toml` and will be installed a
 
 - **Python**: 3.10, 3.11, 3.12, or 3.13 (3.14 not supported)
 - **Node.js**: 18.x or higher (for frontend)
-- **Ollama**: Local LLM runtime (see [Ollama Setup](#ollama-setup))
+- **OpenAI API Key**: Required for content generation (see [OpenAI Setup](#openai-setup))
 - **UV**: Python package manager (will be installed automatically)
 
 ### Installation
@@ -121,8 +121,11 @@ pip install uv
    # REQUIRED - PostgreSQL connection string
    DATABASE_URL=postgresql://user:password@localhost:5432/content_crew
    
-   # REQUIRED - Ollama service URL
-   OLLAMA_BASE_URL=http://localhost:11434
+   # REQUIRED - OpenAI API Key (get from https://platform.openai.com/api-keys)
+   OPENAI_API_KEY=sk-your-openai-api-key-here
+   
+   # OPTIONAL - Ollama service URL (only needed if using Ollama instead of OpenAI)
+   # OLLAMA_BASE_URL=http://localhost:11434
    ```
    
    **Note**: For Docker Compose, the `.env` file is automatically loaded. 
@@ -135,24 +138,28 @@ pip install uv
    cd ..
    ```
 
-### Ollama Setup
+### OpenAI Setup
 
-1. **Install Ollama** (if not already installed)
-   - Visit [ollama.ai](https://ollama.ai) and download for your platform
-   - Or use Docker: `docker run -d -p 11434:11434 ollama/ollama`
+1. **Get OpenAI API Key**
+   - Sign up at [OpenAI Platform](https://platform.openai.com/)
+   - Navigate to [API Keys](https://platform.openai.com/api-keys)
+   - Create a new API key
+   - Copy the key (starts with `sk-`)
 
-2. **Pull required models**
+2. **Set Environment Variable**
    ```bash
-   ollama pull llama3.2:1b    # For Free tier
-   ollama pull llama3.2:3b    # For Basic tier
-   ollama pull llama3.1:8b    # For Pro tier
-   ollama pull llama3.1:70b   # For Enterprise tier
+   # Add to .env file
+   OPENAI_API_KEY=sk-your-api-key-here
    ```
 
-3. **Verify Ollama is running**
-   ```bash
-   curl http://localhost:11434/api/tags
-   ```
+3. **Verify Configuration**
+   - Start the backend service
+   - Check logs for: `[LLM_INIT] Using provider: OpenAI`
+   - Visit `/health` endpoint to verify OpenAI connectivity
+
+**Note**: The application uses `gpt-4o-mini` by default, which is cost-effective (~$0.002-0.003 per blog post). For better quality on Enterprise tier, you can configure `gpt-4o` in `tiers.yaml`.
+
+**Alternative**: If you prefer to use Ollama (local LLM), set `OLLAMA_BASE_URL` instead of `OPENAI_API_KEY`. See [Migration Guide](docs/GPT4O_MINI_MIGRATION.md) for details.
 
 ### FFmpeg Setup
 
@@ -235,12 +242,9 @@ This starts:
 - PostgreSQL database (port 5432)
 - Backend API (port 8000)
 - Frontend UI (port 3000)
-- Ollama service (port 11434)
+- OpenAI API (via LiteLLM) - No local LLM service needed
 
-**Note**: After starting, pull models in the Ollama container:
-```bash
-docker exec content-crew-ollama ollama pull llama3.2:1b
-```
+**Note**: Set `OPENAI_API_KEY` environment variable in `.env` file or Railway dashboard for content generation.
 
 #### Option 3: Helper Scripts
 
@@ -276,7 +280,7 @@ Content Creation Crew uses a modern, scalable architecture:
 - **Frontend**: Next.js 14 with TypeScript and TailwindCSS
 - **Backend**: FastAPI (Python) with async/await support
 - **AI Framework**: CrewAI for multi-agent orchestration
-- **LLM Runtime**: Ollama (local) or cloud LLM APIs via LiteLLM
+- **LLM Runtime**: OpenAI GPT-4o-mini (default) or Ollama (optional fallback) via LiteLLM
 - **Database**: PostgreSQL (required for all environments)
 - **Authentication**: JWT tokens with OAuth support
 
@@ -314,7 +318,10 @@ For detailed architecture documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md
 ```env
 # Required
 SECRET_KEY=your-secret-key-min-32-characters
-OLLAMA_BASE_URL=http://localhost:11434
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# Optional - Only needed if using Ollama instead of OpenAI
+# OLLAMA_BASE_URL=http://localhost:11434
 
 # Database (required - PostgreSQL only)
 DATABASE_URL=postgresql://user:password@localhost:5432/content_crew
@@ -472,7 +479,13 @@ The project includes `railway.json` configuration files for easy Railway deploym
 
 ### Common Issues
 
-**Ollama Connection Error**
+**OpenAI API Error**
+- Verify `OPENAI_API_KEY` is set correctly (should start with `sk-`)
+- Check API key has sufficient credits at [OpenAI Platform](https://platform.openai.com/)
+- Review error message in logs for specific issue (authentication, rate limit, etc.)
+- Check OpenAI status: https://status.openai.com/
+
+**Ollama Connection Error** (if using Ollama fallback)
 - Ensure Ollama is running: `curl http://localhost:11434/api/tags`
 - Check `OLLAMA_BASE_URL` environment variable
 - Verify models are pulled: `ollama list`
@@ -488,7 +501,9 @@ The project includes `railway.json` configuration files for easy Railway deploym
 - Ensure backend is running on the correct port
 
 **Content Generation Fails**
-- Check Ollama is running and models are available
+- Check OpenAI API key is configured and valid
+- Verify OpenAI API connectivity via `/health` endpoint
+- Check application logs for LLM initialization messages
 - Verify user has appropriate tier for requested content types
 - Check server logs for detailed error messages
 
@@ -539,7 +554,7 @@ For support, questions, or feedback:
 ## Acknowledgments
 
 - Built with [CrewAI](https://crewai.com) - Multi-agent AI framework
-- Powered by [Ollama](https://ollama.ai) - Local LLM runtime
+- Powered by [OpenAI GPT-4o-mini](https://platform.openai.com/docs/models/gpt-4o-mini) - Fast, cost-effective AI model
 - Frontend built with [Next.js](https://nextjs.org) and [TailwindCSS](https://tailwindcss.com)
 
 ---

@@ -86,7 +86,10 @@ services:
       FRONTEND_CALLBACK_URL: ${FRONTEND_CALLBACK_URL:-http://localhost:3000/auth/callback}
       API_BASE_URL: ${API_BASE_URL:-http://localhost:8000}
       
-      # Ollama connection (use ollama service name when Ollama is in Docker, or external URL)
+      # LLM Provider Configuration
+      # OpenAI API Key (required if using OpenAI models like gpt-4o-mini)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Ollama connection (optional - only needed if using Ollama models)
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       
       # Build metadata

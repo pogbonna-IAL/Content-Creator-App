@@ -147,10 +147,10 @@ class PlanPolicy:
         Get LLM model name for current plan
         
         Returns:
-            Model name (e.g., 'ollama/llama3.2:1b')
+            Model name (e.g., 'gpt-4o-mini')
         """
         tier_config = self.get_tier_config()
-        return tier_config.get('model', 'ollama/llama3.2:1b')
+        return tier_config.get('model', 'gpt-4o-mini')
     
     def get_parallel_limit(self) -> int:
         """

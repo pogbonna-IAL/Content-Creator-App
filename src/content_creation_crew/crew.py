@@ -73,11 +73,16 @@ class ContentCreationCrew():
         # Phase 1: Use 0.2 temperature for all tiers for faster, consistent generation
         temperature = 0.2  # Unified temperature for all tiers
         
-        # Get Ollama base URL from config
+        # Get LLM provider configuration
         from .config import config
-        ollama_base_url = config.OLLAMA_BASE_URL
+        use_openai = bool(config.OPENAI_API_KEY)
+        ollama_base_url = config.OLLAMA_BASE_URL if not use_openai else None
         
-        logger.debug(f"[LLM_INIT] Ollama base URL: {ollama_base_url}")
+        logger.info(f"[LLM_INIT] Using provider: {'OpenAI' if use_openai else 'Ollama'}")
+        if not use_openai:
+            logger.debug(f"[LLM_INIT] Ollama base URL: {ollama_base_url}")
+        else:
+            logger.debug(f"[LLM_INIT] OpenAI API key configured (length: {len(config.OPENAI_API_KEY) if config.OPENAI_API_KEY else 0})")
         
         # Phase 1: Reduce max_tokens by 25% for faster generation while maintaining quality
         # Original limits: free=2000, basic=3000, pro=4000, enterprise=6000
@@ -98,17 +103,23 @@ class ContentCreationCrew():
             "max_tokens": max_tokens,  # Reduced token limits for faster generation
         }
         
-        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout={llm_config['timeout']}s")
+        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout={llm_config['timeout']}s, provider={'OpenAI' if use_openai else 'Ollama'}")
         
-        self.llm = LLM(
-            model=model,
-            base_url=ollama_base_url,
-            temperature=temperature,  # Lower temperature for faster execution
+        # Build LLM initialization kwargs
+        llm_kwargs = {
+            "model": model,
+            "temperature": temperature,  # Lower temperature for faster execution
             # Phase 1: Reduced timeouts to match CREWAI_TIMEOUT (180s)
-            config=llm_config
-        )
+            "config": llm_config
+        }
         
-        logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}'")
+        # Only add base_url for Ollama models (OpenAI doesn't need it)
+        if not use_openai and ollama_base_url:
+            llm_kwargs["base_url"] = ollama_base_url
+        
+        self.llm = LLM(**llm_kwargs)
+        
+        logger.info(f"[LLM_INIT] LLM instance created successfully for model '{model}' using {'OpenAI' if use_openai else 'Ollama'}")
     
     def _load_tier_config(self) -> dict:
         """Load tier configuration from YAML file"""
@@ -127,21 +138,22 @@ class ContentCreationCrew():
     def _get_model_for_tier(self, tier: str) -> str:
         """
         Get appropriate LLM model for subscription tier
-        Phase 1: Use smaller, faster models for free tier to improve speed
+        Defaults to gpt-4o-mini for all tiers (can be overridden in tiers.yaml)
         """
         tier_config = self.tier_config.get(tier, {})
         
-        # Phase 1: Use smaller models for free tier, keep larger models for paid tiers
-        # This improves speed for free tier while maintaining quality for paid users
+        # Default model map - using gpt-4o-mini for all tiers
+        # Can be overridden in tiers.yaml for tier-specific models
         model_map = {
-            'free': 'ollama/llama3.2:1b',      # Smallest, fastest model for free tier
-            'basic': 'ollama/llama3.2:3b',     # Medium model for basic tier
-            'pro': 'ollama/llama3.2:3b',       # Medium model for pro tier
-            'enterprise': 'ollama/llama3.1:8b' # Larger model for enterprise tier
+            'free': 'gpt-4o-mini',      # Fast, cost-effective model for free tier
+            'basic': 'gpt-4o-mini',     # Fast, cost-effective model for basic tier
+            'pro': 'gpt-4o-mini',       # Fast, cost-effective model for pro tier
+            'enterprise': 'gpt-4o-mini' # Fast, cost-effective model for enterprise tier
+            # Note: Can use 'gpt-4o' for enterprise tier if better quality is needed
         }
         
         # Check tier config first, then fall back to model_map, then default
-        model = tier_config.get('model') or model_map.get(tier, 'ollama/llama3.2:1b')
+        model = tier_config.get('model') or model_map.get(tier, 'gpt-4o-mini')
         return model
     
     def _get_max_parallel_tasks(self) -> int:
