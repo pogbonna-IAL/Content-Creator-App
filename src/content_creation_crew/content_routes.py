@@ -12,6 +12,7 @@ import json
 import asyncio
 import logging
 import time
+import sys
 
 from .database import User, get_db, ContentJob, ContentArtifact, JobStatus
 from .auth import get_current_user
@@ -265,8 +266,14 @@ async def create_generation_job(
         """Wrapper to ensure async task errors are logged and handled"""
         try:
             logger.info(f"[ASYNC_TASK] Starting async generation task for job {job.id}")
+            # Force immediate output for Railway
+            print(f"[RAILWAY_DEBUG] Async task started for job {job.id}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
             await run_generation_async(job.id, topic, valid_content_types, plan, current_user.id)
             logger.info(f"[ASYNC_TASK] Async generation task completed successfully for job {job.id}")
+            sys.stdout.flush()
+            sys.stderr.flush()
         except Exception as e:
             error_type = type(e).__name__
             error_msg_raw = str(e) if str(e) else f"{error_type} occurred"
@@ -283,6 +290,8 @@ async def create_generation_job(
                 hint = "Check backend logs for detailed error information"
             
             logger.error(f"[ASYNC_TASK] Async generation task FAILED for job {job.id}: {error_type}: {error_msg}", exc_info=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
             
             # Try to update job status to failed
             try:
@@ -307,9 +316,13 @@ async def create_generation_job(
                         'hint': hint
                     })
                     logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event with hint")
+                    sys.stdout.flush()
+                    sys.stderr.flush()
                 error_session.close()
             except Exception as update_error:
                 logger.error(f"[ASYNC_TASK] Failed to update job status after error: {update_error}", exc_info=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
     
     # Create the task with error handling
     # Add done callback to log completion/failure
@@ -320,22 +333,34 @@ async def create_generation_job(
         try:
             fut.result()  # This will raise if the task failed
             logger.info(f"[ASYNC_TASK] Task for job {job.id} completed successfully")
+            sys.stdout.flush()
+            sys.stderr.flush()
         except Exception as e:
             # Error already logged in run_with_error_handling, but log here too for visibility
             logger.error(f"[ASYNC_TASK] Task for job {job.id} failed in callback: {type(e).__name__}: {str(e)}")
+            sys.stdout.flush()
+            sys.stderr.flush()
     
     task.add_done_callback(task_done_callback)
     
     # Verify task is running and log details
     logger.info(f"[JOB_CREATE] Created async task for job {job.id}, task_id={id(task)}, topic='{topic[:50]}...'")
+    sys.stdout.flush()
+    sys.stderr.flush()
     if task.done():
         logger.warning(f"[JOB_CREATE] Task for job {job.id} completed immediately (unexpected)")
+        sys.stdout.flush()
+        sys.stderr.flush()
         try:
             task.result()  # Check if it completed with an error
         except Exception as e:
             logger.error(f"[JOB_CREATE] Task for job {job.id} failed immediately: {type(e).__name__}: {str(e)}")
+            sys.stdout.flush()
+            sys.stderr.flush()
     else:
         logger.info(f"[JOB_CREATE] Task for job {job.id} is running asynchronously")
+        sys.stdout.flush()
+        sys.stderr.flush()
     
     # Return job info
     return _job_to_response(job)
@@ -819,6 +844,13 @@ async def run_generation_async(
     sse_store = get_sse_store()
     timeout_seconds = config.CREWAI_TIMEOUT
     
+    # Immediate logging with flush for Railway visibility
+    logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
+    logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', User={user_id}")
+    print(f"[RAILWAY_DEBUG] Job {job_id} started: topic='{topic}', plan='{plan}'", file=sys.stdout, flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
     try:
         # Get fresh database session
         session = SessionLocal()
@@ -826,6 +858,8 @@ async def run_generation_async(
         
         if not user:
             logger.error(f"User {user_id} not found for job {job_id}")
+            sys.stdout.flush()
+            sys.stderr.flush()
             return
         
         content_service = ContentService(session, user)
@@ -852,6 +886,8 @@ async def run_generation_async(
         logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Model='{model_name}', Timeout={timeout_seconds}s")
         logger.info(f"[JOB_START] Job {job_id}: Content types requested: {content_types}")
         logger.debug(f"[JOB_START] Job {job_id}: User ID={user_id}, Organization ID={policy._get_user_org_id()}")
+        sys.stdout.flush()
+        sys.stderr.flush()
         
         # Check cache BEFORE running CrewAI (Performance Optimization)
         from .services.content_cache import get_cache
@@ -973,9 +1009,13 @@ async def run_generation_async(
         
         # Validate LLM configuration before attempting initialization
         logger.info(f"[CREW_INIT] Job {job_id}: Validating LLM configuration before initialization")
+        sys.stdout.flush()
+        sys.stderr.flush()
         if not config.OPENAI_API_KEY and not config.OLLAMA_BASE_URL:
             error_msg = "LLM provider not configured: OPENAI_API_KEY and OLLAMA_BASE_URL are both missing. Please set OPENAI_API_KEY in backend environment variables."
             logger.error(f"[CREW_INIT] Job {job_id}: {error_msg}")
+            sys.stdout.flush()
+            sys.stderr.flush()
             content_service.update_job_status(
                 job_id,
                 JobStatus.FAILED.value,
@@ -994,6 +1034,8 @@ async def run_generation_async(
             if not config.OPENAI_API_KEY.startswith('sk-'):
                 error_msg = f"Invalid OPENAI_API_KEY format: API key should start with 'sk-'. Current key starts with '{config.OPENAI_API_KEY[:5]}...'"
                 logger.error(f"[CREW_INIT] Job {job_id}: {error_msg}")
+                sys.stdout.flush()
+                sys.stderr.flush()
                 content_service.update_job_status(
                     job_id,
                     JobStatus.FAILED.value,
@@ -1009,12 +1051,16 @@ async def run_generation_async(
         
         # Run generation
         logger.info(f"[CREW_INIT] Job {job_id}: Initializing ContentCreationCrew with tier='{plan}', content_types={content_types}")
+        sys.stdout.flush()
+        sys.stderr.flush()
         crew_init_start = time.time()
         try:
             crew_instance = ContentCreationCrew(tier=plan, content_types=content_types)
             crew_obj = crew_instance._build_crew(content_types=content_types)
             crew_init_duration = time.time() - crew_init_start
             logger.info(f"[CREW_INIT] Job {job_id}: Crew initialization completed in {crew_init_duration:.2f}s")
+            sys.stdout.flush()
+            sys.stderr.flush()
         except Exception as crew_init_error:
             crew_init_duration = time.time() - crew_init_start
             error_type = type(crew_init_error).__name__
@@ -1032,6 +1078,8 @@ async def run_generation_async(
             
             logger.error(f"[CREW_INIT] Job {job_id}: FAILED after {crew_init_duration:.2f}s: {detailed_error}", exc_info=True)
             logger.error(f"[CREW_INIT] Job {job_id}: Error type={error_type}, model={model_name}, provider={'OpenAI' if config.OPENAI_API_KEY else 'Ollama'}")
+            sys.stdout.flush()
+            sys.stderr.flush()
             
             # Update job status and send error event
             content_service.update_job_status(
@@ -1053,6 +1101,8 @@ async def run_generation_async(
             'message': 'Initializing CrewAI agents...',
             'step': 'initialization'
         })
+        sys.stdout.flush()
+        sys.stderr.flush()
         
         # Run crew synchronously with timeout (we're already in async task)
         loop = asyncio.get_event_loop()
@@ -1081,6 +1131,8 @@ async def run_generation_async(
                 
                 logger.info(f"[LLM_EXEC] Job {job_id}: Starting CrewAI kickoff with topic='{topic}'")
                 logger.info(f"[LLM_EXEC] Job {job_id}: Using model '{model_name}' with timeout={timeout_seconds}s")
+                sys.stdout.flush()
+                sys.stderr.flush()
                 llm_exec_start = time.time()
                 
                 # Phase 1: Use timeout from config (180s) for faster failure detection
@@ -1100,17 +1152,23 @@ async def run_generation_async(
                 logger.debug(f"[LLM_EXEC] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}")
                 if hasattr(result, 'tasks_output') and result.tasks_output:
                     logger.debug(f"[LLM_EXEC] Job {job_id}: Number of task outputs: {len(result.tasks_output)}")
+                sys.stdout.flush()
+                sys.stderr.flush()
             except asyncio.TimeoutError:
                 llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = TimeoutError(f"Content generation timed out after {timeout_seconds} seconds")
                 executor_done = True
                 logger.error(f"[LLM_EXEC] Job {job_id}: TIMEOUT after {llm_exec_duration:.2f}s (limit: {timeout_seconds}s)")
                 logger.error(f"[LLM_EXEC] Job {job_id}: Model '{model_name}' exceeded timeout threshold")
+                sys.stdout.flush()
+                sys.stderr.flush()
             except Exception as e:
                 llm_exec_duration = time.time() - llm_exec_start if 'llm_exec_start' in locals() else 0
                 executor_error = e
                 executor_done = True
                 logger.error(f"[LLM_EXEC] Job {job_id}: ERROR after {llm_exec_duration:.2f}s: {type(e).__name__}: {str(e)}", exc_info=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
         
         # Start executor task
         executor_task = asyncio.create_task(run_executor_with_progress())
