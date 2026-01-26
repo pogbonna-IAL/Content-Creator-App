@@ -481,7 +481,38 @@ async def stream_job_progress(
                 yield f"event: job_started\n"
                 yield f"data: {json.dumps(event_data)}\n\n"
                 flush_buffers()  # Critical: Flush immediately after initial event
-                logger.info(f"[STREAM_GENERATOR] Sent initial job_started event for job {job_id}")
+                logger.info(f"[STREAM_GENERATOR] Sent initial job_started event for job {job_id}, status={job.status}")
+                
+                # If job is already failed, check for error events and send them
+                if job.status == JobStatus.FAILED.value:
+                    logger.warning(f"[STREAM_GENERATOR] Job {job_id} is already failed, checking for error events")
+                    # Get recent error events from SSE store
+                    recent_events = sse_store.get_events_since(job_id, 0)  # Get all events
+                    error_events = [e for e in recent_events if e.get('type') == 'error']
+                    if error_events:
+                        # Send the most recent error event
+                        latest_error = error_events[-1]
+                        error_data = latest_error.get('data', {})
+                        if error_data:
+                            yield f"id: {latest_error['id']}\n"
+                            yield f"event: error\n"
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            flush_buffers()
+                            logger.info(f"[STREAM_GENERATOR] Sent error event for failed job {job_id}: {error_data.get('message', 'Unknown error')}")
+                    else:
+                        # No error event found, send a generic error
+                        error_data = {
+                            'type': 'error',
+                            'job_id': job_id,
+                            'message': 'Job failed but no error details available. Check backend logs for details.',
+                            'status': 'failed'
+                        }
+                        event_id = sse_store.add_event(job_id, 'error', error_data)
+                        yield f"id: {event_id}\n"
+                        yield f"event: error\n"
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        flush_buffers()
+                        logger.warning(f"[STREAM_GENERATOR] Job {job_id} failed but no error event found, sent generic error")
             
             # Poll for job updates
             last_status = job.status

@@ -138,6 +138,10 @@ export default function Home() {
     setStatus('')
     setProgress(0)
 
+    // Track if we should stop reading and the reader instance
+    let shouldStop = false
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+
     try {
       console.log('Sending streaming request for topic:', topic)
       
@@ -193,7 +197,7 @@ export default function Home() {
       }
 
       // Set up streaming reader
-      const reader = response.body.getReader()
+      reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let accumulatedContent = ''
@@ -201,6 +205,12 @@ export default function Home() {
       console.log('Starting to read stream...')
 
       while (true) {
+        // Check if we should stop before reading next chunk
+        if (shouldStop) {
+          console.log('Stopping stream reading due to error')
+          break
+        }
+        
         const { done, value } = await reader.read()
         
         if (done) {
@@ -334,20 +344,86 @@ export default function Home() {
                     console.error('No content in completion message and no accumulated content')
                   }
                 } else if (data.type === 'error') {
-                  // Handle error messages from the server gracefully
-                  const errorMsg = data.message || 'Unknown error'
-                  console.error('Server error:', errorMsg)
+                  // Handle error messages from the server - STOP IMMEDIATELY
+                  const errorMsg = data.message || data.detail || 'Unknown error occurred'
+                  const errorType = data.error_type || data.error_code || 'unknown'
                   
-                  // Don't throw - set error state and stop processing
-                  // If we have accumulated content, show it; otherwise show error
-                  if (!accumulatedContent || accumulatedContent.trim().length < 10) {
-                    setError(errorMsg)
-                  } else {
-                    // We have content, so just log the error but don't fail
-                    console.warn('Error received but content was already generated:', errorMsg)
-                  }
+                  console.error('❌ Server error received - stopping immediately:', {
+                    message: errorMsg,
+                    type: errorType,
+                    job_id: data.job_id,
+                    status: data.status,
+                    full_data: data
+                  })
+                  
+                  // ALWAYS stop on error - don't continue processing
                   setIsGenerating(false)
-                  return // Exit the stream reading loop
+                  setStatus('Generation failed')
+                  setProgress(0)
+                  
+                  // Build comprehensive error message
+                  let displayError = `Content generation failed: ${errorMsg}`
+                  if (data.error_type) {
+                    displayError += `\n\nError Type: ${data.error_type}`
+                  }
+                  if (data.hint) {
+                    displayError += `\n\nHint: ${data.hint}`
+                  }
+                  
+                  setError(displayError)
+                  
+                  // Mark that we should stop and cancel reader
+                  shouldStop = true
+                  try {
+                    reader.cancel()
+                  } catch (cancelError) {
+                    console.warn('Error canceling reader:', cancelError)
+                  }
+                  
+                  break // Exit the stream reading loop immediately
+                } else if (data.type === 'job_started' && data.status === 'failed') {
+                  // Job started but immediately failed - STOP IMMEDIATELY
+                  console.error('❌ Job started but status is failed - stopping immediately:', data)
+                  
+                  setIsGenerating(false)
+                  setStatus('Generation failed')
+                  setProgress(0)
+                  
+                  // Show error - backend should send error event with details, but if not, show generic message
+                  setError('Content generation failed immediately. The job could not start. Please check:\n\n' +
+                    '1. Backend logs for detailed error messages\n' +
+                    '2. That OPENAI_API_KEY is set in backend environment\n' +
+                    '3. That the LLM service is accessible')
+                  
+                  // Mark that we should stop and cancel reader
+                  shouldStop = true
+                  try {
+                    reader.cancel()
+                  } catch (cancelError) {
+                    console.warn('Error canceling reader:', cancelError)
+                  }
+                  
+                  break // Exit the stream reading loop immediately
+                } else if (data.type === 'status_update' && data.status === 'failed') {
+                  // Status update showing failed - STOP IMMEDIATELY
+                  console.error('❌ Status update shows failed - stopping immediately:', data)
+                  
+                  setIsGenerating(false)
+                  setStatus('Generation failed')
+                  setProgress(0)
+                  
+                  setError(`Content generation failed. Status: ${data.status}\n\n` +
+                    (data.message ? `Error: ${data.message}` : 'Check backend logs for details.'))
+                  
+                  // Mark that we should stop and cancel reader
+                  shouldStop = true
+                  try {
+                    reader.cancel()
+                  } catch (cancelError) {
+                    console.warn('Error canceling reader:', cancelError)
+                  }
+                  
+                  break // Exit the stream reading loop immediately
                 }
               } catch (parseError) {
                 // Only log parse errors if they're not "terminated" errors
@@ -356,11 +432,19 @@ export default function Home() {
                   if (parseError.message === 'terminated') {
                     // This is likely a connection termination - handle gracefully
                     console.warn('Stream terminated - connection closed')
+                    setIsGenerating(false)
                     if (!accumulatedContent || accumulatedContent.trim().length < 10) {
                       setError('Connection terminated. Please try again.')
+                      setStatus('Connection closed')
+                      setProgress(0)
                     }
-                    setIsGenerating(false)
-                    return
+                    shouldStop = true
+                    try {
+                      reader?.cancel()
+                    } catch (cancelError) {
+                      console.warn('Error canceling reader:', cancelError)
+                    }
+                    break
                   } else {
                     // Real parse error - log it but don't break the stream
                     console.error('Error parsing SSE data:', parseError)
@@ -380,8 +464,17 @@ export default function Home() {
         }
       }
 
+      // Ensure reader is released
+      if (reader) {
+        try {
+          reader.releaseLock()
+        } catch (releaseError) {
+          console.warn('Error releasing reader:', releaseError)
+        }
+      }
+
       // Ensure final content is set - prioritize completion message content
-      console.log('Stream reading completed')
+      console.log('Stream reading completed', shouldStop ? '(stopped due to error)' : '(normal completion)')
       console.log('Final accumulatedContent length:', accumulatedContent.length)
       
       if (accumulatedContent && accumulatedContent.trim().length > 0) {
