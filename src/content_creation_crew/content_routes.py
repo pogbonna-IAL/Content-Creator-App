@@ -1220,6 +1220,7 @@ async def run_generation_async(
                 llm_success = True
                 executor_done = True
                 print(f"[RAILWAY_DEBUG] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s", file=sys.stdout, flush=True)
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Result stored, executor_done={executor_done}, result is None={result is None}", file=sys.stdout, flush=True)
                 logger.info(f"[LLM_EXEC] Job {job_id}: CrewAI execution completed successfully in {llm_exec_duration:.2f}s")
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}", file=sys.stdout, flush=True)
                 logger.debug(f"[LLM_EXEC] Job {job_id}: Result type={type(result)}, has tasks_output={hasattr(result, 'tasks_output')}")
@@ -1414,6 +1415,26 @@ async def run_generation_async(
         
         # Send progress update
         print(f"[RAILWAY_DEBUG] Job {job_id}: No executor error, proceeding to extraction phase", file=sys.stdout, flush=True)
+        
+        # Verify result is available
+        if result is None:
+            error_msg = "Content generation completed but no result was returned. This may indicate a CrewAI execution issue."
+            print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR - result is None, cannot proceed with extraction", file=sys.stdout, flush=True)
+            logger.error(f"Job {job_id}: {error_msg}")
+            sse_store.add_event(job_id, 'error', {
+                'type': 'error',
+                'job_id': job_id,
+                'message': error_msg,
+                'error_type': 'no_result',
+                'hint': 'Check backend logs for CrewAI execution details. The crew may have completed without returning a result.'
+            })
+            content_service.update_job_status(
+                job_id,
+                JobStatus.FAILED.value,
+                finished_at=datetime.utcnow()
+            )
+            return
+        
         sse_store.add_event(job_id, 'agent_progress', {
             'job_id': job_id,
             'message': 'Extracting and validating content...',
@@ -1421,7 +1442,7 @@ async def run_generation_async(
         })
         
         # Extract and validate content
-        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting content extraction from CrewAI result, result type={type(result)}", file=sys.stdout, flush=True)
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Starting content extraction from CrewAI result, result type={type(result)}, result={str(result)[:200] if result else 'None'}", file=sys.stdout, flush=True)
         logger.info(f"[EXTRACTION] Job {job_id}: Starting content extraction from CrewAI result")
         extraction_start = time.time()
         raw_content = await api_server_module.extract_content_async(result, topic, logger)
