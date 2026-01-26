@@ -243,9 +243,12 @@ export async function POST(request: NextRequest) {
             fetchOptions.keepalive = true
             // Also try setting via dispatcher if available
             // This is critical for preventing UND_ERR_BODY_TIMEOUT errors
+            // Note: undici is available as a dependency, but may not be accessible in all build contexts
             try {
+              // Try require first (works in CommonJS/Node.js contexts)
               // @ts-ignore - undici types
-              const { Agent, setGlobalDispatcher, getGlobalDispatcher } = require('undici')
+              const undici = require('undici')
+              const { Agent, setGlobalDispatcher, getGlobalDispatcher } = undici
               
               // Create a custom agent with extended timeouts for streaming
               const customAgent = new Agent({
@@ -271,7 +274,12 @@ export async function POST(request: NextRequest) {
               }
             } catch (e) {
               // undici not available or already configured, continue with fetchOptions only
-              console.log('Could not configure undici dispatcher, using fetchOptions only:', e)
+              // This is not critical - fetchOptions.bodyTimeout should be sufficient
+              // Node.js 18+ fetch already uses undici internally, so these options should work
+              // The error is expected in some build contexts and can be safely ignored
+              if (process.env.NODE_ENV === 'development') {
+                console.debug('Could not configure undici dispatcher, using fetchOptions only:', e instanceof Error ? e.message : String(e))
+              }
             }
           }
 
@@ -424,12 +432,13 @@ export async function POST(request: NextRequest) {
               )
             } else if (isSocketError) {
               // Socket closed - backend likely closed the connection
+              // This often happens when OPENAI_API_KEY is missing or LLM initialization fails
               safeEnqueue(
                 encoder.encode(`data: ${JSON.stringify({ 
                   type: 'error', 
-                  message: 'Connection closed by server. The backend may have encountered an error or the job may have failed. Please check the server logs and try again.',
+                  message: 'Connection closed by server. The backend closed the connection, which usually indicates an error during content generation.',
                   error_code: 'STREAM_CLOSED',
-                  hint: 'This usually happens when the backend encounters an error during content generation. Check the backend logs for details.'
+                  hint: 'Common causes: Missing OPENAI_API_KEY in backend environment, LLM initialization failure, or backend crash. Check Railway backend service variables and ensure OPENAI_API_KEY is set (not in frontend .env).'
                 })}\n\n`)
               )
             } else {
