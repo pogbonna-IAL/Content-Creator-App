@@ -87,19 +87,30 @@ def setup_logging(env: str = "dev", log_level: str = "INFO"):
     # Remove existing handlers
     root_logger.handlers.clear()
     
-    # Create console handler
+    # Create console handler with immediate flushing
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     
+    # Force immediate flushing for Railway
+    if hasattr(console_handler.stream, 'reconfigure'):
+        try:
+            console_handler.stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+    
     # Add handler
     root_logger.addHandler(console_handler)
     
-    # Set levels for third-party loggers
-    logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Set levels for third-party loggers (but allow INFO for uvicorn)
+    logging.getLogger("uvicorn").setLevel(logging.INFO)  # Changed from WARNING for Railway visibility
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)  # Changed from WARNING for Railway visibility
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    # Force flush after setup
+    sys.stdout.flush()
+    sys.stderr.flush()
     
     return root_logger
 

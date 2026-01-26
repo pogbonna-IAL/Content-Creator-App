@@ -129,6 +129,17 @@ setup_logging(env=config.ENV, log_level=config.LOG_LEVEL)
 import logging
 logger = logging.getLogger(__name__)
 
+# Force immediate log output for Railway
+import sys
+print("=" * 60, file=sys.stdout, flush=True)
+print(f"LOGGING TEST - Environment: {config.ENV}, Log Level: {config.LOG_LEVEL}", file=sys.stdout, flush=True)
+logger.info("=" * 60)
+logger.info("LOGGING TEST - This should appear in Railway logs")
+logger.info(f"Environment: {config.ENV}")
+logger.info(f"Log Level: {config.LOG_LEVEL}")
+logger.info("=" * 60)
+sys.stdout.flush()
+
 # Set up PII redaction filter for all logs
 try:
     from content_creation_crew.logging_filter import setup_pii_redaction
@@ -1816,12 +1827,62 @@ if __name__ == "__main__":
     
     # Configure uvicorn to disable buffering for streaming
     try:
+        # Force unbuffered output for Railway
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        # Create a simple log config for uvicorn that outputs to stdout
+        uvicorn_log_config = {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+                "access": {
+                    "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+                "access": {
+                    "formatter": "access",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "uvicorn": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+                "uvicorn.error": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+                "uvicorn.access": {
+                    "handlers": ["access"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+            },
+        }
+        
         uvicorn.run(
             app,
             host="0.0.0.0",  # Listen on all interfaces (required for Railway)
             port=config.PORT,
-            log_config=None,  # Use structured logging from setup_logging
+            log_config=uvicorn_log_config,  # Use explicit log config for Railway
             access_log=True,
+            use_colors=False,  # Disable colors for Railway logs
             loop="asyncio",
         )
     except Exception as e:
