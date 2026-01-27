@@ -306,10 +306,26 @@ export default function Home() {
                 const data = JSON.parse(jsonStr)
                 console.log('Parsed SSE data:', data.type, data)
                 
-                if (data.type === 'status') {
+                if (data.type === 'status' || data.type === 'status_update') {
                   // Update status message
-                  setStatus(data.message)
-                  console.log('Status:', data.message)
+                  const statusMessage = data.content_type_display 
+                    ? `Generating ${data.content_type_display}...`
+                    : data.message || 'Processing...'
+                  setStatus(statusMessage)
+                  console.log('Status:', statusMessage, 'Content Type:', data.content_type_display || data.content_type)
+                  
+                  // If content type is specified, log it for user visibility
+                  if (data.content_type_display) {
+                    console.log(`✓ Content type notification: ${data.content_type_display}`)
+                  }
+                } else if (data.type === 'job_started') {
+                  // Handle job_started event with content type notification
+                  if (data.content_type_display) {
+                    setStatus(`Starting ${data.content_type_display} generation...`)
+                    console.log(`✓ Job started - Content type: ${data.content_type_display}`)
+                  } else if (data.message) {
+                    setStatus(data.message)
+                  }
                 } else if (data.type === 'content') {
                   // Append chunk to accumulated content
                   if (data.chunk) {

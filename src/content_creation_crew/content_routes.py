@@ -34,8 +34,12 @@ class GenerateRequest(BaseModel):
     topic: str = Field(..., description="Content topic", min_length=1, max_length=5000)
     content_types: Optional[List[str]] = Field(
         default=None,
-        description="Content types to generate: blog, social, audio, video",
-        max_items=4
+        description="Content types to generate: blog, social, audio, video. Only one content type per request.",
+        max_items=1  # Enforce single content type
+    )
+    content_type: Optional[str] = Field(
+        default=None,
+        description="Single content type to generate: blog, social, audio, video. Alternative to content_types list.",
     )
     idempotency_key: Optional[str] = Field(
         default=None,
@@ -204,50 +208,58 @@ async def create_generation_job(
                 detail=error_response
             )
     
-    # Determine content types
-    requested_content_types = request.content_types or []
+    # Determine content type - enforce single content type only
+    # Support both content_type (single string) and content_types (list) for backward compatibility
+    requested_content_type = None
+    if request.content_type:
+        requested_content_type = request.content_type
+    elif request.content_types and len(request.content_types) > 0:
+        # If multiple content types provided, use only the first one
+        if len(request.content_types) > 1:
+            logger.warning(f"User {current_user.id} requested multiple content types {request.content_types}, using only first: {request.content_types[0]}")
+        requested_content_type = request.content_types[0]
+    
+    # Default to 'blog' if no content type specified
+    if not requested_content_type:
+        requested_content_type = 'blog'
+        logger.info(f"User {current_user.id} did not specify content type, defaulting to 'blog'")
+    
+    # Validate content type
+    valid_content_types = [requested_content_type]  # Single content type only
     
     # Validate content type access
-    valid_content_types = []
-    for content_type in requested_content_types:
-        if not policy.check_content_type_access(content_type):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "content_type_not_available",
-                    "message": f"{content_type.capitalize()} content is not available on your current plan ({plan}).",
-                    "content_type": content_type,
-                    "plan": plan
-                }
-            )
-        
-        # Enforce monthly limit
-        try:
-            policy.enforce_monthly_limit(content_type)
-            valid_content_types.append(content_type)
-        except HTTPException:
-            raise
+    if not policy.check_content_type_access(requested_content_type):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "content_type_not_available",
+                "message": f"{requested_content_type.capitalize()} content is not available on your current plan ({plan}).",
+                "content_type": requested_content_type,
+                "plan": plan
+            }
+        )
     
-    # Use plan defaults if no content types specified
-    if not valid_content_types:
-        tier_config = policy.get_tier_config()
-        if tier_config:
-            valid_content_types = tier_config.get('content_types', ['blog'])
-        else:
-            valid_content_types = ['blog']
+    # Enforce monthly limit for the single content type
+    try:
+        policy.enforce_monthly_limit(requested_content_type)
+    except HTTPException:
+        raise
     
-    # Enforce limits for default content types
-    for content_type in valid_content_types:
-        try:
-            policy.enforce_monthly_limit(content_type)
-        except HTTPException:
-            raise
+    # Notify user about the content type being generated
+    content_type_display = {
+        'blog': 'Blog Post',
+        'social': 'Social Media Content',
+        'audio': 'Audio Content',
+        'video': 'Video Content'
+    }.get(requested_content_type, requested_content_type.capitalize())
     
-    # Create job
+    logger.info(f"User {current_user.id} generating {content_type_display} for topic: {topic}")
+    
+    # Create job with single content type
     try:
         job = content_service.create_job(
             topic=topic,
-            content_types=valid_content_types,
+            content_types=valid_content_types,  # Single content type: [requested_content_type]
             idempotency_key=request.idempotency_key
         )
     except HTTPException as e:
@@ -889,6 +901,9 @@ async def run_generation_async(
     
     This function runs in the background and updates the job status and artifacts.
     Includes timeout protection to prevent jobs from hanging indefinitely.
+    
+    NOTE: Only a single content type should be passed. If multiple are provided,
+    only the first one will be used.
     """
     from content_creation_crew.crew import ContentCreationCrew
     from content_creation_crew.services.content_service import ContentService
@@ -906,11 +921,30 @@ async def run_generation_async(
     sse_store = get_sse_store()
     timeout_seconds = config.CREWAI_TIMEOUT
     
+    # Enforce single content type - use only the first one if multiple provided
+    if len(content_types) > 1:
+        logger.warning(f"Job {job_id}: Multiple content types provided {content_types}, using only first: {content_types[0]}")
+        content_types = [content_types[0]]
+    
+    # Ensure at least one content type (default to blog)
+    if not content_types or len(content_types) == 0:
+        logger.info(f"Job {job_id}: No content types provided, defaulting to 'blog'")
+        content_types = ['blog']
+    
+    # Get the single content type being generated
+    content_type = content_types[0]
+    content_type_display = {
+        'blog': 'Blog Post',
+        'social': 'Social Media Content',
+        'audio': 'Audio Content',
+        'video': 'Video Content'
+    }.get(content_type, content_type.capitalize())
+    
     # Immediate logging with flush for Railway visibility
     # Use print() for critical messages as logger might be buffered
-    print(f"[RAILWAY_DEBUG] Job {job_id} started: topic='{topic}', plan='{plan}'", file=sys.stdout, flush=True)
+    print(f"[RAILWAY_DEBUG] Job {job_id} started: topic='{topic}', plan='{plan}', content_type='{content_type}'", file=sys.stdout, flush=True)
     logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
-    logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', User={user_id}")
+    logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Content Type='{content_type_display}', User={user_id}")
     # Force flush after logger calls
     sys.stdout.flush()
     sys.stderr.flush()
@@ -936,17 +970,37 @@ async def run_generation_async(
             started_at=datetime.utcnow()
         )
         
-        # Send SSE event for job started
+        # Get the single content type being generated (enforced at function start)
+        content_type = content_types[0] if content_types else 'blog'
+        content_type_display = {
+            'blog': 'Blog Post',
+            'social': 'Social Media Content',
+            'audio': 'Audio Content',
+            'video': 'Video Content'
+        }.get(content_type, content_type.capitalize())
+        
+        # Send SSE event for job started with content type notification
         sse_store.add_event(job_id, 'job_started', {
             'job_id': job_id,
             'status': JobStatus.RUNNING.value,
-            'message': 'Starting content generation...'
+            'message': f'Starting {content_type_display} generation...',
+            'content_type': content_type,
+            'content_type_display': content_type_display
         })
         
-        # Get model name
-        # Get model name - check for user-specific preference for blog (primary content type)
-        # If blog is requested, use blog preference; otherwise use first content type's preference
-        primary_content_type = 'blog' if 'blog' in content_types else (content_types[0] if content_types else None)
+        # Send explicit notification about content type being generated
+        sse_store.add_event(job_id, 'status_update', {
+            'job_id': job_id,
+            'status': 'running',
+            'message': f'Generating {content_type_display} for: {topic}',
+            'content_type': content_type,
+            'content_type_display': content_type_display
+        })
+        logger.info(f"Job {job_id}: Notified user - generating {content_type_display}")
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Notified user - generating {content_type_display}", file=sys.stdout, flush=True)
+        
+        # Get model name - check for user-specific preference for the content type
+        primary_content_type = content_type
         model_name = policy.get_model_name(content_type=primary_content_type) if primary_content_type else policy.get_model_name()
         plan = policy.get_plan()
         # Use print() for critical messages as logger might be buffered
