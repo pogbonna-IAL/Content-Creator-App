@@ -261,10 +261,18 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
         # Set httpOnly cookie for token (secure in production)
         cookie_max_age = int(access_token_expires.total_seconds())
         cookie_domain = get_cookie_domain(request)
-        # For cross-origin requests (different subdomains), use "none" for SameSite
-        # This requires secure=True, which we already have in staging/prod
-        samesite_value = "none" if cookie_domain else "lax"
-        secure_flag = config.ENV in ["staging", "prod"]
+        
+        # Detect cross-site requests (different origins)
+        # If origin header exists and differs from request host, it's cross-site
+        origin = request.headers.get("origin", "") if request else ""
+        host = request.headers.get("host", "") if request else ""
+        is_cross_site = origin and host and origin.replace("https://", "").replace("http://", "") != host.replace("https://", "").replace("http://", "")
+        
+        # For cross-site requests, use "none" for SameSite (requires Secure=True)
+        # For same-site requests, use "lax"
+        # Note: SameSite=None requires Secure=True, which requires HTTPS
+        samesite_value = "none" if is_cross_site else "lax"
+        secure_flag = config.ENV in ["staging", "prod"] or is_cross_site  # Force secure for cross-site
         
         # #region agent log
         import json as json_module
@@ -312,8 +320,8 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             "value": access_token,
             "max_age": cookie_max_age,
             "httponly": True,
-            "secure": secure_flag,  # HTTPS only in staging/prod
-            "samesite": "lax",  # Use "lax" since we're not setting domain (same-origin)
+            "secure": secure_flag,  # HTTPS only in staging/prod or cross-site
+            "samesite": samesite_value,  # Use "none" for cross-site, "lax" for same-site
             "path": "/"
         }
         # DO NOT set domain - browsers reject parent domain cookies from subdomains
@@ -368,8 +376,8 @@ async def signup(user_data: UserSignup, request: Request, db: Session = Depends(
             "value": json.dumps(response_data["user"]),
             "max_age": cookie_max_age,
             "httponly": False,  # Can be read by frontend for display
-            "secure": config.ENV in ["staging", "prod"],
-            "samesite": "lax",  # Use "lax" since we're not setting domain
+            "secure": secure_flag,  # Match auth_token cookie
+            "samesite": samesite_value,  # Match auth_token cookie
             "path": "/"
         }
         # DO NOT set domain - browsers reject parent domain cookies from subdomains
@@ -453,10 +461,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
     # Set httpOnly cookie for token (secure in production)
     cookie_max_age = int(access_token_expires.total_seconds())
     cookie_domain = get_cookie_domain(request)
-    # For cross-origin requests (different subdomains), use "none" for SameSite
-    # This requires secure=True, which we already have in staging/prod
-    samesite_value = "none" if cookie_domain else "lax"
-    secure_flag = config.ENV in ["staging", "prod"]
+    
+    # Detect cross-site requests (different origins)
+    origin = request.headers.get("origin", "") if request else ""
+    host = request.headers.get("host", "") if request else ""
+    is_cross_site = origin and host and origin.replace("https://", "").replace("http://", "") != host.replace("https://", "").replace("http://", "")
+    
+    # For cross-site requests, use "none" for SameSite (requires Secure=True)
+    # For same-site requests, use "lax"
+    samesite_value = "none" if is_cross_site else "lax"
+    secure_flag = config.ENV in ["staging", "prod"] or is_cross_site  # Force secure for cross-site
     
     # #region agent log
     import json as json_module
@@ -472,6 +486,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
                     "cookie_domain": cookie_domain,
                     "samesite": samesite_value,
                     "secure": secure_flag,
+                    "is_cross_site": is_cross_site,
                     "httponly": True,
                     "path": "/",
                     "env": config.ENV,
@@ -493,8 +508,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         "value": access_token,
         "max_age": cookie_max_age,
         "httponly": True,
-        "secure": secure_flag,  # HTTPS only in staging/prod
-        "samesite": "lax",  # Use "lax" since we're not setting domain (same-origin)
+        "secure": secure_flag,  # HTTPS only in staging/prod or cross-site
+        "samesite": samesite_value,  # Use "none" for cross-site, "lax" for same-site
         "path": "/"
     }
     # DO NOT set domain - browsers reject parent domain cookies from subdomains
@@ -548,8 +563,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         "value": json.dumps(response_data["user"]),
         "max_age": cookie_max_age,
         "httponly": False,  # Can be read by frontend for display
-        "secure": config.ENV in ["staging", "prod"],
-        "samesite": "lax",  # Use "lax" since we're not setting domain
+        "secure": secure_flag,  # Match auth_token cookie
+        "samesite": samesite_value,  # Match auth_token cookie
         "path": "/"
     }
     # DO NOT set domain - browsers reject parent domain cookies from subdomains
@@ -583,7 +598,14 @@ async def logout(request: Request, current_user: User = Depends(get_current_user
     
     # Get cookie domain for deletion (must match the domain used when setting)
     cookie_domain = get_cookie_domain(request)
-    samesite_value = "none" if cookie_domain else "lax"
+    
+    # Detect cross-site requests (different origins) - must match detection logic used when setting
+    origin = request.headers.get("origin", "") if request else ""
+    host = request.headers.get("host", "") if request else ""
+    is_cross_site = origin and host and origin.replace("https://", "").replace("http://", "") != host.replace("https://", "").replace("http://", "")
+    
+    samesite_value = "none" if is_cross_site else "lax"
+    secure_flag = config.ENV in ["staging", "prod"] or is_cross_site  # Must match secure setting when setting cookie
     
     # Clear httpOnly cookie
     response.delete_cookie(
@@ -591,7 +613,7 @@ async def logout(request: Request, current_user: User = Depends(get_current_user
         path="/",
         samesite=samesite_value,  # Must match SameSite used when setting cookie
         httponly=True,
-        secure=config.ENV in ["staging", "prod"],  # Must match secure setting
+        secure=secure_flag,  # Must match secure setting when setting cookie
         domain=cookie_domain  # Must match domain used when setting cookie
     )
     response.delete_cookie(
