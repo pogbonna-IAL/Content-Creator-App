@@ -1,0 +1,113 @@
+import { NextRequest, NextResponse } from 'next/server'
+
+function getApiUrl(endpoint: string): string {
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+  return `${baseUrl}/${endpoint}`
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { job_id, narration_text, voice_id, speed, format } = body
+
+    // Validate input
+    if (!job_id && !narration_text) {
+      return new Response(
+        JSON.stringify({ error: 'Either job_id or narration_text is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Get auth token from cookies
+    const cookieHeader = request.headers.get('cookie') || ''
+    let token: string | null = null
+
+    if (cookieHeader) {
+      const cookies = cookieHeader.split(';').map(c => c.trim())
+      for (const cookie of cookies) {
+        if (cookie.startsWith('auth_token=')) {
+          const value = cookie.substring('auth_token='.length).trim()
+          try {
+            token = decodeURIComponent(value)
+          } catch {
+            token = value
+          }
+          break
+        }
+      }
+    }
+
+    // Also try Next.js cookies API
+    if (!token) {
+      const cookieToken = request.cookies.get('auth_token')?.value
+      if (cookieToken) {
+        token = cookieToken.trim()
+      }
+    }
+
+    if (!token) {
+      return new Response(
+        JSON.stringify({ 
+          error: 'Authentication required', 
+          detail: 'Please log in to generate voiceover' 
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Prepare request body
+    const requestBody: any = {}
+    if (job_id) requestBody.job_id = job_id
+    if (narration_text) requestBody.narration_text = narration_text
+    if (voice_id) requestBody.voice_id = voice_id
+    if (speed) requestBody.speed = speed
+    if (format) requestBody.format = format
+
+    // Call backend voiceover endpoint
+    const backendUrl = getApiUrl('v1/content/voiceover')
+    console.log('Calling voiceover endpoint:', backendUrl)
+
+    const response = await fetch(backendUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
+      },
+      body: JSON.stringify(requestBody),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('Voiceover request failed:', response.status, errorText)
+      
+      if (response.status === 401) {
+        return new Response(
+          JSON.stringify({ 
+            error: 'Authentication failed', 
+            detail: 'Please log in again' 
+          }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+
+      return new Response(
+        JSON.stringify({ error: 'Failed to start voiceover generation', detail: errorText }),
+        { status: response.status, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const result = await response.json()
+    return NextResponse.json(result)
+
+  } catch (error) {
+    console.error('Voiceover API error:', error)
+    return new Response(
+      JSON.stringify({ 
+        error: 'Internal server error', 
+        detail: error instanceof Error ? error.message : 'Unknown error' 
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+}

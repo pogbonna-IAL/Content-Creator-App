@@ -224,6 +224,14 @@ export async function POST(request: NextRequest) {
             streamHeaders['Cookie'] = cookieHeader
           }
           
+          // Inject job_id as first event so frontend can capture it
+          const jobIdEvent = `data: ${JSON.stringify({
+            type: 'job_started',
+            job_id: jobId,
+            message: 'Job started'
+          })}\n\n`
+          safeEnqueue(encoder.encode(jobIdEvent))
+          
           console.log('Stream request headers:', {
             'Authorization': `Bearer ${token.substring(0, 20)}...`,
             'Cookie': cookieHeader ? 'present' : 'missing',

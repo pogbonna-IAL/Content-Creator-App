@@ -30,6 +30,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string>('')
   const [progress, setProgress] = useState<number>(0)
+  const [currentJobId, setCurrentJobId] = useState<number | null>(null) // Track current job ID for voiceover generation
 
   // REMOVED: Redirect to /auth - now show marketing page instead
 
@@ -137,6 +138,7 @@ export default function Home() {
     setVideoOutput('')
     setStatus('')
     setProgress(0)
+    setCurrentJobId(null) // Reset job ID for new generation
 
     // Track if we should stop reading and the reader instance
     let shouldStop = false
@@ -335,6 +337,10 @@ export default function Home() {
                   }
                 } else if (data.type === 'job_started') {
                   // Handle job_started event with content type notification
+                  if (data.job_id) {
+                    setCurrentJobId(data.job_id)
+                    console.log(`✓ Job ID captured: ${data.job_id}`)
+                  }
                   if (data.content_type_display) {
                     setStatus(`Starting ${data.content_type_display} generation...`)
                     console.log(`✓ Job started - Content type: ${data.content_type_display}`)
@@ -370,6 +376,12 @@ export default function Home() {
                   // Use audio_content from completion message, or fallback to accumulated audio content
                   const audioContent = data.audio_content || accumulatedAudioContent || ''
                   const videoContent = data.video_content || ''
+                  
+                  // Capture job_id if present in completion event
+                  if (data.job_id) {
+                    setCurrentJobId(data.job_id)
+                    console.log(`✓ Job ID from completion: ${data.job_id}`)
+                  }
                   
                   // CRITICAL: Stop the spinner immediately when complete event is received
                   setIsGenerating(false)
@@ -686,7 +698,8 @@ export default function Home() {
             isLoading={isGenerating} 
             error={error} 
             status={status} 
-            progress={progress} 
+            progress={progress}
+            jobId={currentJobId}
           />
         )
       case 'video':
