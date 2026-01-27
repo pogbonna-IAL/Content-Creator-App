@@ -963,6 +963,9 @@ async def run_generation_async(
         cache = get_cache()
         cached_content = cache.get(topic, content_types, PROMPT_VERSION, model_name)
         
+        # Flag to track if we're using cached content (prevents executor creation)
+        using_cached_content = False
+        
         if cached_content:
             logger.info(f"Job {job_id}: Cache hit for topic: {topic}, using cached content")
             sse_store.add_event(job_id, 'agent_progress', {
@@ -1109,8 +1112,23 @@ async def run_generation_async(
                 cached_content_types_set = set(content_types) - set(missing_content_types)
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Partial cache hit, generating missing types: {missing_content_types}, cached types: {cached_content_types_set}", file=sys.stdout, flush=True)
             else:
-                # All content types are cached - mark job as completed
+                # All content types are cached - mark job as completed and return immediately
+                using_cached_content = True
                 cached_content_types_set = set(content_types)  # All types cached
+                
+                # Send complete event with all cached content
+                complete_content = {}
+                for content_type in content_types:
+                    cache_key_map = {
+                        'blog': 'content',
+                        'social': 'social_media_content',
+                        'audio': 'audio_content',
+                        'video': 'video_content'
+                    }
+                    cache_key = cache_key_map.get(content_type)
+                    if cache_key and cached_content.get(cache_key):
+                        complete_content[content_type] = cached_content[cache_key]
+                
                 content_service.update_job_status(
                     job_id,
                     JobStatus.COMPLETED.value,
@@ -1120,11 +1138,14 @@ async def run_generation_async(
                     'job_id': job_id,
                     'status': JobStatus.COMPLETED.value,
                     'message': 'Content generated from cache',
-                    'cached': True
+                    'cached': True,
+                    'content': complete_content
                 })
-                logger.info(f"Job {job_id}: Completed using cached content")
-                print(f"[RAILWAY_DEBUG] Job {job_id}: All content types cached, skipping generation", file=sys.stdout, flush=True)
-                return  # Skip CrewAI execution
+                logger.info(f"Job {job_id}: Completed using cached content - all {len(content_types)} content types served from cache")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: All content types cached, marking as completed and returning (no executor will be created)", file=sys.stdout, flush=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
+                return  # Skip CrewAI execution - this prevents executor from being created
         
         # Cache miss - proceed with CrewAI generation
         logger.info(f"[CACHE] Job {job_id}: Cache miss, running CrewAI generation")
@@ -1353,7 +1374,13 @@ async def run_generation_async(
                 sys.stdout.flush()
                 sys.stderr.flush()
         
-        # Start executor task
+        # Safety check: Never create executor if using cached content
+        if using_cached_content:
+            logger.error(f"Job {job_id}: CRITICAL ERROR - Attempted to create executor when using cached content. This should never happen!")
+            print(f"[RAILWAY_DEBUG] Job {job_id}: CRITICAL ERROR - Executor creation attempted with cached content flag set. Returning immediately.", file=sys.stdout, flush=True)
+            return
+        
+        # Start executor task (only if not using cached content)
         print(f"[RAILWAY_DEBUG] Job {job_id}: Creating executor task...", file=sys.stdout, flush=True)
         executor_task = asyncio.create_task(run_executor_with_progress())
         print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task created, entering wait loop (timeout={timeout_seconds}s)", file=sys.stdout, flush=True)
