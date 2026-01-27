@@ -29,6 +29,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/content", tags=["content"])
 
 
+async def moderate_content_background(
+    job_id: int,
+    content: str,
+    content_type: str,
+    user_id: int,
+    artifact_id: int
+):
+    """
+    OPTIMIZATION (Phase 3): Background moderation task
+    Runs moderation asynchronously after content is sent to frontend
+    Note: Uses a new database session for thread safety
+    """
+    try:
+        from .services.moderation_service import get_moderation_service
+        from .database import get_db, ContentArtifact
+        
+        moderation_service = get_moderation_service()
+        moderation_result = moderation_service.moderate_output(
+            content,
+            content_type,
+            context={"job_id": job_id, "user_id": user_id}
+        )
+        
+        sse_store = get_sse_store()
+        
+        if not moderation_result.passed:
+            # Moderation failed - update artifact and send error
+            # Use a new database session for thread safety
+            db_gen = get_db()
+            db = next(db_gen)
+            try:
+                artifact = db.query(ContentArtifact).filter(ContentArtifact.id == artifact_id).first()
+                if artifact:
+                    artifact.status = 'moderation_blocked'
+                    db.commit()
+            finally:
+                db.close()
+            
+            sse_store.add_event(job_id, 'moderation_blocked', {
+                'job_id': job_id,
+                'artifact_type': content_type,
+                'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
+                'details': moderation_result.details
+            })
+            logger.warning(f"Job {job_id}: {content_type} content blocked by background moderation: {moderation_result.reason_code}")
+        else:
+            # Moderation passed - just log
+            sse_store.add_event(job_id, 'moderation_passed', {
+                'job_id': job_id,
+                'artifact_type': content_type
+            })
+            logger.info(f"Job {job_id}: {content_type} content passed background moderation")
+    except Exception as e:
+        logger.error(f"Job {job_id}: Background moderation error: {e}", exc_info=True)
+
+
 class GenerateRequest(BaseModel):
     """Request model for content generation"""
     topic: str = Field(..., description="Content topic", min_length=1, max_length=5000)
@@ -1626,86 +1682,47 @@ async def run_generation_async(
             logger.debug(f"[VALIDATION] Job {job_id}: Cleaned content length={len(content) if content else 0}")
         
         if content and len(content.strip()) > 10:
-            # Moderate output before saving artifact
+            # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
+            artifact_start = time.time()
+            artifact = content_service.create_artifact(
+                job_id,
+                'blog',
+                content,
+                content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                prompt_version=PROMPT_VERSION,
+                model_used=model_name
+            )
+            artifact_duration = time.time() - artifact_start
+            
+            # Send content immediately (early streaming optimization)
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact created, sending SSE events immediately", file=sys.stdout, flush=True)
+            sse_store.add_event(job_id, 'artifact_ready', {
+                'job_id': job_id,
+                'artifact_type': 'blog',
+                'message': 'Blog content generated'
+            })
+            # Send content event with the actual blog content (early streaming)
+            sse_store.add_event(job_id, 'content', {
+                'job_id': job_id,
+                'chunk': content,  # Send full content as a single chunk
+                'progress': 100,  # Blog is complete
+                'artifact_type': 'blog'
+            })
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact SSE events added to store, content_length={len(content)}", file=sys.stdout, flush=True)
+            logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
+            
+            # OPTIMIZATION (Phase 3): Run moderation in background (non-blocking)
             if config.ENABLE_CONTENT_MODERATION:
-                logger.info(f"[MODERATION] Job {job_id}: Starting blog content moderation")
-                moderation_start = time.time()
-                from .services.moderation_service import get_moderation_service
-                moderation_service = get_moderation_service()
-                moderation_result = moderation_service.moderate_output(
-                    content,
-                    'blog',
-                    context={"job_id": job_id, "user_id": user_id}
-                )
-                moderation_duration = time.time() - moderation_start
-                logger.info(f"[MODERATION] Job {job_id}: Blog moderation completed in {moderation_duration:.3f}s, passed={moderation_result.passed}")
-                
-                if not moderation_result.passed:
-                    # Send moderation blocked event
-                    sse_store.add_event(job_id, 'moderation_blocked', {
-                        'job_id': job_id,
-                        'artifact_type': 'blog',
-                        'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
-                        'details': moderation_result.details
-                    })
-                    logger.warning(f"Job {job_id}: Blog content blocked by moderation: {moderation_result.reason_code}")
-                    # Skip creating artifact for blocked content
+                logger.info(f"[MODERATION] Job {job_id}: Starting blog content moderation in background")
+                # Get artifact ID for background moderation
+                artifact_id = artifact.id if hasattr(artifact, 'id') else None
+                if artifact_id:
+                                # Run moderation in background task (non-blocking)
+                                asyncio.create_task(moderate_content_background(
+                                    job_id, content, 'blog', user_id, artifact_id
+                                ))
                 else:
-                    # Send moderation passed event
-                    sse_store.add_event(job_id, 'moderation_passed', {
-                        'job_id': job_id,
-                        'artifact_type': 'blog'
-                    })
-                    artifact_start = time.time()
-                    content_service.create_artifact(
-                        job_id,
-                        'blog',
-                        content,
-                        content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                        prompt_version=PROMPT_VERSION,
-                        model_used=model_name
-                    )
-                    artifact_duration = time.time() - artifact_start
-                    # Send artifact ready event
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact created, sending SSE events", file=sys.stdout, flush=True)
-                    sse_store.add_event(job_id, 'artifact_ready', {
-                        'job_id': job_id,
-                        'artifact_type': 'blog',
-                        'message': 'Blog content generated'
-                    })
-                    # Send content event with the actual blog content
-                    sse_store.add_event(job_id, 'content', {
-                        'job_id': job_id,
-                        'chunk': content,  # Send full content as a single chunk
-                        'progress': 100,  # Blog is complete
-                        'artifact_type': 'blog'
-                    })
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact SSE events added to store, content_length={len(content)}", file=sys.stdout, flush=True)
-                    logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
-            else:
-                # Moderation disabled, create artifact directly
-                content_service.create_artifact(
-                    job_id,
-                    'blog',
-                    content,
-                    content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                    prompt_version=PROMPT_VERSION,
-                    model_used=model_name
-                )
-                # Send artifact ready event
-                sse_store.add_event(job_id, 'artifact_ready', {
-                    'job_id': job_id,
-                    'artifact_type': 'blog',
-                    'message': 'Blog content generated'
-                })
-                # Send content event with the actual blog content
-                sse_store.add_event(job_id, 'content', {
-                    'job_id': job_id,
-                    'chunk': content,  # Send full content as a single chunk
-                    'progress': 100,  # Blog is complete
-                    'artifact_type': 'blog'
-                })
-                logger.info(f"Job {job_id}: Blog artifact created")
+                    logger.warning(f"Job {job_id}: Could not get artifact ID for background moderation")
         
         # Extract and validate other content types
         # Skip content types that were already processed from cache
@@ -1735,8 +1752,11 @@ async def run_generation_async(
                 logger.info(f"[EXTRACTION] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, content length={len(raw_content) if raw_content else 0}")
                 if raw_content:
                     validation_start = time.time()
+                    # OPTIMIZATION: Social media uses simpler JSON, fail fast without repair
+                    # Blog content may need repair due to complexity
+                    allow_repair = content_type != 'social'
                     is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
-                        content_type, raw_content, model_name, allow_repair=True
+                        content_type, raw_content, model_name, allow_repair=allow_repair
                     )
                     validation_duration = time.time() - validation_start
                     print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} validation completed, valid={is_valid}, content_length={len(validated_content) if validated_content else 0}", file=sys.stdout, flush=True)
@@ -1747,69 +1767,54 @@ async def run_generation_async(
                         logger.debug(f"[VALIDATION] Job {job_id}: Cleaned {content_type} content length={len(validated_content) if validated_content else 0}")
                     
                     if validated_content and len(validated_content.strip()) > 10:
-                        # Moderate output before saving artifact
+                        # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
+                        artifact_start = time.time()
+                        artifact = content_service.create_artifact(
+                            job_id,
+                            content_type,
+                            validated_content,
+                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                            prompt_version=PROMPT_VERSION,
+                            model_used=model_name
+                        )
+                        artifact_duration = time.time() - artifact_start
+                        
+                        # Send content immediately (early streaming optimization)
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact created, sending SSE events immediately", file=sys.stdout, flush=True)
+                        sse_store.add_event(job_id, 'artifact_ready', {
+                            'job_id': job_id,
+                            'artifact_type': content_type,
+                            'message': f'{content_type.capitalize()} content generated'
+                        })
+                        # Send content event with the actual content (early streaming)
+                        content_field = {
+                            'social': 'social_media_content',
+                            'audio': 'audio_content',
+                            'video': 'video_content'
+                        }.get(content_type, 'content')
+                        sse_store.add_event(job_id, 'content', {
+                            'job_id': job_id,
+                            'chunk': validated_content,  # Send full content as a single chunk
+                            'progress': 100,  # Content is complete
+                            'artifact_type': content_type,
+                            'content_field': content_field  # Help frontend identify which field to use
+                        })
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact SSE events added to store, content_length={len(validated_content)}", file=sys.stdout, flush=True)
+                        logger.info(f"[ARTIFACT] Job {job_id}: {content_type} artifact created in {artifact_duration:.3f}s, content_length={len(validated_content)}")
+                        logger.info(f"Job {job_id}: {content_type} content event sent (early streaming)")
+                        
+                        # OPTIMIZATION (Phase 3): Run moderation in background (non-blocking)
                         if config.ENABLE_CONTENT_MODERATION:
-                            logger.info(f"[MODERATION] Job {job_id}: Starting {content_type} content moderation")
-                            moderation_start = time.time()
-                            from .services.moderation_service import get_moderation_service
-                            moderation_service = get_moderation_service()
-                            moderation_result = moderation_service.moderate_output(
-                                validated_content,
-                                content_type,
-                                context={"job_id": job_id, "user_id": user_id}
-                            )
-                            moderation_duration = time.time() - moderation_start
-                            logger.info(f"[MODERATION] Job {job_id}: {content_type} moderation completed in {moderation_duration:.3f}s, passed={moderation_result.passed}")
-                            
-                            if not moderation_result.passed:
-                                # Send moderation blocked event
-                                sse_store.add_event(job_id, 'moderation_blocked', {
-                                    'job_id': job_id,
-                                    'artifact_type': content_type,
-                                    'reason_code': moderation_result.reason_code.value if moderation_result.reason_code else None,
-                                    'details': moderation_result.details
-                                })
-                                logger.warning(f"Job {job_id}: {content_type} content blocked by moderation: {moderation_result.reason_code}")
-                                # Skip creating artifact for blocked content
+                            logger.info(f"[MODERATION] Job {job_id}: Starting {content_type} content moderation in background")
+                            # Get artifact ID for background moderation
+                            artifact_id = artifact.id if hasattr(artifact, 'id') else None
+                            if artifact_id:
+                                # Run moderation in background task (non-blocking)
+                                asyncio.create_task(moderate_content_background(
+                                    job_id, validated_content, content_type, user_id, artifact_id
+                                ))
                             else:
-                                # Send moderation passed event
-                                sse_store.add_event(job_id, 'moderation_passed', {
-                                    'job_id': job_id,
-                                    'artifact_type': content_type
-                                })
-                                artifact_start = time.time()
-                                content_service.create_artifact(
-                                    job_id,
-                                    content_type,
-                                    validated_content,
-                                    content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                                    prompt_version=PROMPT_VERSION,
-                                    model_used=model_name
-                                )
-                                artifact_duration = time.time() - artifact_start
-                                # Send artifact ready event
-                                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact created, sending SSE events", file=sys.stdout, flush=True)
-                                sse_store.add_event(job_id, 'artifact_ready', {
-                                    'job_id': job_id,
-                                    'artifact_type': content_type,
-                                    'message': f'{content_type.capitalize()} content generated'
-                                })
-                                # Send content event with the actual content (CRITICAL FIX - was missing!)
-                                content_field = {
-                                    'social': 'social_media_content',
-                                    'audio': 'audio_content',
-                                    'video': 'video_content'
-                                }.get(content_type, 'content')
-                                sse_store.add_event(job_id, 'content', {
-                                    'job_id': job_id,
-                                    'chunk': validated_content,  # Send full content as a single chunk
-                                    'progress': 100,  # Content is complete
-                                    'artifact_type': content_type,
-                                    'content_field': content_field  # Help frontend identify which field to use
-                                })
-                                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact SSE events added to store, content_length={len(validated_content)}", file=sys.stdout, flush=True)
-                                logger.info(f"[ARTIFACT] Job {job_id}: {content_type} artifact created in {artifact_duration:.3f}s, content_length={len(validated_content)}")
-                                logger.info(f"Job {job_id}: {content_type} content event sent")
+                                logger.warning(f"Job {job_id}: Could not get artifact ID for background moderation")
                         else:
                             # Moderation disabled, create artifact directly
                             content_service.create_artifact(

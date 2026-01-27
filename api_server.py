@@ -1240,7 +1240,7 @@ async def extract_content_async(result, topic: str, logger) -> str:
                 logger.warning(f"Error reading file (attempt {attempt + 1}): {e}")
         # Removed sleep delay - check immediately for faster failure
         if attempt < 2:  # Only wait between attempts, not after last attempt
-            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
+            await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
     # Final fallback: extract from result object (should have been tried first, but just in case)
     if not content or len(content.strip()) < 10:
@@ -1343,7 +1343,7 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
                 logger.warning(f"Error reading social media file (attempt {attempt + 1}): {e}")
         # Removed sleep delay - check immediately for faster failure
         if attempt < 2:  # Only wait between attempts, not after last attempt
-            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
+            await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:
@@ -1434,7 +1434,7 @@ async def extract_audio_content_async(result, topic: str, logger) -> str:
                 logger.warning(f"Error reading audio file (attempt {attempt + 1}): {e}")
         # Removed sleep delay - check immediately for faster failure
         if attempt < 2:  # Only wait between attempts, not after last attempt
-            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
+            await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:
@@ -1525,7 +1525,7 @@ async def extract_video_content_async(result, topic: str, logger) -> str:
                 logger.warning(f"Error reading video file (attempt {attempt + 1}): {e}")
         # Removed sleep delay - check immediately for faster failure
         if attempt < 2:  # Only wait between attempts, not after last attempt
-            await asyncio.sleep(0.2)  # Reduced from 0.5s to 0.2s for faster retries
+            await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
     # Final fallback: extract from result object
     if not content or len(content.strip()) < 10:

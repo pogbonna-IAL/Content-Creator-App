@@ -88,18 +88,38 @@ class ContentCreationCrew():
         else:
             logger.debug(f"[LLM_INIT] OpenAI API key configured (length: {len(config.OPENAI_API_KEY) if config.OPENAI_API_KEY else 0})")
         
-        # Phase 1: Reduce max_tokens by 25% for faster generation while maintaining quality
-        # Original limits: free=2000, basic=3000, pro=4000, enterprise=6000
-        # New limits: free=1500, basic=2250, pro=3000, enterprise=4500
-        max_tokens_map = {
-            'free': 1500,      # Reduced from 2000 (25% reduction)
-            'basic': 2250,     # Reduced from 3000 (25% reduction)
-            'pro': 3000,       # Reduced from 4000 (25% reduction)
-            'enterprise': 4500 # Reduced from 6000 (25% reduction)
-        }
-        max_tokens = max_tokens_map.get(tier, 1500)
+        # OPTIMIZATION: Content-type-specific max_tokens for faster generation
+        # Social media needs fewer tokens (JSON is smaller), blog needs more
+        # Determine content type from self.content_types (set in __init__)
+        primary_content_type = self.content_types[0] if self.content_types else 'blog'
         
-        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens}, timeout=180s, provider={'OpenAI' if use_openai else 'Ollama'}")
+        if primary_content_type == 'social':
+            # Social media: Optimized token limits (40-50% reduction from blog)
+            max_tokens_map = {
+                'free': 800,       # Reduced from 1500 (47% reduction)
+                'basic': 1000,     # Reduced from 2250 (56% reduction)
+                'pro': 1200,       # Reduced from 3000 (60% reduction)
+                'enterprise': 1500 # Reduced from 4500 (67% reduction)
+            }
+        elif primary_content_type in ['audio', 'video']:
+            # Audio/Video: Moderate reduction (30% reduction from blog)
+            max_tokens_map = {
+                'free': 1050,      # Reduced from 1500 (30% reduction)
+                'basic': 1575,     # Reduced from 2250 (30% reduction)
+                'pro': 2100,       # Reduced from 3000 (30% reduction)
+                'enterprise': 3150 # Reduced from 4500 (30% reduction)
+            }
+        else:
+            # Blog: Standard limits (already optimized)
+            max_tokens_map = {
+                'free': 1500,      # Standard for blog
+                'basic': 2250,     # Standard for blog
+                'pro': 3000,       # Standard for blog
+                'enterprise': 4500  # Standard for blog
+            }
+        
+        max_tokens = max_tokens_map.get(tier, 1500)
+        logger.info(f"[LLM_INIT] LLM Configuration: model={model}, temperature={temperature}, max_tokens={max_tokens} (optimized for {primary_content_type}), timeout=180s, provider={'OpenAI' if use_openai else 'Ollama'}")
         
         # Build LLM initialization kwargs
         # CrewAI's LLM class expects parameters directly, not wrapped in a 'config' dict
@@ -201,9 +221,9 @@ class ContentCreationCrew():
             config=self.agents_config['researcher'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=2  # Reduced iterations for faster completion (simple tasks, default is 15)
         )
-        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=5")
+        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=2")
         return agent
 
     @agent
@@ -212,9 +232,9 @@ class ContentCreationCrew():
             config=self.agents_config['writer'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=3  # Allow 1 retry for writing task (may need refinement, default is 15)
         )
-        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=5")
+        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
 
     @agent
@@ -223,9 +243,9 @@ class ContentCreationCrew():
             config=self.agents_config['editor'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=2  # Reduced iterations for faster completion (simple tasks, default is 15)
         )
-        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=5")
+        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=2")
         return agent
 
     @agent
@@ -234,9 +254,9 @@ class ContentCreationCrew():
             config=self.agents_config['social_media_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=2  # Reduced iterations for faster completion (simple tasks, default is 15)
         )
-        logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}', max_iter=3")
+        logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}', max_iter=2")
         return agent
 
     @agent
@@ -245,7 +265,7 @@ class ContentCreationCrew():
             config=self.agents_config['audio_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=2  # Reduced iterations for faster completion (simple tasks, default is 15)
         )
         logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -256,7 +276,7 @@ class ContentCreationCrew():
             config=self.agents_config['video_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
+            max_iter=2  # Reduced iterations for faster completion (simple tasks, default is 15)
         )
         logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -296,6 +316,16 @@ class ContentCreationCrew():
             context=[self.editing_task()],  # Branch from editing task
             output_file='social_media_output.md'  # Save social media content to separate file
         )
+    
+    @task
+    def social_media_standalone_task(self) -> Task:
+        """Standalone social media task that generates directly from topic (no blog dependency)"""
+        return Task(
+            config=self.tasks_config['social_media_standalone_task'],
+            agent=self.social_media_specialist(),
+            # No context dependency - generates directly from topic
+            output_file='social_media_output.md'
+        )
 
     @task
     def audio_content_task(self) -> Task:
@@ -333,42 +363,52 @@ class ContentCreationCrew():
             tier_config = self.tier_config.get(self.tier, {})
             content_types = tier_config.get('content_types', ['blog'])
         
+        # OPTIMIZATION: Check if this is standalone social media generation (no blog needed)
+        is_standalone_social = len(content_types) == 1 and content_types[0] == 'social'
+        
         # Collect agents manually (since we're not using @crew decorator)
         # CrewBase creates agents from @agent decorated methods
-        agents = [
-            self.researcher(),
-            self.writer(),
-            self.editor(),
-        ]
-        
-        # Add optional agents based on content types
-        if 'social' in content_types:
-            agents.append(self.social_media_specialist())
-        if 'audio' in content_types:
-            agents.append(self.audio_content_specialist())
-        if 'video' in content_types:
-            agents.append(self.video_content_specialist())
-        
-        # Build task list based on content types
-        tasks = []
-        
-        # Core tasks (always included)
-        tasks.append(self.research_task())
-        tasks.append(self.writing_task())
-        tasks.append(self.editing_task())
-        
-        # Optional tasks based on content types
-        # These can run in parallel after editing_task completes
-        optional_tasks = []
-        
-        if 'social' in content_types:
-            optional_tasks.append(self.social_media_task())
-        if 'audio' in content_types:
-            optional_tasks.append(self.audio_content_task())
-        if 'video' in content_types:
-            optional_tasks.append(self.video_content_task())
-        
-        tasks.extend(optional_tasks)
+        if is_standalone_social:
+            # Standalone social media: only need social media specialist
+            agents = [self.social_media_specialist()]
+            tasks = [self.social_media_standalone_task()]
+            logger.info(f"[CREW_BUILD] Using standalone social media flow (no blog pipeline)")
+        else:
+            # Standard flow: include core blog pipeline
+            agents = [
+                self.researcher(),
+                self.writer(),
+                self.editor(),
+            ]
+            
+            # Add optional agents based on content types
+            if 'social' in content_types:
+                agents.append(self.social_media_specialist())
+            if 'audio' in content_types:
+                agents.append(self.audio_content_specialist())
+            if 'video' in content_types:
+                agents.append(self.video_content_specialist())
+            
+            # Build task list based on content types
+            tasks = []
+            
+            # Core tasks (always included)
+            tasks.append(self.research_task())
+            tasks.append(self.writing_task())
+            tasks.append(self.editing_task())
+            
+            # Optional tasks based on content types
+            # These can run in parallel after editing_task completes
+            optional_tasks = []
+            
+            if 'social' in content_types:
+                optional_tasks.append(self.social_media_task())
+            if 'audio' in content_types:
+                optional_tasks.append(self.audio_content_task())
+            if 'video' in content_types:
+                optional_tasks.append(self.video_content_task())
+            
+            tasks.extend(optional_tasks)
         
         # Optimize process selection based on content types
         # Sequential is faster for single content type (less overhead)

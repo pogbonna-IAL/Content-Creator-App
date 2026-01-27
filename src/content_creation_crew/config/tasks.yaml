@@ -1,43 +1,44 @@
 research_task:
   description: >
-    Research {topic}. Provide: 1) Brief intro (2-3 sentences), 2) 3-5 key points (1 sentence each), 3) Future trends (2-3 sentences).
-    Be concise. Maximum 200 words total. Complete analysis now - don't wait.
+    Research {topic}. Output JSON: {{"intro": "...", "points": [...], "trends": "..."}}. Max 200 words. Be concise.
   expected_output: >
-    Research report (200 words max): Intro, 3-5 key points, trends. Ready for writer.
+    Research JSON: intro, 3-5 key points, trends. Ready for writer.
   agent: researcher
 
 writing_task:
   description: >
-    Write blog post about {topic} using research. Include: title, intro (80-100 words), 2-3 sections (120-150 words each), conclusion (40-50 words).
-    Total: ~450-500 words. Use research provided immediately - don't wait. Be efficient.
+    Write blog post about {topic} using research. Output JSON: {{"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}}. ~450-500 words total.
   expected_output: >
-    Blog post (~450-500 words): Title, intro, 2-3 sections, conclusion. Ready for editing.
+    Blog post JSON: title, intro, 2-3 sections, conclusion. Ready for editing.
   agent: writer
   context:
     - research_task
 
 editing_task:
   description: >
-    Edit blog post about {topic}. Fix grammar, improve flow. Output ONLY valid JSON:
-    {{"title": "...", "introduction": "...", "sections": ["...", "..."], "conclusion": "..."}}
-    No markdown or explanations. JSON only.
+    Edit blog post about {topic}. Fix grammar, improve flow. Output ONLY valid JSON: {{"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}}. No markdown.
   expected_output: >
-    Polished blog post in JSON format. Grammar fixed, ready to publish.
+    Polished blog post JSON. Grammar fixed, ready to publish.
   agent: editor
   context:
     - writing_task
 
 social_media_task:
   description: >
-    Create social media post about {topic} from blog post. Include: hook, key message, CTA, 3-5 hashtags.
-    Format: LinkedIn (200-300 words) + Twitter (under 280 chars). Use emojis. Output ONLY JSON:
-    {{"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}}
-    No markdown. JSON only.
+    Create social media post about {topic} from blog post. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}}. LinkedIn 200-300 words, Twitter <280 chars. Use emojis. No markdown.
   expected_output: >
-    Social media package in JSON format. LinkedIn post, Twitter version, hashtags, CTA. Ready to post.
+    Social media JSON: LinkedIn post, Twitter post, hashtags, CTA. Ready to post.
   agent: social_media_specialist
   context:
     - editing_task
+  output_file: 'social_media_output.md'
+
+social_media_standalone_task:
+  description: >
+    Create social media post about {topic}. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}}. LinkedIn 200-300 words, Twitter <280 chars. Use emojis. No markdown.
+  expected_output: >
+    Social media JSON: LinkedIn post, Twitter post, hashtags, CTA. Ready to post.
+  agent: social_media_specialist
   output_file: 'social_media_output.md'
 
 audio_content_task:
