@@ -2035,173 +2035,195 @@ async def create_voiceover(
     Raises:
         HTTPException: If plan limit exceeded or feature not available
     """
-    # Check if user can generate voiceover
-    plan_policy = PlanPolicy(db, current_user)
-    plan_policy.enforce_media_generation_limit('voiceover_audio')
-    
-    content_service = ContentService(db, current_user)
-    sse_store = get_sse_store()
-    
-    # Determine narration text source
-    narration_text = None
-    job_id = request.job_id
-    
-    if job_id:
-        # Get job and find audio_script artifact
-        job = content_service.get_job(job_id)
-        if not job:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Job not found"
-            )
-        
-        # Find audio_script artifact
-        audio_script_artifact = None
-        for artifact in job.artifacts:
-            if artifact.type == 'audio':
-                audio_script_artifact = artifact
-                break
-        
-        if not audio_script_artifact or not audio_script_artifact.content_text:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Job does not have an audio script. Generate audio content first or provide narration_text."
-            )
-        
-        narration_text = audio_script_artifact.content_text
-        logger.info(f"Using audio script from job {job_id} for voiceover")
-    
-    elif request.narration_text:
-        narration_text = request.narration_text.strip()
-        if not narration_text:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="narration_text cannot be empty"
-            )
-        
-        # Moderate input (before generation)
-        if config.ENABLE_CONTENT_MODERATION:
-            from .services.moderation_service import get_moderation_service
-            moderation_service = get_moderation_service()
-            moderation_result = moderation_service.moderate_input(
-                narration_text,
-                context={"user_id": current_user.id, "type": "voiceover"}
-            )
-            
-            if not moderation_result.passed:
-                from .exceptions import ErrorResponse
-                from .logging_config import get_request_id
-                
-                error_response = ErrorResponse.create(
-                    message=f"Content moderation failed: {moderation_result.reason_code.value if moderation_result.reason_code else 'unknown'}",
-                    code="CONTENT_BLOCKED",
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    request_id=get_request_id(),
-                    details={
-                        "reason_code": moderation_result.reason_code.value if moderation_result.reason_code else None,
-                        **moderation_result.details
-                    }
-                )
-                
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=error_response
-                )
-        
-        # Create a new job for standalone voiceover
-        # This allows tracking voiceover as a separate job
-        job = content_service.create_job(
-            topic=f"Voiceover: {narration_text[:50]}...",
-            content_types=['audio'],
-            idempotency_key=None
-        )
-        job_id = job.id
-        logger.info(f"Created new job {job_id} for standalone voiceover")
-    
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either job_id or narration_text must be provided"
-        )
-    
-    # Start voiceover generation asynchronously
-    logger.info(f"Creating async task for voiceover generation, job_id: {job_id}, text_length: {len(narration_text) if narration_text else 0}")
-    
-    # Wrap the async function to ensure it runs and logs errors
-    async def run_voiceover_with_error_handling():
-        """Wrapper to ensure async voiceover task errors are logged and handled"""
-        try:
-            # Force immediate output for Railway visibility
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper started for job {job_id}", file=sys.stdout, flush=True)
-            sys.stdout.flush()
-            sys.stderr.flush()
-            logger.info(f"[VOICEOVER_TASK] Task wrapper started for job {job_id}")
-            
-            await _generate_voiceover_async(
-                job_id=job_id,
-                narration_text=narration_text,
-                voice_id=request.voice_id,
-                speed=request.speed,
-                format=request.format,
-                user_id=current_user.id
-            )
-            
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}", file=sys.stdout, flush=True)
-            sys.stdout.flush()
-            logger.info(f"[VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}")
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e) if str(e) else f"{error_type} occurred"
-            
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", file=sys.stderr, flush=True)
-            sys.stdout.flush()
-            sys.stderr.flush()
-            logger.error(f"[VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", exc_info=True)
-            
-            # Send error event to SSE store
-            try:
-                error_sse_store = get_sse_store()
-                error_sse_store.add_event(
-                    job_id,
-                    'tts_failed',
-                    {
-                        'job_id': job_id,
-                        'message': f'Voiceover generation failed: {error_msg}',
-                        'error_type': error_type
-                    }
-                )
-                logger.info(f"[VOICEOVER_TASK] Error event sent to SSE store for job {job_id}")
-            except Exception as sse_error:
-                logger.error(f"[VOICEOVER_TASK] Failed to send error event to SSE store: {sse_error}", exc_info=True)
-    
-    # Create the task with error handling
-    print(f"[RAILWAY_DEBUG] Creating async task for voiceover generation, job_id: {job_id}", file=sys.stdout, flush=True)
-    sys.stdout.flush()
-    
     try:
-        async_task = asyncio.create_task(run_voiceover_with_error_handling())
-        task_state = async_task.done()
-        logger.info(f"Async task created for voiceover generation, job_id: {job_id}, task: {async_task}, done: {task_state}")
-        print(f"[RAILWAY_DEBUG] Async task created for voiceover generation, job_id: {job_id}, done: {task_state}", file=sys.stdout, flush=True)
+        logger.info(f"[VOICEOVER_ENDPOINT] Starting voiceover request for user {current_user.id}, job_id: {request.job_id}, has_narration_text: {bool(request.narration_text)}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ENDPOINT] Starting voiceover request", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
-        # Give the task a moment to start (non-blocking)
-        # This ensures the task is scheduled before we return
-        import asyncio
-        await asyncio.sleep(0.1)  # Small delay to let task start
-        print(f"[RAILWAY_DEBUG] After sleep, task done: {async_task.done()}", file=sys.stdout, flush=True)
-        sys.stdout.flush()
-    except Exception as task_error:
-        logger.error(f"Failed to create async task for voiceover generation: {task_error}", exc_info=True)
-        print(f"[RAILWAY_DEBUG] Failed to create async task: {task_error}", file=sys.stderr, flush=True)
-        sys.stderr.flush()
-        raise
+        # Check if user can generate voiceover
+        logger.info(f"[VOICEOVER_ENDPOINT] Checking plan limits for user {current_user.id}")
+        plan_policy = PlanPolicy(db, current_user)
+        plan_policy.enforce_media_generation_limit('voiceover_audio')
+        logger.info(f"[VOICEOVER_ENDPOINT] Plan limits check passed for user {current_user.id}")
+        
+        content_service = ContentService(db, current_user)
+        sse_store = get_sse_store()
+        
+        # Determine narration text source
+        narration_text = None
+        job_id = request.job_id
     
-    return {
-        "job_id": job_id,
-        "status": "processing",
-        "message": "Voiceover generation started"
-    }
+        if job_id:
+            # Get job and find audio_script artifact
+            job = content_service.get_job(job_id)
+            if not job:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Job not found"
+                )
+            
+            # Find audio_script artifact
+            audio_script_artifact = None
+            for artifact in job.artifacts:
+                if artifact.type == 'audio':
+                    audio_script_artifact = artifact
+                    break
+            
+            if not audio_script_artifact or not audio_script_artifact.content_text:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Job does not have an audio script. Generate audio content first or provide narration_text."
+                )
+            
+            narration_text = audio_script_artifact.content_text
+            logger.info(f"Using audio script from job {job_id} for voiceover")
+        
+        elif request.narration_text:
+            narration_text = request.narration_text.strip()
+            if not narration_text:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="narration_text cannot be empty"
+                )
+            
+            # Moderate input (before generation)
+            if config.ENABLE_CONTENT_MODERATION:
+                from .services.moderation_service import get_moderation_service
+                moderation_service = get_moderation_service()
+                moderation_result = moderation_service.moderate_input(
+                    narration_text,
+                    context={"user_id": current_user.id, "type": "voiceover"}
+                )
+                
+                if not moderation_result.passed:
+                    from .exceptions import ErrorResponse
+                    from .logging_config import get_request_id
+                    
+                    error_response = ErrorResponse.create(
+                        message=f"Content moderation failed: {moderation_result.reason_code.value if moderation_result.reason_code else 'unknown'}",
+                        code="CONTENT_BLOCKED",
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        request_id=get_request_id(),
+                        details={
+                            "reason_code": moderation_result.reason_code.value if moderation_result.reason_code else None,
+                            **moderation_result.details
+                        }
+                    )
+                    
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=error_response
+                    )
+            
+            # Create a new job for standalone voiceover
+            # This allows tracking voiceover as a separate job
+            job = content_service.create_job(
+                topic=f"Voiceover: {narration_text[:50]}...",
+                content_types=['audio'],
+                idempotency_key=None
+            )
+            job_id = job.id
+            logger.info(f"Created new job {job_id} for standalone voiceover")
+        
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either job_id or narration_text must be provided"
+            )
+        
+        # Start voiceover generation asynchronously
+        logger.info(f"Creating async task for voiceover generation, job_id: {job_id}, text_length: {len(narration_text) if narration_text else 0}")
+        
+        # Wrap the async function to ensure it runs and logs errors
+        async def run_voiceover_with_error_handling():
+            """Wrapper to ensure async voiceover task errors are logged and handled"""
+            try:
+                # Force immediate output for Railway visibility
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper started for job {job_id}", file=sys.stdout, flush=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
+                logger.info(f"[VOICEOVER_TASK] Task wrapper started for job {job_id}")
+                
+                await _generate_voiceover_async(
+                    job_id=job_id,
+                    narration_text=narration_text,
+                    voice_id=request.voice_id,
+                    speed=request.speed,
+                    format=request.format,
+                    user_id=current_user.id
+                )
+                
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}", file=sys.stdout, flush=True)
+                sys.stdout.flush()
+                logger.info(f"[VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}")
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e) if str(e) else f"{error_type} occurred"
+                
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
+                logger.error(f"[VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", exc_info=True)
+                
+                # Send error event to SSE store
+                try:
+                    error_sse_store = get_sse_store()
+                    error_sse_store.add_event(
+                        job_id,
+                        'tts_failed',
+                        {
+                            'job_id': job_id,
+                            'message': f'Voiceover generation failed: {error_msg}',
+                            'error_type': error_type
+                        }
+                    )
+                    logger.info(f"[VOICEOVER_TASK] Error event sent to SSE store for job {job_id}")
+                except Exception as sse_error:
+                    logger.error(f"[VOICEOVER_TASK] Failed to send error event to SSE store: {sse_error}", exc_info=True)
+        
+        # Create the task with error handling
+        print(f"[RAILWAY_DEBUG] Creating async task for voiceover generation, job_id: {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        try:
+            # Use the module-level asyncio import (imported at top of file)
+            async_task = asyncio.create_task(run_voiceover_with_error_handling())
+            task_state = async_task.done()
+            logger.info(f"Async task created for voiceover generation, job_id: {job_id}, task: {async_task}, done: {task_state}")
+            print(f"[RAILWAY_DEBUG] Async task created for voiceover generation, job_id: {job_id}, done: {task_state}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+        except Exception as task_error:
+            error_msg = f"Failed to create async task for voiceover generation: {str(task_error)}"
+            logger.error(error_msg, exc_info=True)
+            print(f"[RAILWAY_DEBUG] Failed to create async task: {task_error}", file=sys.stderr, flush=True)
+            sys.stderr.flush()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_msg
+            )
+        
+        logger.info(f"[VOICEOVER_ENDPOINT] Returning success response, job_id: {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ENDPOINT] Returning success response, job_id: {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        return {
+            "job_id": job_id,
+            "status": "processing",
+            "message": "Voiceover generation started"
+        }
+    except HTTPException:
+        # Re-raise HTTP exceptions (they're already properly formatted)
+        raise
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else f"{error_type} occurred"
+        logger.error(f"[VOICEOVER_ENDPOINT] Unexpected error in voiceover endpoint: {error_type} - {error_msg}", exc_info=True)
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ENDPOINT] Unexpected error: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+        sys.stderr.flush()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start voiceover generation: {error_msg}"
+        )
 
 
 async def _generate_voiceover_async(

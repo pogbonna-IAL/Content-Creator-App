@@ -53,20 +53,35 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         return
       }
 
-      console.log('AudioPanel - Calling /api/voiceover with job_id:', jobId, 'narration_text length:', jobId ? 0 : output.length)
+      const requestBody = {
+        job_id: jobId || undefined,
+        narration_text: jobId ? undefined : output, // Use narration_text if no job_id
+        voice_id: 'default',
+        speed: 1.0,
+        format: 'wav'
+      }
+      
+      console.log('AudioPanel - Calling /api/voiceover:', {
+        hasJobId: !!jobId,
+        jobId: jobId,
+        hasNarrationText: !!requestBody.narration_text,
+        narrationTextLength: requestBody.narration_text?.length || 0,
+        voiceId: requestBody.voice_id
+      })
 
       // Call voiceover API
       const response = await fetch('/api/voiceover', {
         method: 'POST',
         headers,
         credentials: 'include',
-        body: JSON.stringify({
-          job_id: jobId || undefined,
-          narration_text: jobId ? undefined : output, // Use narration_text if no job_id
-          voice_id: 'default',
-          speed: 1.0,
-          format: 'wav'
-        }),
+        body: JSON.stringify(requestBody),
+      })
+      
+      console.log('AudioPanel - Voiceover API response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries())
       })
 
       if (!response.ok) {
@@ -78,14 +93,38 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
           errorData = { error: errorText || 'Unknown error' }
         }
         
-        console.error('AudioPanel - Voiceover API error:', {
+        // Log full error details for debugging
+        const errorDetails = {
           status: response.status,
           statusText: response.statusText,
           error: errorData.error,
-          detail: errorData.detail
-        })
+          detail: errorData.detail,
+          hint: errorData.hint,
+          fullResponse: errorText,
+          errorData: errorData
+        }
+        console.error('AudioPanel - Voiceover API error (full details):', JSON.stringify(errorDetails, null, 2))
+        console.error('AudioPanel - Voiceover API error (object):', errorDetails)
         
-        throw new Error(errorData.error || errorData.detail || `Failed to start voiceover generation (${response.status})`)
+        // Build detailed error message
+        let errorMessage = errorData.error || errorData.detail || `Failed to start voiceover generation (${response.status})`
+        if (errorData.detail && errorData.detail !== errorMessage && typeof errorData.detail === 'string') {
+          errorMessage = errorData.detail
+        }
+        if (errorData.hint) {
+          errorMessage += `\n\nHint: ${errorData.hint}`
+        }
+        
+        // If we have a detail object (FastAPI error format), extract the message
+        if (errorData.detail && typeof errorData.detail === 'object') {
+          if (errorData.detail.message) {
+            errorMessage = errorData.detail.message
+          } else if (errorData.detail.detail) {
+            errorMessage = errorData.detail.detail
+          }
+        }
+        
+        throw new Error(errorMessage)
       }
 
       const result = await response.json()

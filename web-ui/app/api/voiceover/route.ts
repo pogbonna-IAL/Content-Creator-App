@@ -104,18 +104,34 @@ export async function POST(request: NextRequest) {
       const errorText = await response.text()
       console.error('Voiceover request failed:', response.status, errorText)
       
+      // Try to parse the error response as JSON
+      let errorData: any = { error: errorText || 'Unknown error' }
+      try {
+        errorData = JSON.parse(errorText)
+      } catch {
+        // If not JSON, keep the text as error
+        errorData = { error: errorText || 'Unknown error', detail: errorText }
+      }
+      
       if (response.status === 401) {
         return new Response(
           JSON.stringify({ 
             error: 'Authentication failed', 
-            detail: 'Please log in again' 
+            detail: errorData.detail || 'Please log in again',
+            hint: errorData.hint || 'Your session may have expired'
           }),
           { status: 401, headers: { 'Content-Type': 'application/json' } }
         )
       }
 
+      // Forward the backend error details
       return new Response(
-        JSON.stringify({ error: 'Failed to start voiceover generation', detail: errorText }),
+        JSON.stringify({ 
+          error: errorData.error || 'Failed to start voiceover generation', 
+          detail: errorData.detail || errorText,
+          hint: errorData.hint,
+          status: response.status
+        }),
         { status: response.status, headers: { 'Content-Type': 'application/json' } }
       )
     }
