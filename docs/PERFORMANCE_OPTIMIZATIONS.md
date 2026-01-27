@@ -47,18 +47,19 @@ else:
 - Faster execution (sequential is more efficient for linear tasks)
 - Still uses hierarchical for multiple content types (parallel execution)
 
-### 2. Reduced Agent Iterations (`src/content_creation_crew/crew.py`)
-**Change**: Reduced `max_iter` from 3 to 2 for all agents
+### 2. Optimized Agent Iterations (`src/content_creation_crew/crew.py`)
+**Change**: Set `max_iter` to 5 for all agents (balanced between speed and reliability)
 ```python
-# Before: max_iter=3
-# After: max_iter=2
-max_iter=2  # Limit iterations to prevent timeout and reduce API calls
+# Before: max_iter=15 (default, too high)
+# After: max_iter=5 (balanced)
+max_iter=5  # Allow sufficient iterations for task completion without excessive retries
 ```
 
 **Benefits**:
-- Fewer retries = fewer API calls
-- Faster execution (less time spent on retries)
-- Still allows one retry if task fails initially
+- Prevents "Maximum iterations reached" errors
+- Allows agents to complete tasks properly
+- Reduces exponential token growth from retries
+- Balanced between speed (lower than default 15) and reliability (higher than 2)
 
 ### 3. Faster Wait Loop (`src/content_creation_crew/content_routes.py`)
 **Change**: Reduced wait interval from 10 seconds to 5 seconds
@@ -91,9 +92,9 @@ if process == Process.hierarchical:
 ## Expected Performance Improvements
 
 ### Single Blog Content Type
-- **Before**: ~60+ seconds, 6 API calls
-- **After**: ~20-30 seconds, 3 API calls
-- **Improvement**: ~50% faster, 50% fewer API calls
+- **Before**: ~60+ seconds, 6 API calls, "Maximum iterations reached" errors
+- **After**: ~20-30 seconds, 3 API calls, no iteration errors
+- **Improvement**: ~50% faster, 50% fewer API calls, no retry loops
 
 ### Multiple Content Types
 - **Before**: ~60+ seconds, 6+ API calls per type

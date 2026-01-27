@@ -201,9 +201,9 @@ class ContentCreationCrew():
             config=self.agents_config['researcher'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
-        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=2")
+        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=5")
         return agent
 
     @agent
@@ -212,9 +212,9 @@ class ContentCreationCrew():
             config=self.agents_config['writer'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
-        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=3")
+        logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=5")
         return agent
 
     @agent
@@ -223,9 +223,9 @@ class ContentCreationCrew():
             config=self.agents_config['editor'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
-        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=3")
+        logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=5")
         return agent
 
     @agent
@@ -234,7 +234,7 @@ class ContentCreationCrew():
             config=self.agents_config['social_media_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
         logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -245,7 +245,7 @@ class ContentCreationCrew():
             config=self.agents_config['audio_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
         logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -256,7 +256,7 @@ class ContentCreationCrew():
             config=self.agents_config['video_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
+            max_iter=5  # Allow sufficient iterations for task completion (default is 15, reduced to 5 for balance between speed and reliability)
         )
         logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent

@@ -1728,18 +1728,29 @@ async def run_generation_async(
             
             if raw_content_func:
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Calling {content_type} extraction function", file=sys.stdout, flush=True)
+                extraction_start = time.time()
                 raw_content = await raw_content_func(result, topic, logger)
-                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} extraction completed, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
+                extraction_duration = time.time() - extraction_start
+                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
+                logger.info(f"[EXTRACTION] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, content length={len(raw_content) if raw_content else 0}")
                 if raw_content:
+                    validation_start = time.time()
                     is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
                         content_type, raw_content, model_name, allow_repair=True
                     )
+                    validation_duration = time.time() - validation_start
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} validation completed, valid={is_valid}, content_length={len(validated_content) if validated_content else 0}", file=sys.stdout, flush=True)
+                    logger.info(f"[VALIDATION] Job {job_id}: {content_type} validation completed in {validation_duration:.3f}s, valid={is_valid}, repaired={was_repaired}")
                     if not is_valid:
+                        logger.warning(f"[VALIDATION] Job {job_id}: {content_type} content validation failed, using cleaned raw content")
                         validated_content = api_server_module.clean_content(raw_content)
+                        logger.debug(f"[VALIDATION] Job {job_id}: Cleaned {content_type} content length={len(validated_content) if validated_content else 0}")
                     
                     if validated_content and len(validated_content.strip()) > 10:
                         # Moderate output before saving artifact
                         if config.ENABLE_CONTENT_MODERATION:
+                            logger.info(f"[MODERATION] Job {job_id}: Starting {content_type} content moderation")
+                            moderation_start = time.time()
                             from .services.moderation_service import get_moderation_service
                             moderation_service = get_moderation_service()
                             moderation_result = moderation_service.moderate_output(
@@ -1747,6 +1758,8 @@ async def run_generation_async(
                                 content_type,
                                 context={"job_id": job_id, "user_id": user_id}
                             )
+                            moderation_duration = time.time() - moderation_start
+                            logger.info(f"[MODERATION] Job {job_id}: {content_type} moderation completed in {moderation_duration:.3f}s, passed={moderation_result.passed}")
                             
                             if not moderation_result.passed:
                                 # Send moderation blocked event
@@ -1764,6 +1777,7 @@ async def run_generation_async(
                                     'job_id': job_id,
                                     'artifact_type': content_type
                                 })
+                                artifact_start = time.time()
                                 content_service.create_artifact(
                                     job_id,
                                     content_type,
@@ -1772,13 +1786,30 @@ async def run_generation_async(
                                     prompt_version=PROMPT_VERSION,
                                     model_used=model_name
                                 )
+                                artifact_duration = time.time() - artifact_start
                                 # Send artifact ready event
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact created, sending SSE events", file=sys.stdout, flush=True)
                                 sse_store.add_event(job_id, 'artifact_ready', {
                                     'job_id': job_id,
                                     'artifact_type': content_type,
                                     'message': f'{content_type.capitalize()} content generated'
                                 })
-                                logger.info(f"Job {job_id}: {content_type} artifact created")
+                                # Send content event with the actual content (CRITICAL FIX - was missing!)
+                                content_field = {
+                                    'social': 'social_media_content',
+                                    'audio': 'audio_content',
+                                    'video': 'video_content'
+                                }.get(content_type, 'content')
+                                sse_store.add_event(job_id, 'content', {
+                                    'job_id': job_id,
+                                    'chunk': validated_content,  # Send full content as a single chunk
+                                    'progress': 100,  # Content is complete
+                                    'artifact_type': content_type,
+                                    'content_field': content_field  # Help frontend identify which field to use
+                                })
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact SSE events added to store, content_length={len(validated_content)}", file=sys.stdout, flush=True)
+                                logger.info(f"[ARTIFACT] Job {job_id}: {content_type} artifact created in {artifact_duration:.3f}s, content_length={len(validated_content)}")
+                                logger.info(f"Job {job_id}: {content_type} content event sent")
                         else:
                             # Moderation disabled, create artifact directly
                             content_service.create_artifact(
