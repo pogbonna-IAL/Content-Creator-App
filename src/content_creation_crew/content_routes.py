@@ -2129,8 +2129,14 @@ async def create_voiceover(
     
     # Wrap the async function to ensure it runs and logs errors
     async def run_voiceover_with_error_handling():
+        """Wrapper to ensure async voiceover task errors are logged and handled"""
         try:
+            # Force immediate output for Railway visibility
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper started for job {job_id}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
             logger.info(f"[VOICEOVER_TASK] Task wrapper started for job {job_id}")
+            
             await _generate_voiceover_async(
                 job_id=job_id,
                 narration_text=narration_text,
@@ -2139,9 +2145,19 @@ async def create_voiceover(
                 format=request.format,
                 user_id=current_user.id
             )
+            
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
             logger.info(f"[VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}")
         except Exception as e:
-            logger.error(f"[VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {type(e).__name__} - {str(e)}", exc_info=True)
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else f"{error_type} occurred"
+            
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            logger.error(f"[VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {error_type} - {error_msg}", exc_info=True)
+            
             # Send error event to SSE store
             try:
                 error_sse_store = get_sse_store()
@@ -2150,16 +2166,36 @@ async def create_voiceover(
                     'tts_failed',
                     {
                         'job_id': job_id,
-                        'message': f'Voiceover generation failed: {str(e)}',
-                        'error_type': type(e).__name__
+                        'message': f'Voiceover generation failed: {error_msg}',
+                        'error_type': error_type
                     }
                 )
                 logger.info(f"[VOICEOVER_TASK] Error event sent to SSE store for job {job_id}")
             except Exception as sse_error:
                 logger.error(f"[VOICEOVER_TASK] Failed to send error event to SSE store: {sse_error}", exc_info=True)
     
-    async_task = asyncio.create_task(run_voiceover_with_error_handling())
-    logger.info(f"Async task created for voiceover generation, job_id: {job_id}, task: {async_task}")
+    # Create the task with error handling
+    print(f"[RAILWAY_DEBUG] Creating async task for voiceover generation, job_id: {job_id}", file=sys.stdout, flush=True)
+    sys.stdout.flush()
+    
+    try:
+        async_task = asyncio.create_task(run_voiceover_with_error_handling())
+        task_state = async_task.done()
+        logger.info(f"Async task created for voiceover generation, job_id: {job_id}, task: {async_task}, done: {task_state}")
+        print(f"[RAILWAY_DEBUG] Async task created for voiceover generation, job_id: {job_id}, done: {task_state}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        # Give the task a moment to start (non-blocking)
+        # This ensures the task is scheduled before we return
+        import asyncio
+        await asyncio.sleep(0.1)  # Small delay to let task start
+        print(f"[RAILWAY_DEBUG] After sleep, task done: {async_task.done()}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+    except Exception as task_error:
+        logger.error(f"Failed to create async task for voiceover generation: {task_error}", exc_info=True)
+        print(f"[RAILWAY_DEBUG] Failed to create async task: {task_error}", file=sys.stderr, flush=True)
+        sys.stderr.flush()
+        raise
     
     return {
         "job_id": job_id,
@@ -2191,20 +2227,29 @@ async def _generate_voiceover_async(
     from .database import get_db, ContentArtifact, User
     from .services.plan_policy import PlanPolicy
     
+    # Force immediate output for Railway visibility
+    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting voiceover generation for job {job_id}, user {user_id}", file=sys.stdout, flush=True)
+    sys.stdout.flush()
     logger.info(f"[VOICEOVER_ASYNC] Starting voiceover generation for job {job_id}, user {user_id}")
     logger.info(f"[VOICEOVER_ASYNC] Parameters: voice_id={voice_id}, speed={speed}, format={format}, text_length={len(narration_text) if narration_text else 0}")
     
     # Get database session
     try:
         db = next(get_db())
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Database session obtained for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         logger.info(f"[VOICEOVER_ASYNC] Database session obtained for job {job_id}")
     except Exception as db_error:
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Failed to get database session: {db_error}", file=sys.stderr, flush=True)
+        sys.stderr.flush()
         logger.error(f"[VOICEOVER_ASYNC] Failed to get database session for job {job_id}: {db_error}", exc_info=True)
         raise
     
     sse_store = get_sse_store()
     
     try:
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to send tts_started event for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         logger.info(f"[VOICEOVER_ASYNC] About to send tts_started event for job {job_id}")
         # Send TTS started event
         sse_store.add_event(
