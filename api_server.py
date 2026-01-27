@@ -1392,15 +1392,44 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
     
     # Final fallback: extract from result object (try both 'social' and 'social_media')
     if not content or len(content.strip()) < 10:
-        logger.info("Social media file content empty, using result object extraction")
+        logger.info("[EXTRACT_SOCIAL] Social media file content empty, using result object extraction")
         content = extract_content_from_result(result, 'social')
         # If that fails, try 'social_media' (for standalone task)
         if not content or len(content.strip()) < 10:
+            logger.debug("[EXTRACT_SOCIAL] 'social' extraction failed, trying 'social_media'")
             content = extract_content_from_result(result, 'social_media')
+        
+        # If still no content, try extracting from result object directly (for standalone tasks)
+        if not content or len(content.strip()) < 10:
+            logger.debug("[EXTRACT_SOCIAL] Task-based extraction failed, trying direct result object extraction")
+            if hasattr(result, 'tasks_output') and result.tasks_output:
+                # Try to get content from the last task (should be social media task for standalone)
+                last_task = result.tasks_output[-1]
+                if hasattr(last_task, 'raw') and last_task.raw:
+                    content = str(last_task.raw)
+                elif hasattr(last_task, 'output') and last_task.output:
+                    content = str(last_task.output)
+                elif hasattr(last_task, 'content') and last_task.content:
+                    content = str(last_task.content)
+            
+            # Final fallback: try result object attributes directly
+            if not content or len(content.strip()) < 10:
+                if hasattr(result, 'raw') and result.raw:
+                    content = str(result.raw)
+                elif hasattr(result, 'content') and result.content:
+                    content = str(result.content)
+                elif hasattr(result, 'output') and result.output:
+                    content = str(result.output)
     
-    logger.info(f"Final extracted social media content length: {len(content) if content else 0}")
-    if content:
-        logger.info(f"Social media content preview: {content[:200]}")
+    logger.info(f"[EXTRACT_SOCIAL] Final extracted social media content length: {len(content) if content else 0}")
+    if content and len(content.strip()) > 10:
+        logger.info(f"[EXTRACT_SOCIAL] Social media content preview: {content[:200]}")
+    else:
+        logger.error(f"[EXTRACT_SOCIAL] Failed to extract social media content - result type: {type(result)}, has tasks_output: {hasattr(result, 'tasks_output')}")
+        if hasattr(result, 'tasks_output') and result.tasks_output:
+            logger.error(f"[EXTRACT_SOCIAL] tasks_output length: {len(result.tasks_output)}")
+            for i, task in enumerate(result.tasks_output):
+                logger.error(f"[EXTRACT_SOCIAL] Task {i}: type={type(task)}, has raw={hasattr(task, 'raw')}, has output={hasattr(task, 'output')}, has content={hasattr(task, 'content')}")
     
     return content
 

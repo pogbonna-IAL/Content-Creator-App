@@ -1762,11 +1762,14 @@ async def run_generation_async(
                     validation_duration = time.time() - validation_start
                     print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} validation completed, valid={is_valid}, content_length={len(validated_content) if validated_content else 0}", file=sys.stdout, flush=True)
                     logger.info(f"[VALIDATION] Job {job_id}: {content_type} validation completed in {validation_duration:.3f}s, valid={is_valid}, repaired={was_repaired}")
-                    if not is_valid:
-                        logger.warning(f"[VALIDATION] Job {job_id}: {content_type} content validation failed, using cleaned raw content")
+                    
+                    # Ensure we have content to work with (use validated_content or fallback to raw_content)
+                    if not validated_content or len(validated_content.strip()) < 10:
+                        logger.warning(f"[VALIDATION] Job {job_id}: {content_type} content validation failed or empty, using cleaned raw content")
                         validated_content = api_server_module.clean_content(raw_content)
                         logger.debug(f"[VALIDATION] Job {job_id}: Cleaned {content_type} content length={len(validated_content) if validated_content else 0}")
                     
+                    # Final check - ensure we have valid content before proceeding
                     if validated_content and len(validated_content.strip()) > 10:
                         # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                         artifact_start = time.time()
@@ -1805,6 +1808,7 @@ async def run_generation_async(
                         logger.info(f"Job {job_id}: {content_type} content event sent (early streaming)")
                         
                         # OPTIMIZATION (Phase 3): Run moderation in background (non-blocking)
+                        # Note: Artifact is already created above (line 1773), so we just need to handle moderation
                         if config.ENABLE_CONTENT_MODERATION:
                             logger.info(f"[MODERATION] Job {job_id}: Starting {content_type} content moderation in background")
                             # Get artifact ID for background moderation
@@ -1816,36 +1820,31 @@ async def run_generation_async(
                                 ))
                             else:
                                 logger.warning(f"Job {job_id}: Could not get artifact ID for background moderation")
-                        else:
-                            # Moderation disabled, create artifact directly
-                            content_service.create_artifact(
-                                job_id,
-                                content_type,
-                                validated_content,
-                                content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                                prompt_version=PROMPT_VERSION,
-                                model_used=model_name
-                            )
-                            # Send artifact ready event
-                            sse_store.add_event(job_id, 'artifact_ready', {
-                                'job_id': job_id,
-                                'artifact_type': content_type,
-                                'message': f'{content_type.capitalize()} content generated'
-                            })
-                            # Send content event with the actual content
-                            content_field = {
-                                'social': 'social_media_content',
-                                'audio': 'audio_content',
-                                'video': 'video_content'
-                            }.get(content_type, 'content')
-                            sse_store.add_event(job_id, 'content', {
-                                'job_id': job_id,
-                                'chunk': validated_content,  # Send full content as a single chunk
-                                'progress': 100,  # Content is complete
-                                'artifact_type': content_type,
-                                'content_field': content_field  # Help frontend identify which field to use
-                            })
-                            logger.info(f"Job {job_id}: {content_type} artifact created")
+                        # Note: When moderation is disabled, artifact and SSE events are already sent above
+                        # No need to duplicate artifact creation or SSE events
+                    else:
+                        # Content extraction succeeded but validation/cleaning resulted in empty content
+                        error_msg = f"{content_type.capitalize()} content extraction succeeded but resulted in empty content after validation/cleaning"
+                        logger.error(f"Job {job_id}: {error_msg}")
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR - {error_msg}", file=sys.stdout, flush=True)
+                        sse_store.add_event(job_id, 'error', {
+                            'job_id': job_id,
+                            'message': error_msg,
+                            'error_type': 'empty_content',
+                            'artifact_type': content_type
+                        })
+                else:
+                    # Raw content extraction failed
+                    error_msg = f"Failed to extract {content_type} content from CrewAI result"
+                    logger.error(f"Job {job_id}: {error_msg}")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR - {error_msg}, raw_content length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': error_msg,
+                        'error_type': 'extraction_failed',
+                        'artifact_type': content_type,
+                        'hint': f'Check backend logs for {content_type} extraction details. The CrewAI result may not contain the expected content.'
+                    })
         
         # Update job status to completed
         content_service.update_job_status(
