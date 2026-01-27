@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
 export default function AdminDashboard() {
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'cache' | 'system' | 'moderation' | 'billing'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'cache' | 'system' | 'moderation' | 'billing' | 'model-preferences'>('overview')
 
   // Redirect if not admin
   useEffect(() => {
@@ -45,7 +45,7 @@ export default function AdminDashboard() {
 
         {/* Tabs */}
         <div className="flex space-x-4 mb-6 border-b border-dark-border overflow-x-auto">
-          {(['overview', 'users', 'cache', 'system', 'moderation', 'billing'] as const).map((tab) => (
+          {(['overview', 'users', 'cache', 'system', 'moderation', 'billing', 'model-preferences'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -55,7 +55,7 @@ export default function AdminDashboard() {
                   : 'text-gray-300 hover:text-gray-100'
               }`}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab.charAt(0).toUpperCase() + tab.slice(1).replace('-', ' ')}
             </button>
           ))}
         </div>
@@ -68,6 +68,7 @@ export default function AdminDashboard() {
           {activeTab === 'system' && <SystemTab />}
           {activeTab === 'moderation' && <ModerationTab />}
           {activeTab === 'billing' && <BillingTab />}
+          {activeTab === 'model-preferences' && <ModelPreferencesTab />}
         </div>
       </div>
       <Footer />
@@ -822,6 +823,250 @@ function BillingTab() {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// Model Preferences Tab Component
+function ModelPreferencesTab() {
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
+  const [preferences, setPreferences] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [editingPreference, setEditingPreference] = useState<{ content_type: string; model_name: string } | null>(null)
+
+  useEffect(() => {
+    loadAvailableModels()
+  }, [])
+
+  const loadAvailableModels = async () => {
+    try {
+      const response = await fetch(getApiUrl('v1/admin/model-preferences/available-models'), {
+        headers: createAuthHeaders(),
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setAvailableModels(data.models || [])
+      }
+    } catch (err) {
+      console.error('Failed to load available models:', err)
+    }
+  }
+
+  const loadUserPreferences = async (userId: number) => {
+    setLoading(true)
+    setMessage(null)
+    try {
+      const response = await fetch(getApiUrl(`v1/admin/users/${userId}/model-preferences`), {
+        headers: createAuthHeaders(),
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setPreferences(data)
+        setSelectedUserId(userId)
+      } else {
+        const errorData = await response.json()
+        setMessage({ type: 'error', text: errorData.detail || 'Failed to load user preferences' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Failed to load user preferences' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSetPreference = async (contentType: string, modelName: string) => {
+    if (!selectedUserId) return
+    
+    setActionLoading(true)
+    setMessage(null)
+    try {
+      const response = await fetch(getApiUrl(`v1/admin/users/${selectedUserId}/model-preferences`), {
+        method: 'POST',
+        headers: createAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          user_id: selectedUserId,
+          content_type: contentType,
+          model_name: modelName,
+        }),
+      })
+      const data = await response.json()
+      if (response.ok) {
+        setMessage({ type: 'success', text: data.message || 'Model preference set successfully' })
+        loadUserPreferences(selectedUserId)
+        setEditingPreference(null)
+      } else {
+        setMessage({ type: 'error', text: data.detail || 'Failed to set model preference' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Failed to set model preference' })
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleDeletePreference = async (contentType: string) => {
+    if (!selectedUserId) return
+    
+    if (!confirm(`Remove custom model for ${contentType}? User will revert to tier-based model.`)) {
+      return
+    }
+    
+    setActionLoading(true)
+    setMessage(null)
+    try {
+      const response = await fetch(getApiUrl(`v1/admin/users/${selectedUserId}/model-preferences/${contentType}`), {
+        method: 'DELETE',
+        headers: createAuthHeaders(),
+        credentials: 'include',
+      })
+      const data = await response.json()
+      if (response.ok) {
+        setMessage({ type: 'success', text: data.message || 'Model preference removed' })
+        loadUserPreferences(selectedUserId)
+      } else {
+        setMessage({ type: 'error', text: data.detail || 'Failed to remove model preference' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Failed to remove model preference' })
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const contentTypes = ['blog', 'social', 'audio', 'video']
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4 text-gradient">User Model Preferences</h2>
+      
+      {message && (
+        <div className={`mb-4 p-4 rounded-lg ${
+          message.type === 'success' 
+            ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+            : 'bg-red-500/20 text-red-400 border border-red-500/30'
+        }`}>
+          {message.text}
+        </div>
+      )}
+
+      {/* User Selection */}
+      <div className="mb-6 glass-effect neon-border rounded-lg p-4">
+        <h3 className="text-lg font-semibold mb-3 text-white">Select User</h3>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            placeholder="User ID"
+            value={selectedUserId || ''}
+            onChange={(e) => {
+              const userId = e.target.value ? parseInt(e.target.value) : null
+              setSelectedUserId(userId)
+              if (userId) {
+                loadUserPreferences(userId)
+              } else {
+                setPreferences(null)
+              }
+            }}
+            className="flex-1 px-4 py-2 bg-dark-card border border-dark-border rounded-lg text-white"
+          />
+          <button
+            onClick={() => selectedUserId && loadUserPreferences(selectedUserId)}
+            disabled={!selectedUserId || loading}
+            className="px-6 py-2 bg-neon-cyan text-dark-bg rounded-lg font-semibold hover:bg-neon-cyan/80 disabled:opacity-50"
+          >
+            {loading ? 'Loading...' : 'Load Preferences'}
+          </button>
+        </div>
+        {preferences && (
+          <p className="text-sm text-gray-300 mt-2">
+            User: {preferences.user_email} (ID: {preferences.user_id})
+          </p>
+        )}
+      </div>
+
+      {/* Model Preferences */}
+      {preferences && (
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold text-white">Model Preferences</h3>
+          {contentTypes.map((contentType) => {
+            const preference = preferences.preferences?.find((p: any) => p.content_type === contentType)
+            const isEditing = editingPreference?.content_type === contentType
+            
+            return (
+              <div key={contentType} className="glass-effect neon-border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-semibold text-white capitalize">{contentType}</h4>
+                  {preference && !isEditing && (
+                    <button
+                      onClick={() => handleDeletePreference(contentType)}
+                      disabled={actionLoading}
+                      className="px-3 py-1 bg-red-500/20 text-red-400 rounded text-sm hover:bg-red-500/30 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                
+                {isEditing ? (
+                  <div className="flex gap-2">
+                    <select
+                      value={editingPreference.model_name}
+                      onChange={(e) => setEditingPreference({ ...editingPreference, model_name: e.target.value })}
+                      className="flex-1 px-4 py-2 bg-dark-card border border-dark-border rounded-lg text-white"
+                    >
+                      {availableModels.map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => handleSetPreference(contentType, editingPreference.model_name)}
+                      disabled={actionLoading}
+                      className="px-4 py-2 bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setEditingPreference(null)}
+                      className="px-4 py-2 bg-gray-500/20 text-gray-400 rounded hover:bg-gray-500/30"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-gray-300">
+                        Model: <span className="text-white font-semibold">
+                          {preference?.model_name || 'Tier-based (default)'}
+                        </span>
+                      </p>
+                      {preference && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          Set on {new Date(preference.updated_at || preference.created_at).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setEditingPreference({
+                        content_type: contentType,
+                        model_name: preference?.model_name || availableModels[0] || 'gpt-4o-mini'
+                      })}
+                      className="px-4 py-2 bg-neon-cyan text-dark-bg rounded-lg font-semibold hover:bg-neon-cyan/80"
+                    >
+                      {preference ? 'Change' : 'Set Custom'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

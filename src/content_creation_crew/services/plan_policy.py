@@ -142,13 +142,32 @@ class PlanPolicy:
         self._tier_config = self.subscription_service.get_tier_config(plan) or {}
         return self._tier_config
     
-    def get_model_name(self) -> str:
+    def get_model_name(self, content_type: str = None) -> str:
         """
-        Get LLM model name for current plan
+        Get LLM model name for current plan, with optional content type override
+        
+        Args:
+            content_type: Optional content type ('blog', 'social', 'audio', 'video')
+                         If provided, checks for user-specific model preference
         
         Returns:
             Model name (e.g., 'gpt-4o-mini')
         """
+        # Check for user-specific model preference if content_type is provided
+        if content_type:
+            from ..db.models.user_model_preference import UserModelPreference
+            preference = self.db.query(UserModelPreference).filter(
+                UserModelPreference.user_id == self.user.id,
+                UserModelPreference.content_type == content_type
+            ).first()
+            
+            if preference:
+                logger.info(
+                    f"User {self.user.id} has custom model preference for {content_type}: {preference.model_name}"
+                )
+                return preference.model_name
+        
+        # Fall back to tier-based model selection
         tier_config = self.get_tier_config()
         return tier_config.get('model', 'gpt-4o-mini')
     

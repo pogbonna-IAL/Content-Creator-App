@@ -9,6 +9,7 @@ from .content import ContentJob, ContentArtifact
 from .billing import BillingEvent
 from .notification import RetentionNotification
 from .invoice import Invoice, BillingAddress, InvoiceStatus
+from .user_model_preference import UserModelPreference
 
 __all__ = [
     "User",
@@ -24,5 +25,6 @@ __all__ = [
     "Invoice",
     "BillingAddress",
     "InvoiceStatus",
+    "UserModelPreference",
 ]
 

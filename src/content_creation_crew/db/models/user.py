@@ -47,6 +47,7 @@ class User(Base):
     # Relationships
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
     memberships = relationship("Membership", back_populates="user", cascade="all, delete-orphan")
+    model_preferences = relationship("UserModelPreference", foreign_keys="UserModelPreference.user_id", back_populates="user", cascade="all, delete-orphan")
 
 
 class Session(Base):

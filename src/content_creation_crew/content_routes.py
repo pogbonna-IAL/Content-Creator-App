@@ -944,10 +944,13 @@ async def run_generation_async(
         })
         
         # Get model name
-        model_name = policy.get_model_name()
+        # Get model name - check for user-specific preference for blog (primary content type)
+        # If blog is requested, use blog preference; otherwise use first content type's preference
+        primary_content_type = 'blog' if 'blog' in content_types else (content_types[0] if content_types else None)
+        model_name = policy.get_model_name(content_type=primary_content_type) if primary_content_type else policy.get_model_name()
         plan = policy.get_plan()
         # Use print() for critical messages as logger might be buffered
-        print(f"[RAILWAY_DEBUG] Job {job_id}: Model='{model_name}', Timeout={timeout_seconds}s, Content types={content_types}", file=sys.stdout, flush=True)
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Model='{model_name}' (for {primary_content_type or 'default'}), Timeout={timeout_seconds}s, Content types={content_types}", file=sys.stdout, flush=True)
         logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
         logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Model='{model_name}', Timeout={timeout_seconds}s")
         logger.info(f"[JOB_START] Job {job_id}: Content types requested: {content_types}")
@@ -1106,9 +1109,8 @@ async def run_generation_async(
                 cached_content_types_set = set(content_types) - set(missing_content_types)
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Partial cache hit, generating missing types: {missing_content_types}, cached types: {cached_content_types_set}", file=sys.stdout, flush=True)
             else:
-                cached_content_types_set = set(content_types)  # All types cached
-            else:
                 # All content types are cached - mark job as completed
+                cached_content_types_set = set(content_types)  # All types cached
                 content_service.update_job_status(
                     job_id,
                     JobStatus.COMPLETED.value,

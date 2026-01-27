@@ -10,8 +10,10 @@ import logging
 
 from .db.engine import get_db
 from .db.models.user import User
+from .db.models.user_model_preference import UserModelPreference
 from .auth import get_current_user
 from .services.cache_invalidation import get_cache_invalidation_service
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -655,5 +657,210 @@ async def get_dunning_stats(
             "total_amount_recovered": float(total_recovered_result) if total_recovered_result else 0.0,
             "recovery_rate": float(total_recovered_result / total_due_result * 100) if total_due_result > 0 else 0.0,
         }
+    }
+
+
+# ============================================================================
+# User Model Preferences Management Endpoints
+# ============================================================================
+
+# Available models list
+AVAILABLE_MODELS = [
+    'gpt-4o-mini',
+    'gpt-4o',
+    'gpt-4-turbo',
+    'gpt-4',
+    'gpt-3.5-turbo',
+]
+
+CONTENT_TYPES = ['blog', 'social', 'audio', 'video']
+
+
+class UserModelPreferenceRequest(BaseModel):
+    """Request to set user model preference"""
+    user_id: int
+    content_type: str  # 'blog', 'social', 'audio', 'video'
+    model_name: str  # e.g., 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo'
+
+
+@router.get("/users/{user_id}/model-preferences")
+async def get_user_model_preferences(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get model preferences for a user (admin only)
+    """
+    # Verify user exists
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+    
+    preferences = db.query(UserModelPreference).filter(
+        UserModelPreference.user_id == user_id
+    ).all()
+    
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "user_email": target_user.email,
+        "preferences": [
+            {
+                "id": p.id,
+                "content_type": p.content_type,
+                "model_name": p.model_name,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "created_by_admin_id": p.created_by_admin_id
+            }
+            for p in preferences
+        ],
+        "available_models": AVAILABLE_MODELS,
+        "content_types": CONTENT_TYPES
+    }
+
+
+@router.post("/users/{user_id}/model-preferences")
+async def set_user_model_preference(
+    user_id: int,
+    request: UserModelPreferenceRequest,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Set model preference for a user and content type (admin only)
+    """
+    # Verify user exists
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+    
+    # Validate content type
+    if request.content_type not in CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid content_type. Must be one of: {CONTENT_TYPES}"
+        )
+    
+    # Validate model name
+    if request.model_name not in AVAILABLE_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid model_name. Must be one of: {AVAILABLE_MODELS}"
+        )
+    
+    # Check if preference already exists
+    existing = db.query(UserModelPreference).filter(
+        UserModelPreference.user_id == user_id,
+        UserModelPreference.content_type == request.content_type
+    ).first()
+    
+    if existing:
+        # Update existing preference
+        existing.model_name = request.model_name
+        existing.updated_at = datetime.utcnow()
+        existing.created_by_admin_id = admin_user.id
+        db.commit()
+        db.refresh(existing)
+        
+        logger.info(
+            f"Admin {admin_user.id} updated model preference for user {user_id}: "
+            f"{request.content_type} -> {request.model_name}"
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Model preference updated for {request.content_type}",
+            "preference": {
+                "id": existing.id,
+                "user_id": existing.user_id,
+                "content_type": existing.content_type,
+                "model_name": existing.model_name,
+                "updated_at": existing.updated_at.isoformat() if existing.updated_at else None
+            }
+        }
+    else:
+        # Create new preference
+        preference = UserModelPreference(
+            user_id=user_id,
+            content_type=request.content_type,
+            model_name=request.model_name,
+            created_by_admin_id=admin_user.id
+        )
+        db.add(preference)
+        db.commit()
+        db.refresh(preference)
+        
+        logger.info(
+            f"Admin {admin_user.id} set model preference for user {user_id}: "
+            f"{request.content_type} -> {request.model_name}"
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Model preference set for {request.content_type}",
+            "preference": {
+                "id": preference.id,
+                "user_id": preference.user_id,
+                "content_type": preference.content_type,
+                "model_name": preference.model_name,
+                "created_at": preference.created_at.isoformat() if preference.created_at else None
+            }
+        }
+
+
+@router.delete("/users/{user_id}/model-preferences/{content_type}")
+async def delete_user_model_preference(
+    user_id: int,
+    content_type: str,
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Delete model preference for a user and content type (admin only)
+    This will revert to tier-based model selection.
+    """
+    preference = db.query(UserModelPreference).filter(
+        UserModelPreference.user_id == user_id,
+        UserModelPreference.content_type == content_type
+    ).first()
+    
+    if not preference:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model preference not found for user {user_id} and content_type {content_type}"
+        )
+    
+    db.delete(preference)
+    db.commit()
+    
+    logger.info(
+        f"Admin {admin_user.id} deleted model preference for user {user_id}: {content_type}"
+    )
+    
+    return {
+        "status": "success",
+        "message": f"Model preference deleted for {content_type}. User will use tier-based model."
+    }
+
+
+@router.get("/model-preferences/available-models")
+async def get_available_models(
+    admin_user: User = Depends(require_admin)
+) -> Dict[str, Any]:
+    """
+    Get list of available models (admin only)
+    """
+    return {
+        "status": "success",
+        "models": AVAILABLE_MODELS,
+        "content_types": CONTENT_TYPES
     }
 
