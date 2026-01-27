@@ -373,10 +373,11 @@ class ContentCreationCrew():
         # Optimize process selection based on content types
         # Sequential is faster for single content type (less overhead)
         # Hierarchical is better for multiple content types (parallel execution)
-        if len(content_types) == 1 and content_types[0] == 'blog':
-            # Single blog content - use sequential for faster execution (less overhead)
+        if len(content_types) == 1:
+            # Single content type - use sequential for faster execution (less overhead)
+            content_type_name = content_types[0]
             process = Process.sequential
-            logger.info(f"[CREW_BUILD] Using sequential process for single blog content (faster)")
+            logger.info(f"[CREW_BUILD] Using sequential process for single {content_type_name} content (faster)")
         else:
             # Multiple content types - use hierarchical for parallel execution
             process = Process.hierarchical
