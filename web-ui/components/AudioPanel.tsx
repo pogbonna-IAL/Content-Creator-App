@@ -38,12 +38,22 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     try {
       // Get auth token from localStorage (same as generate flow)
       const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      console.log('AudioPanel - Token from localStorage:', token ? `Found (length: ${token.length})` : 'Not found')
+      
       const headers: HeadersInit = {
         'Content-Type': 'application/json',
       }
       if (token) {
         headers['Authorization'] = `Bearer ${token}`
+        console.log('AudioPanel - Authorization header set')
+      } else {
+        console.error('AudioPanel - No token found in localStorage!')
+        setVoiceoverError('Authentication token not found. Please log in again.')
+        setIsGeneratingVoiceover(false)
+        return
       }
+
+      console.log('AudioPanel - Calling /api/voiceover with job_id:', jobId, 'narration_text length:', jobId ? 0 : output.length)
 
       // Call voiceover API
       const response = await fetch('/api/voiceover', {
@@ -60,8 +70,22 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-        throw new Error(errorData.error || errorData.detail || 'Failed to start voiceover generation')
+        const errorText = await response.text()
+        let errorData: any = {}
+        try {
+          errorData = JSON.parse(errorText)
+        } catch {
+          errorData = { error: errorText || 'Unknown error' }
+        }
+        
+        console.error('AudioPanel - Voiceover API error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData.error,
+          detail: errorData.detail
+        })
+        
+        throw new Error(errorData.error || errorData.detail || `Failed to start voiceover generation (${response.status})`)
       }
 
       const result = await response.json()

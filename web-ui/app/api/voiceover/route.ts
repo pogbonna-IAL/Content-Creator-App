@@ -19,17 +19,24 @@ export async function POST(request: NextRequest) {
     }
 
     // Get auth token - try Authorization header first, then cookies
-    const authHeader = request.headers.get('authorization')
+    // Check both lowercase and original case (Next.js may normalize headers)
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization')
+    const cookieHeader = request.headers.get('cookie') || request.headers.get('Cookie') || ''
     let token: string | null = null
+
+    console.log('Voiceover API - Auth header present:', !!authHeader)
+    console.log('Voiceover API - Cookie header present:', !!cookieHeader)
+    console.log('Voiceover API - Header names:', Array.from(request.headers.keys()))
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7).trim()
+      console.log('Voiceover API - Token from Authorization header, length:', token.length)
+    } else if (authHeader) {
+      console.log('Voiceover API - Auth header present but does not start with "Bearer ":', authHeader.substring(0, 20))
     }
 
     // Fallback to cookies if no Authorization header
     if (!token) {
-      const cookieHeader = request.headers.get('cookie') || ''
-      
       if (cookieHeader) {
         const cookies = cookieHeader.split(';').map(c => c.trim())
         for (const cookie of cookies) {
@@ -40,6 +47,7 @@ export async function POST(request: NextRequest) {
             } catch {
               token = value
             }
+            console.log('Voiceover API - Token from cookie, length:', token.length)
             break
           }
         }
@@ -50,19 +58,25 @@ export async function POST(request: NextRequest) {
         const cookieToken = request.cookies.get('auth_token')?.value
         if (cookieToken) {
           token = cookieToken.trim()
+          console.log('Voiceover API - Token from Next.js cookies, length:', token.length)
         }
       }
     }
 
-    if (!token) {
+    if (!token || token.length === 0) {
+      console.error('Voiceover API - No token found. Auth header:', !!authHeader, 'Cookie header:', !!cookieHeader)
+      console.error('Voiceover API - Auth header value (first 50 chars):', authHeader ? authHeader.substring(0, 50) : 'null')
       return new Response(
         JSON.stringify({ 
           error: 'Authentication required', 
-          detail: 'Please log in to generate voiceover' 
+          detail: 'Please log in to generate voiceover',
+          hint: 'Token not found in Authorization header or cookies'
         }),
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       )
     }
+
+    console.log('Voiceover API - Token found (length:', token.length, '), forwarding to backend')
 
     // Prepare request body
     const requestBody: any = {}
