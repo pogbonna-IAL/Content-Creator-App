@@ -25,9 +25,10 @@ editing_task:
 
 social_media_task:
   description: >
-    Create social media post about {topic} from blog post. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}}. LinkedIn 200-300 words, Twitter <280 chars. Use emojis. No markdown.
+    Create social media post about {topic} from blog post. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "facebook_post": "...", "instagram_post": "...", "hashtags": [...], "cta": "..."}}. 
+    LinkedIn 200-300 words, Twitter <280 chars, Facebook 150-250 words, Instagram 125-2200 chars. Use emojis. No markdown.
   expected_output: >
-    Social media JSON: LinkedIn post, Twitter post, hashtags, CTA. Ready to post.
+    Social media JSON: LinkedIn post, Twitter post, Facebook post, Instagram post, hashtags, CTA. Ready to post.
   agent: social_media_specialist
   context:
     - editing_task
@@ -35,9 +36,10 @@ social_media_task:
 
 social_media_standalone_task:
   description: >
-    Create social media post about {topic}. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "hashtags": [...], "cta": "..."}}. LinkedIn 200-300 words, Twitter <280 chars. Use emojis. No markdown.
+    Create social media post about {topic}. Output JSON: {{"linkedin_post": "...", "twitter_post": "...", "facebook_post": "...", "instagram_post": "...", "hashtags": [...], "cta": "..."}}. 
+    LinkedIn 200-300 words, Twitter <280 chars, Facebook 150-250 words, Instagram 125-2200 chars. Use emojis. No markdown.
   expected_output: >
-    Social media JSON: LinkedIn post, Twitter post, hashtags, CTA. Ready to post.
+    Social media JSON: LinkedIn post, Twitter post, Facebook post, Instagram post, hashtags, CTA. Ready to post.
   agent: social_media_specialist
   output_file: 'social_media_output.md'
 

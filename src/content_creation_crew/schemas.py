@@ -50,6 +50,8 @@ class SocialMediaContentSchema(BaseModel):
     """Schema for social media content"""
     linkedin_post: str = Field(..., description="LinkedIn post (200-300 words)", min_length=200)
     twitter_post: str = Field(..., description="Twitter/X post (under 280 characters)", max_length=280)
+    facebook_post: str = Field(..., description="Facebook post (150-250 words)", min_length=150, max_length=2000)
+    instagram_post: str = Field(..., description="Instagram post (125-2200 characters with hashtags)", min_length=125, max_length=2200)
     hashtags: List[str] = Field(..., description="3-5 relevant hashtags", min_items=3, max_items=5)
     cta: str = Field(..., description="Call-to-action text", min_length=10)
     
@@ -71,6 +73,14 @@ class SocialMediaContentSchema(BaseModel):
             "## Twitter/X Post",
             "",
             self.twitter_post,
+            "",
+            "## Facebook Post",
+            "",
+            self.facebook_post,
+            "",
+            "## Instagram Post",
+            "",
+            self.instagram_post,
             "",
             "## Hashtags",
             "",
