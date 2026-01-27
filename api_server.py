@@ -1110,13 +1110,32 @@ def extract_content_from_result(result, task_name: str = None) -> str:
     
     # Try to extract from result object directly (fastest method)
     if hasattr(result, 'tasks_output') and result.tasks_output:
-        # Look for editing task (contains main blog content)
+        # Look for the requested task (e.g., editing task for blog, social_media task for social)
         for task in reversed(result.tasks_output):
             # Check if this is the task we're looking for
-            if task_name and hasattr(task, 'description'):
-                task_desc = str(task.description).lower()
-                if task_name.lower() not in task_desc:
-                    continue
+            if task_name:
+                task_name_lower = task_name.lower()
+                # If no description, check task name/type attributes
+                if hasattr(task, 'description'):
+                    task_desc = str(task.description).lower()
+                    # Flexible matching: 'social' should match 'social_media', 'social_media_standalone', etc.
+                    if task_name_lower == 'social':
+                        # For 'social', match any task with 'social' in description
+                        if 'social' not in task_desc:
+                            continue
+                    elif task_name_lower not in task_desc:
+                        continue
+                elif hasattr(task, 'name') or hasattr(task, 'task_name'):
+                    # Try matching by task name/type
+                    task_name_attr = str(getattr(task, 'name', getattr(task, 'task_name', ''))).lower()
+                    if task_name_lower == 'social':
+                        if 'social' not in task_name_attr:
+                            continue
+                    elif task_name_lower not in task_name_attr:
+                        continue
+                else:
+                    # No way to identify task, skip filtering
+                    pass
             
             # Try different attributes in order of preference
             if hasattr(task, 'raw') and task.raw:
@@ -1132,16 +1151,31 @@ def extract_content_from_result(result, task_name: str = None) -> str:
                 if len(content.strip()) > 10:
                     return content
     
-    # Fallback to result object directly
+    # Fallback to result object directly (for standalone tasks or when task matching fails)
     if not content or len(content.strip()) < 10:
-        if hasattr(result, 'raw') and result.raw:
-            content = str(result.raw)
-        elif hasattr(result, 'content') and result.content:
-            content = str(result.content)
-        elif hasattr(result, 'output') and result.output:
-            content = str(result.output)
-        else:
-            content = str(result)
+        # If we're looking for social media and didn't find it in tasks, try result object
+        # This handles standalone social media where there's only one task
+        if task_name and task_name.lower() == 'social':
+            # For social, try to get the last task output (should be social media task)
+            if hasattr(result, 'tasks_output') and result.tasks_output:
+                last_task = result.tasks_output[-1]
+                if hasattr(last_task, 'raw') and last_task.raw:
+                    content = str(last_task.raw)
+                elif hasattr(last_task, 'output') and last_task.output:
+                    content = str(last_task.output)
+                elif hasattr(last_task, 'content') and last_task.content:
+                    content = str(last_task.content)
+        
+        # Final fallback to result object attributes
+        if not content or len(content.strip()) < 10:
+            if hasattr(result, 'raw') and result.raw:
+                content = str(result.raw)
+            elif hasattr(result, 'content') and result.content:
+                content = str(result.content)
+            elif hasattr(result, 'output') and result.output:
+                content = str(result.output)
+            else:
+                content = str(result)
     
     return content
 
@@ -1268,12 +1302,23 @@ async def extract_content_async(result, topic: str, logger) -> str:
 
 async def extract_social_media_content_async(result, topic: str, logger) -> str:
     """Extract social media content from result asynchronously - optimized"""
+    logger.debug(f"[EXTRACT_SOCIAL] Starting social media extraction, result type: {type(result)}")
+    
     # First try direct extraction from result object
+    # Try 'social' first (handles both regular and standalone tasks with flexible matching)
     content = extract_content_from_result(result, 'social')
     
+    # If that fails, try 'social_media' (for standalone task)
+    if not content or len(content.strip()) < 10:
+        logger.debug("[EXTRACT_SOCIAL] 'social' extraction failed, trying 'social_media'")
+        content = extract_content_from_result(result, 'social_media')
+    
     if content and len(content.strip()) > 10:
-        logger.info(f"Successfully extracted social media content from result object, length: {len(content)}")
+        logger.info(f"[EXTRACT_SOCIAL] Successfully extracted social media content from result object, length: {len(content)}")
+        logger.debug(f"[EXTRACT_SOCIAL] Content preview: {content[:200]}")
         return content
+    else:
+        logger.warning(f"[EXTRACT_SOCIAL] Failed to extract from result object, content length: {len(content) if content else 0}, will try file-based extraction")
     
     # Fallback to file-based extraction (removed 1s delay for faster extraction)
     # Try reading the social media output file
@@ -1345,10 +1390,13 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
         if attempt < 2:  # Only wait between attempts, not after last attempt
             await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
-    # Final fallback: extract from result object
+    # Final fallback: extract from result object (try both 'social' and 'social_media')
     if not content or len(content.strip()) < 10:
         logger.info("Social media file content empty, using result object extraction")
         content = extract_content_from_result(result, 'social')
+        # If that fails, try 'social_media' (for standalone task)
+        if not content or len(content.strip()) < 10:
+            content = extract_content_from_result(result, 'social_media')
     
     logger.info(f"Final extracted social media content length: {len(content) if content else 0}")
     if content:
