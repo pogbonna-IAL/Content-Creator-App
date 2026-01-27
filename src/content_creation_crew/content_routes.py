@@ -2273,23 +2273,48 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to send tts_started event for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         logger.info(f"[VOICEOVER_ASYNC] About to send tts_started event for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to send tts_started event for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         # Send TTS started event
-        sse_store.add_event(
-            job_id,
-            'tts_started',
-            {
-                'job_id': job_id,
-                'voice_id': voice_id,
-                'text_length': len(narration_text)
-            }
-        )
+        try:
+            sse_store.add_event(
+                job_id,
+                'tts_started',
+                {
+                    'job_id': job_id,
+                    'voice_id': voice_id,
+                    'text_length': len(narration_text)
+                }
+            )
+            logger.info(f"[VOICEOVER_ASYNC] tts_started event sent successfully for job {job_id}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_started event sent successfully for job {job_id}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+        except Exception as sse_error:
+            logger.error(f"[VOICEOVER_ASYNC] Failed to send tts_started event: {sse_error}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Failed to send tts_started event: {sse_error}", file=sys.stderr, flush=True)
+            sys.stderr.flush()
+            raise
         
         logger.info(f"Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         # Get TTS provider
         logger.info(f"[VOICEOVER_ASYNC] Getting TTS provider...")
-        tts_provider = get_tts_provider()
-        logger.info(f"[VOICEOVER_ASYNC] TTS provider obtained: {type(tts_provider).__name__}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Getting TTS provider...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        try:
+            tts_provider = get_tts_provider()
+            logger.info(f"[VOICEOVER_ASYNC] TTS provider obtained: {type(tts_provider).__name__}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS provider obtained: {type(tts_provider).__name__}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+        except Exception as tts_provider_error:
+            logger.error(f"[VOICEOVER_ASYNC] Failed to get TTS provider: {tts_provider_error}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Failed to get TTS provider: {tts_provider_error}", file=sys.stderr, flush=True)
+            sys.stderr.flush()
+            raise
         
         logger.info(f"[VOICEOVER_ASYNC] Checking TTS provider availability...")
         is_available = tts_provider.is_available()
@@ -2434,6 +2459,10 @@ async def _generate_voiceover_async(
         )
         
         # Send TTS completed event
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         sse_store.add_event(
             job_id,
             'tts_completed',
@@ -2445,9 +2474,19 @@ async def _generate_voiceover_async(
             }
         )
         
+        logger.info(f"[VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
     except Exception as e:
+        error_type = type(e).__name__
         error_message = f"Voiceover generation failed: {str(e)}"
-        logger.error(f"Job {job_id} voiceover failed: {error_message}", exc_info=True)
+        logger.error(f"Job {job_id} voiceover failed: {error_type} - {error_message}", exc_info=True)
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Exception caught: {error_type} - {error_message}", file=sys.stderr, flush=True)
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Exception traceback:", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
         
         # Track TTS job failure metric
         try:
