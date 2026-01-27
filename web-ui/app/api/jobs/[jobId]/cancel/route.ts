@@ -1,15 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// Handle GET requests (e.g., browser refresh) gracefully
+export async function GET(
+  request: NextRequest,
+  context: { params: Promise<{ jobId: string }> }
+) {
+  return NextResponse.json(
+    { error: 'Method not allowed', detail: 'Use POST to cancel a job' },
+    { status: 405 }
+  )
+}
+
 export async function POST(
   request: NextRequest,
   context: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const { jobId } = await context.params
-
-    if (!jobId || isNaN(Number(jobId))) {
+    // Safely await params promise (Next.js 15+ requirement)
+    let jobId: string | undefined
+    try {
+      const params = await context.params
+      jobId = params?.jobId
+    } catch (paramsError) {
+      console.error('Error reading params:', paramsError)
       return NextResponse.json(
-        { error: 'Invalid job ID' },
+        { error: 'Invalid request parameters', detail: 'Failed to read route parameters' },
+        { status: 400 }
+      )
+    }
+
+    if (!jobId || jobId === 'undefined' || jobId === 'null' || isNaN(Number(jobId))) {
+      return NextResponse.json(
+        { error: 'Invalid job ID', detail: `Job ID is required. Received: ${jobId || 'undefined'}` },
         { status: 400 }
       )
     }
