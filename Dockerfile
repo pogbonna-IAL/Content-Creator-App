@@ -112,6 +112,18 @@ RUN python -c "from content_creation_crew.services.password_validator import get
 # Create directory for database and data
 RUN mkdir -p /app/data
 
+# Download Piper TTS voice models during build
+# This ensures models are available at runtime for voiceover generation
+RUN mkdir -p /app/models/piper && \
+    echo "Setting up Piper TTS models..." && \
+    python -c "import os; os.makedirs('/app/models/piper', exist_ok=True); print('✓ Created models directory')" && \
+    (python -c "from piper import download_voice; download_voice('en_US-lessac-medium', '/app/models/piper'); print('✓ Downloaded default voice model')" 2>&1 || \
+     python -c "from piper.download import ensure_voice_exists; ensure_voice_exists('en_US-lessac-medium', '/app/models/piper'); print('✓ Ensured default voice model exists')" 2>&1 || \
+     echo "⚠ Note: Models will be downloaded on first use. This is normal if piper-tts download utilities are not available.")
+
+# Set default PIPER_MODEL_PATH if not already set
+ENV PIPER_MODEL_PATH=/app/models/piper
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
