@@ -142,11 +142,22 @@ class PiperTTSProvider(TTSProvider):
         try:
             from piper import PiperVoice
             
-            # Resolve voice model path
+            # Resolve voice model path (will download if needed)
             voice_model = self._resolve_voice_model(voice_id)
             
-            # Load voice
-            voice = PiperVoice.load(voice_model, config_path=None)
+            # Load voice - PiperVoice.load can also accept voice_id directly
+            # Try loading by path first, then by voice_id
+            try:
+                voice = PiperVoice.load(voice_model, config_path=None)
+            except Exception as load_error:
+                # If path loading fails, try loading by voice_id directly
+                # PiperVoice might download automatically
+                logger.info(f"Failed to load voice from path {voice_model}, trying voice_id {voice_id}: {load_error}")
+                try:
+                    voice = PiperVoice.load(voice_id)
+                except Exception:
+                    # Last resort: try with model path again
+                    raise load_error
             
             # Synthesize (PiperVoice.synthesize returns generator of AudioChunk objects)
             # Speed control may not be available in Python API, synthesize as-is
@@ -256,6 +267,40 @@ class PiperTTSProvider(TTSProvider):
                 except Exception:
                     pass
     
+    def _download_model_if_needed(self, voice_id: str) -> str:
+        """Download Piper model if not present using piper-tts utilities"""
+        # Ensure model directory exists
+        os.makedirs(self.model_path, exist_ok=True)
+        
+        # Try using piper-tts download utility if available
+        try:
+            # piper-tts may have download utilities
+            from piper import download_voice, get_voices
+            try:
+                # Try to download the voice
+                voice_path = download_voice(voice_id, self.model_path)
+                if voice_path and os.path.exists(voice_path):
+                    logger.info(f"Downloaded Piper voice model {voice_id} to {voice_path}")
+                    return voice_path
+            except Exception as download_error:
+                logger.debug(f"download_voice failed: {download_error}")
+            
+            # Try to find voice in available voices
+            try:
+                voices = get_voices()
+                if voice_id in voices:
+                    voice_info = voices[voice_id]
+                    if hasattr(voice_info, 'path') and os.path.exists(voice_info.path):
+                        return voice_info.path
+            except Exception as find_error:
+                logger.debug(f"get_voices failed: {find_error}")
+        except ImportError:
+            logger.debug("piper download utilities not available")
+        except Exception as e:
+            logger.debug(f"Failed to use piper download utilities: {e}")
+        
+        return None
+    
     def _resolve_voice_model(self, voice_id: str) -> str:
         """Resolve voice ID to model file path"""
         # Default voice
@@ -271,15 +316,33 @@ class PiperTTSProvider(TTSProvider):
         if os.path.exists(model_file):
             return model_file
         
+        # Try to download model if not found
+        logger.info(f"Voice model {voice_id} not found locally, attempting to download...")
+        downloaded_path = self._download_model_if_needed(voice_id)
+        if downloaded_path and os.path.exists(downloaded_path):
+            return downloaded_path
+        
+        # Check if downloaded to model directory
+        if os.path.exists(model_file):
+            return model_file
+        
         # Fallback: use first available voice
         logger.warning(f"Voice {voice_id} not found, using default")
         default_voice = self.get_available_voices()[0]
         model_file = os.path.join(self.model_path, f"{default_voice}.onnx")
         
+        # Try downloading default voice
+        if not os.path.exists(model_file):
+            logger.info(f"Default voice model {default_voice} not found, attempting to download...")
+            downloaded_path = self._download_model_if_needed(default_voice)
+            if downloaded_path and os.path.exists(downloaded_path):
+                return downloaded_path
+        
         if not os.path.exists(model_file):
             raise FileNotFoundError(
                 f"Piper model not found. Expected at: {model_file}. "
-                f"Set PIPER_MODEL_PATH or install piper models."
+                f"Set PIPER_MODEL_PATH or install piper models. "
+                f"To download models automatically, ensure piper-tts package is installed with download support."
             )
         
         return model_file
