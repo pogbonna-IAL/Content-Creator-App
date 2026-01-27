@@ -19,6 +19,7 @@ export default function Home() {
   // ALL hooks must be called at the top, before any conditional returns
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
+  const [isMounted, setIsMounted] = useState(false)
   
   // State hooks - must be called unconditionally
   const [selectedFeature, setSelectedFeature] = useState<string>('blog')
@@ -32,11 +33,16 @@ export default function Home() {
   const [progress, setProgress] = useState<number>(0)
   const [currentJobId, setCurrentJobId] = useState<number | null>(null) // Track current job ID for voiceover generation
 
+  // Prevent hydration mismatch by only rendering conditionally after mount
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
   // REMOVED: Redirect to /auth - now show marketing page instead
 
   // Conditional returns AFTER all hooks
-  // Show loading spinner while auth is being verified
-  if (authLoading) {
+  // Show loading spinner while auth is being verified or before mount (prevents hydration mismatch)
+  if (!isMounted || authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="w-16 h-16 border-4 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin"></div>

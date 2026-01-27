@@ -33,22 +33,26 @@ import { apiCall } from '@/lib/api-client'
 const USER_COOKIE = 'auth_user'  // Non-httpOnly cookie for user display info
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  // Initialize state to prevent hydration mismatches
+  // Start with null user and loading true to match server-side render
   const [user, setUser] = useState<User | null>(null)
   const [token, setToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Load auth state on mount
+    // Load auth state on mount (client-side only to prevent hydration mismatch)
     // auth_token is httpOnly, so we can't read it from JavaScript
     // Instead, verify auth status via /api/auth/me (cookies sent automatically)
-    const savedUser = Cookies.get(USER_COOKIE)
-    
-    if (savedUser) {
-      try {
-        // Load user info from non-httpOnly cookie for immediate display
-        setUser(JSON.parse(savedUser))
-      } catch (error) {
-        console.error('Error loading user info:', error)
+    if (typeof window !== 'undefined') {
+      const savedUser = Cookies.get(USER_COOKIE)
+      
+      if (savedUser) {
+        try {
+          // Load user info from non-httpOnly cookie for immediate display
+          setUser(JSON.parse(savedUser))
+        } catch (error) {
+          console.error('Error loading user info:', error)
+        }
       }
     }
     
