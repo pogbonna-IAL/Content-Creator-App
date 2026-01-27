@@ -950,7 +950,16 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
         else:
             video_content = ""
         
-        if not content or len(content.strip()) < 10:
+        # Check if we have ANY content (blog, audio, video, or social media)
+        # Don't fail if blog content is missing but other content types exist
+        has_any_content = (
+            (content and len(content.strip()) >= 10) or
+            (audio_content and len(audio_content.strip()) >= 10) or
+            (video_content and len(video_content.strip()) >= 10) or
+            (social_media_content and len(social_media_content.strip()) >= 10)
+        )
+        
+        if not has_any_content:
             # Last resort: try to get content from result directly
             logger.warning("Content extraction still failed, trying direct result extraction...")
             if hasattr(result, 'tasks_output') and result.tasks_output:
@@ -966,52 +975,72 @@ async def run_crew_async(topic: str, tier: str = 'free', content_types: list = N
                 content = str(result)
             
             content = clean_content(content)
+            
+            # Re-check after fallback
+            has_any_content = (
+                (content and len(content.strip()) >= 10) or
+                (audio_content and len(audio_content.strip()) >= 10) or
+                (video_content and len(video_content.strip()) >= 10) or
+                (social_media_content and len(social_media_content.strip()) >= 10)
+            )
         
-        if not content or len(content.strip()) < 10:
+        if not has_any_content:
             error_msg = json.dumps({
                 'type': 'error', 
-                'message': f'Content extraction failed - no valid content found. Content length: {len(content) if content else 0}. Check server logs for details.'
+                'message': f'Content extraction failed - no valid content found for any requested content type. Blog length: {len(content) if content else 0}, Audio length: {len(audio_content) if audio_content else 0}, Video length: {len(video_content) if video_content else 0}, Social length: {len(social_media_content) if social_media_content else 0}. Check server logs for details.'
             })
             yield f"data: {error_msg}\n\n"
-            logger.error(f"Content extraction failed - content too short or empty. Content: {content[:200] if content else 'None'}")
+            logger.error(f"Content extraction failed - no valid content found. Blog: {len(content) if content else 0}, Audio: {len(audio_content) if audio_content else 0}, Video: {len(video_content) if video_content else 0}, Social: {len(social_media_content) if social_media_content else 0}")
             return
         
-        logger.info(f"Content extracted successfully, length: {len(content)}")
-        logger.info(f"Content preview: {content[:200]}")
+        # Determine primary content type for streaming
+        # If audio is requested and blog is missing/empty, stream audio instead
+        primary_content = content if (content and len(content.strip()) >= 10) else ""
+        primary_content_type = 'blog'
         
-        # Stream content in chunks for real-time display
-        chunk_size = 100  # characters per chunk
-        total_length = len(content)
+        if content_types and 'audio' in content_types and audio_content and len(audio_content.strip()) >= 10:
+            if not primary_content:
+                primary_content = audio_content
+                primary_content_type = 'audio'
         
-        logger.info(f"Starting to stream {total_length} characters in chunks of {chunk_size}")
+        logger.info(f"Content extracted successfully. Blog length: {len(content) if content else 0}, Audio length: {len(audio_content) if audio_content else 0}")
+        logger.info(f"Primary content type for streaming: {primary_content_type}, length: {len(primary_content)}")
         
-        # Send content chunks with keep-alive comments to prevent timeout
-        chunk_count = 0
-        for i in range(0, total_length, chunk_size):
-            chunk = content[i:i + chunk_size]
-            progress = min(100, int((i + len(chunk)) / total_length * 100))
-            chunk_data = {
-                'type': 'content',
-                'chunk': chunk,
-                'progress': progress
-            }
-            sse_message = f"data: {json.dumps(chunk_data)}\n\n"
-            yield sse_message
-            chunk_count += 1
+        # Stream primary content in chunks for real-time display
+        if primary_content:
+            chunk_size = 100  # characters per chunk
+            total_length = len(primary_content)
             
-            # Flush buffers every chunk to ensure immediate delivery
-            if chunk_count % 5 == 0:  # Flush every 5 chunks to balance performance
-                flush_buffers()
+            logger.info(f"Starting to stream {total_length} characters in chunks of {chunk_size}")
             
-            # Send keep-alive comment every 10 chunks (approximately every 0.5 seconds)
-            # This prevents Node.js undici from timing out
-            if chunk_count % 10 == 0:
-                yield ": keep-alive\n\n"
-                flush_buffers()
-            
-            if i % 500 == 0:  # Log every 5 chunks
-                logger.debug(f"Sent chunk {chunk_count}, progress: {progress}%")
-            await asyncio.sleep(0.05)  # Small delay for smooth streaming
+            # Send content chunks with keep-alive comments to prevent timeout
+            chunk_count = 0
+            for i in range(0, total_length, chunk_size):
+                chunk = primary_content[i:i + chunk_size]
+                progress = min(100, int((i + len(chunk)) / total_length * 100))
+                chunk_data = {
+                    'type': 'content',
+                    'chunk': chunk,
+                    'progress': progress,
+                    'content_type': primary_content_type  # Indicate which content type is being streamed
+                }
+                sse_message = f"data: {json.dumps(chunk_data)}\n\n"
+                yield sse_message
+                chunk_count += 1
+                
+                # Flush buffers every chunk to ensure immediate delivery
+                if chunk_count % 5 == 0:  # Flush every 5 chunks to balance performance
+                    flush_buffers()
+                
+                # Send keep-alive comment every 10 chunks (approximately every 0.5 seconds)
+                # This prevents Node.js undici from timing out
+                if chunk_count % 10 == 0:
+                    yield ": keep-alive\n\n"
+                    flush_buffers()
+                
+                if i % 500 == 0:  # Log every 5 chunks
+                    logger.debug(f"Sent chunk {chunk_count}, progress: {progress}%")
+                await asyncio.sleep(0.05)  # Small delay for smooth streaming
         
         # Cache the generated content for future requests
         if use_cache:

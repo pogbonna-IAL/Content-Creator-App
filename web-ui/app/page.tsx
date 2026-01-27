@@ -211,6 +211,7 @@ export default function Home() {
       const decoder = new TextDecoder()
       let buffer = ''
       let accumulatedContent = ''
+      let accumulatedAudioContent = '' // Track audio content separately during streaming
 
       console.log('Starting to read stream...')
 
@@ -341,20 +342,33 @@ export default function Home() {
                     setStatus(data.message)
                   }
                 } else if (data.type === 'content') {
-                  // Append chunk to accumulated content
+                  // Append chunk to accumulated content based on content type
                   if (data.chunk) {
-                    accumulatedContent += data.chunk
-                    // Update UI in real-time
-                    setOutput(accumulatedContent)
-                    setProgress(data.progress || 0)
-                    setStatus(`Streaming content... ${data.progress || 0}%`)
-                    console.log(`Received chunk, total length: ${accumulatedContent.length}, progress: ${data.progress}%`)
+                    const contentType = data.content_type || 'blog' // Default to blog if not specified
+                    
+                    // Route to appropriate content accumulator based on content type
+                    if (contentType === 'audio') {
+                      // For audio content, accumulate separately and update audio output
+                      accumulatedAudioContent += data.chunk
+                      setAudioOutput(accumulatedAudioContent)
+                      setProgress(data.progress || 0)
+                      setStatus(`Streaming audio content... ${data.progress || 0}%`)
+                      console.log(`Received audio chunk, total length: ${accumulatedAudioContent.length}, progress: ${data.progress}%`)
+                    } else {
+                      // Default to blog content
+                      accumulatedContent += data.chunk
+                      setOutput(accumulatedContent)
+                      setProgress(data.progress || 0)
+                      setStatus(`Streaming content... ${data.progress || 0}%`)
+                      console.log(`Received chunk, total length: ${accumulatedContent.length}, progress: ${data.progress}%`)
+                    }
                   }
                 } else if (data.type === 'complete') {
                   // Final content received - ALWAYS use this as it contains the complete content
                   const finalContent = data.content
                   const socialMediaContent = data.social_media_content || ''
-                  const audioContent = data.audio_content || ''
+                  // Use audio_content from completion message, or fallback to accumulated audio content
+                  const audioContent = data.audio_content || accumulatedAudioContent || ''
                   const videoContent = data.video_content || ''
                   
                   // CRITICAL: Stop the spinner immediately when complete event is received
@@ -376,7 +390,7 @@ export default function Home() {
                       console.log('✓ Social media content received, length:', socialMediaContent.length)
                     }
                     
-                    // Set audio content if available
+                    // Set audio content if available (from completion message or accumulated)
                     if (audioContent && audioContent.trim().length > 0) {
                       setAudioOutput(audioContent)
                       console.log('✓ Audio content received, length:', audioContent.length)
@@ -399,7 +413,7 @@ export default function Home() {
                       setSocialMediaOutput(socialMediaContent)
                     }
                     
-                    // Set audio content if available
+                    // Set audio content if available (from completion message or accumulated)
                     if (audioContent && audioContent.trim().length > 0) {
                       setAudioOutput(audioContent)
                     }
@@ -408,6 +422,12 @@ export default function Home() {
                     if (videoContent && videoContent.trim().length > 0) {
                       setVideoOutput(videoContent)
                     }
+                  } else if (accumulatedAudioContent && accumulatedAudioContent.trim().length > 0) {
+                    // If only audio content was streamed (no blog content)
+                    console.log('Only audio content was generated')
+                    setAudioOutput(accumulatedAudioContent)
+                    setProgress(100)
+                    setStatus('Audio content generation complete!')
                   } else {
                     console.error('No content in completion message and no accumulated content')
                     // Even if no content, stop the spinner
