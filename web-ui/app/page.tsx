@@ -240,6 +240,12 @@ export default function Home() {
                     setOutput(accumulatedContent)
                     setProgress(100)
                     setStatus('Content generation complete!')
+                    setIsGenerating(false) // Stop spinner when complete event is in final buffer
+                  } else if (data.type === 'complete') {
+                    // Complete event without content field - still stop spinner
+                    setIsGenerating(false)
+                    setProgress(100)
+                    setStatus('Content generation complete!')
                   } else if (data.type === 'error') {
                     // Handle error in final buffer
                     const errorMsg = data.message || data.detail || 'Unknown error occurred'
@@ -268,6 +274,14 @@ export default function Home() {
             setError('Stream ended unexpectedly. No content was generated. This may indicate a timeout or server error. Please try again.')
             setIsGenerating(false)
             setStatus('Generation incomplete')
+          } else if (accumulatedContent && !error) {
+            // Stream ended with content - ensure spinner is stopped and status is set
+            setIsGenerating(false)
+            setProgress(100)
+            if (!status || status === '' || status.includes('Streaming')) {
+              setStatus('Content generation complete!')
+            }
+            console.log('✓ Stream ended with content, spinner stopped')
           }
           
           break
@@ -343,6 +357,9 @@ export default function Home() {
                   const audioContent = data.audio_content || ''
                   const videoContent = data.video_content || ''
                   
+                  // CRITICAL: Stop the spinner immediately when complete event is received
+                  setIsGenerating(false)
+                  
                   if (finalContent && finalContent.trim().length > 0) {
                     // Use the complete content from the completion message
                     accumulatedContent = finalContent
@@ -393,7 +410,19 @@ export default function Home() {
                     }
                   } else {
                     console.error('No content in completion message and no accumulated content')
+                    // Even if no content, stop the spinner
+                    setStatus('Content generation completed but no content was received')
                   }
+                  
+                  // Mark that we should stop reading the stream since we're complete
+                  shouldStop = true
+                  try {
+                    reader.cancel()
+                  } catch (cancelError) {
+                    console.warn('Error canceling reader after completion:', cancelError)
+                  }
+                  
+                  break // Exit the stream reading loop since we're done
                 } else if (data.type === 'error') {
                   // Handle error messages from the server - STOP IMMEDIATELY
                   const errorMsg = data.message || data.detail || 'Unknown error occurred'
