@@ -129,6 +129,61 @@ export default function Home() {
     )
   }
 
+  // Track reader and job ID for cancellation
+  const [readerRef, setReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null)
+
+  const handleStop = async () => {
+    if (!currentJobId) {
+      console.warn('No job ID available to cancel')
+      return
+    }
+
+    try {
+      // Cancel the stream reader if active
+      if (readerRef) {
+        try {
+          await readerRef.cancel()
+        } catch (e) {
+          console.log('Reader already closed or cancelled')
+        }
+      }
+
+      // Abort the fetch request if active
+      if (abortControllerRef) {
+        abortControllerRef.abort()
+      }
+
+      // Call cancel endpoint
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+
+      const response = await fetch(`/api/jobs/${currentJobId}/cancel`, {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+      })
+
+      if (response.ok) {
+        setStatus('Job cancelled')
+        setIsGenerating(false)
+        console.log('Job cancelled successfully')
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to cancel job' }))
+        console.error('Failed to cancel job:', errorData)
+        setError(errorData.error || errorData.detail || 'Failed to cancel job')
+      }
+    } catch (err) {
+      console.error('Error cancelling job:', err)
+      setError(err instanceof Error ? err.message : 'Failed to cancel job')
+    }
+  }
+
   const handleGenerate = async (topic: string) => {
     setIsGenerating(true)
     setError(null)
@@ -139,6 +194,10 @@ export default function Home() {
     setStatus('')
     setProgress(0)
     setCurrentJobId(null) // Reset job ID for new generation
+
+    // Create abort controller for this request
+    const abortController = new AbortController()
+    setAbortControllerRef(abortController)
 
     // Track if we should stop reading and the reader instance
     let shouldStop = false
@@ -174,6 +233,7 @@ export default function Home() {
           headers,
           credentials: 'include', // Include cookies as fallback
           body: JSON.stringify({ topic, content_types: contentTypes }),
+          signal: abortController.signal,
         })
       } catch (fetchError) {
         // Handle network-level errors (connection refused, DNS failure, etc.)
@@ -210,6 +270,7 @@ export default function Home() {
 
       // Set up streaming reader
       reader = response.body.getReader()
+      setReaderRef(reader) // Store reader reference for cancellation
       const decoder = new TextDecoder()
       let buffer = ''
       let accumulatedContent = ''
@@ -455,6 +516,22 @@ export default function Home() {
                   }
                   
                   break // Exit the stream reading loop since we're done
+                } else if (data.type === 'cancelled') {
+                  // Handle cancellation event from server
+                  setIsGenerating(false)
+                  setStatus('Job cancelled')
+                  setProgress(0)
+                  console.log('Job cancelled:', data.message)
+                  // Stop reading stream
+                  shouldStop = true
+                  if (reader) {
+                    try {
+                      await reader.cancel()
+                    } catch (e) {
+                      // Reader may already be closed
+                    }
+                  }
+                  break
                 } else if (data.type === 'error') {
                   // Handle error messages from the server - STOP IMMEDIATELY
                   const errorMsg = data.message || data.detail || 'Unknown error occurred'
@@ -732,7 +809,7 @@ export default function Home() {
       <div className="flex-1 container mx-auto px-4 py-4 sm:py-6 md:py-8 max-w-7xl">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 md:gap-8 mb-4 sm:mb-6 md:mb-8">
           <div className="order-1 lg:order-none">
-            <InputPanel onGenerate={handleGenerate} isLoading={isGenerating} />
+            <InputPanel onGenerate={handleGenerate} onStop={handleStop} isLoading={isGenerating} />
           </div>
           <div className="order-2 lg:order-none">
             {renderOutputPanel()}

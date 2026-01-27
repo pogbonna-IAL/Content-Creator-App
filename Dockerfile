@@ -70,6 +70,7 @@ COPY api_server.py ./
 COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
+COPY scripts/ ./scripts/
 
 # Copy src directory
 # IMPORTANT: Railway build context must include src/ directory
@@ -117,7 +118,8 @@ RUN mkdir -p /app/data
 RUN mkdir -p /app/models/piper && \
     echo "Setting up Piper TTS models..." && \
     python -c "import os; os.makedirs('/app/models/piper', exist_ok=True); print('✓ Created models directory')" && \
-    (python -c "from piper import download_voice; download_voice('en_US-lessac-medium', '/app/models/piper'); print('✓ Downloaded default voice model')" 2>&1 || \
+    (python scripts/download_piper_models.py en_US-lessac-medium 2>&1 || \
+     python -c "from piper import download_voice; download_voice('en_US-lessac-medium', '/app/models/piper'); print('✓ Downloaded default voice model')" 2>&1 || \
      python -c "from piper.download import ensure_voice_exists; ensure_voice_exists('en_US-lessac-medium', '/app/models/piper'); print('✓ Ensured default voice model exists')" 2>&1 || \
      echo "⚠ Note: Models will be downloaded on first use. This is normal if piper-tts download utilities are not available.")
 

@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, Tuple
 import logging
 import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -143,19 +144,45 @@ class PiperTTSProvider(TTSProvider):
             from piper import PiperVoice
             
             # Resolve voice model path (will download if needed)
-            voice_model = self._resolve_voice_model(voice_id)
+            logger.info(f"[TTS_SYNTHESIS] Resolving voice model for voice_id: {voice_id}")
+            print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolving voice model for voice_id: {voice_id}", file=sys.stdout, flush=True)
+            
+            try:
+                voice_model = self._resolve_voice_model(voice_id)
+                logger.info(f"[TTS_SYNTHESIS] Resolved voice model path: {voice_model}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolved voice model path: {voice_model}", file=sys.stdout, flush=True)
+                
+                # Verify file exists
+                if not os.path.exists(voice_model):
+                    raise FileNotFoundError(f"Voice model file not found at resolved path: {voice_model}")
+                
+                file_size = os.path.getsize(voice_model)
+                logger.info(f"[TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes", file=sys.stdout, flush=True)
+            except Exception as resolve_error:
+                logger.error(f"[TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", exc_info=True)
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", file=sys.stderr, flush=True)
+                raise
             
             # Load voice - PiperVoice.load can also accept voice_id directly
             # Try loading by path first, then by voice_id
+            logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}")
+            print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}", file=sys.stdout, flush=True)
+            
             try:
                 voice = PiperVoice.load(voice_model, config_path=None)
+                logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice", file=sys.stdout, flush=True)
             except Exception as load_error:
                 # If path loading fails, try loading by voice_id directly
                 # PiperVoice might download automatically
-                logger.info(f"Failed to load voice from path {voice_model}, trying voice_id {voice_id}: {load_error}")
+                logger.warning(f"[TTS_SYNTHESIS] Failed to load voice from path {voice_model}, trying voice_id {voice_id}: {load_error}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Trying to load by voice_id: {voice_id}", file=sys.stdout, flush=True)
                 try:
                     voice = PiperVoice.load(voice_id)
-                except Exception:
+                    logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id")
+                except Exception as voice_id_error:
+                    logger.error(f"[TTS_SYNTHESIS] Failed to load by voice_id: {voice_id_error}", exc_info=True)
                     # Last resort: try with model path again
                     raise load_error
             
@@ -268,24 +295,95 @@ class PiperTTSProvider(TTSProvider):
                     pass
     
     def _download_model_if_needed(self, voice_id: str) -> str:
-        """Download Piper model if not present using piper-tts utilities"""
+        """Download Piper model if not present from HuggingFace"""
+        import urllib.request
+        import urllib.error
+        
         # Ensure model directory exists
         os.makedirs(self.model_path, exist_ok=True)
         
-        # Try using piper-tts download utility if available
+        # Piper voices are hosted on HuggingFace at rhasspy/piper-voices
+        # Voice models are typically in format: {voice_id}/model.onnx
+        base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+        
+        # Try different possible paths for the voice model
+        # Common formats: en_US-lessac-medium/model.onnx or en_US-lessac-medium.onnx
+        possible_paths = [
+            f"{voice_id}/model.onnx",  # Directory format
+            f"{voice_id}.onnx",  # Direct file format
+            f"{voice_id.replace('_', '-')}/model.onnx",  # With hyphens
+            f"{voice_id.replace('_', '-')}.onnx",  # With hyphens, direct file
+        ]
+        
+        for model_path in possible_paths:
+            model_url = f"{base_url}/{model_path}"
+            
+            # Determine local path based on format
+            if '/' in model_path:
+                # Directory format: create voice directory
+                voice_dir = os.path.join(self.model_path, voice_id)
+                os.makedirs(voice_dir, exist_ok=True)
+                local_path = os.path.join(voice_dir, "model.onnx")
+            else:
+                # Direct file format
+                local_path = os.path.join(self.model_path, os.path.basename(model_path))
+            
+            # Skip if already exists
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 1000:
+                logger.info(f"Model already exists at {local_path}")
+                return local_path
+            
+            try:
+                logger.info(f"Attempting to download Piper model from {model_url} to {local_path}")
+                print(f"[RAILWAY_DEBUG] Downloading Piper model: {model_url}", file=sys.stdout, flush=True)
+                
+                # Download with progress tracking
+                def show_progress(block_num, block_size, total_size):
+                    if total_size > 0:
+                        percent = min(100, (block_num * block_size * 100) // total_size)
+                        if block_num % 10 == 0:  # Log every 10 blocks
+                            logger.debug(f"Download progress: {percent}%")
+                
+                urllib.request.urlretrieve(model_url, local_path, show_progress)
+                
+                # Verify download succeeded
+                if os.path.exists(local_path):
+                    file_size = os.path.getsize(local_path)
+                    if file_size > 1000:  # At least 1KB
+                        logger.info(f"Successfully downloaded Piper model to {local_path} ({file_size} bytes)")
+                        print(f"[RAILWAY_DEBUG] Successfully downloaded {file_size} bytes to {local_path}", file=sys.stdout, flush=True)
+                        return local_path
+                    else:
+                        logger.warning(f"Downloaded file too small: {file_size} bytes")
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
+                else:
+                    logger.warning(f"Download completed but file not found at {local_path}")
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    logger.debug(f"Model not found at {model_url} (404)")
+                else:
+                    logger.warning(f"HTTP error downloading {model_url}: {e.code} - {e.reason}")
+            except Exception as e:
+                logger.warning(f"Failed to download {model_url}: {type(e).__name__} - {str(e)}")
+                # Clean up partial download
+                if os.path.exists(local_path):
+                    try:
+                        os.remove(local_path)
+                    except:
+                        pass
+        
+        # Try using piper-tts download utility if available (fallback)
         try:
-            # piper-tts may have download utilities
             from piper import download_voice, get_voices
             try:
-                # Try to download the voice
                 voice_path = download_voice(voice_id, self.model_path)
                 if voice_path and os.path.exists(voice_path):
-                    logger.info(f"Downloaded Piper voice model {voice_id} to {voice_path}")
+                    logger.info(f"Downloaded Piper voice model {voice_id} via piper-tts to {voice_path}")
                     return voice_path
             except Exception as download_error:
                 logger.debug(f"download_voice failed: {download_error}")
             
-            # Try to find voice in available voices
             try:
                 voices = get_voices()
                 if voice_id in voices:
@@ -299,6 +397,7 @@ class PiperTTSProvider(TTSProvider):
         except Exception as e:
             logger.debug(f"Failed to use piper download utilities: {e}")
         
+        logger.error(f"Failed to download Piper model {voice_id} from all attempted sources")
         return None
     
     def _resolve_voice_model(self, voice_id: str) -> str:
@@ -318,13 +417,28 @@ class PiperTTSProvider(TTSProvider):
         
         # Try to download model if not found
         logger.info(f"Voice model {voice_id} not found locally, attempting to download...")
-        downloaded_path = self._download_model_if_needed(voice_id)
-        if downloaded_path and os.path.exists(downloaded_path):
-            return downloaded_path
+        print(f"[RAILWAY_DEBUG] Voice model {voice_id} not found, attempting download...", file=sys.stdout, flush=True)
         
-        # Check if downloaded to model directory
+        try:
+            downloaded_path = self._download_model_if_needed(voice_id)
+            if downloaded_path and os.path.exists(downloaded_path):
+                logger.info(f"Successfully downloaded model to {downloaded_path}")
+                print(f"[RAILWAY_DEBUG] Successfully downloaded model to {downloaded_path}", file=sys.stdout, flush=True)
+                return downloaded_path
+        except Exception as download_error:
+            logger.error(f"Error during model download: {download_error}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] Model download error: {download_error}", file=sys.stderr, flush=True)
+        
+        # Check if downloaded to model directory (might have been downloaded with different name)
         if os.path.exists(model_file):
+            logger.info(f"Found model file at {model_file}")
             return model_file
+        
+        # Also check for directory format
+        voice_dir_model = os.path.join(self.model_path, voice_id, "model.onnx")
+        if os.path.exists(voice_dir_model):
+            logger.info(f"Found model file at {voice_dir_model}")
+            return voice_dir_model
         
         # Fallback: use first available voice
         logger.warning(f"Voice {voice_id} not found, using default")

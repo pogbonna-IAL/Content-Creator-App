@@ -21,6 +21,7 @@ from .services.plan_policy import PlanPolicy
 from .services.tts_provider import get_tts_provider
 from .services.storage_provider import get_storage_provider
 from .services.sse_store import get_sse_store
+from .services.task_registry import get_task_registry
 from .schemas import PROMPT_VERSION
 from .config import config
 
@@ -342,6 +343,34 @@ async def create_generation_job(
             logger.info(f"[ASYNC_TASK] Async generation task completed successfully for job {job.id}")
             sys.stdout.flush()
             sys.stderr.flush()
+        except asyncio.CancelledError:
+            logger.info(f"[ASYNC_TASK] Task for job {job.id} was cancelled")
+            # Update job status to cancelled
+            try:
+                from .services.content_service import ContentService
+                from .database import SessionLocal
+                cancel_session = SessionLocal()
+                cancel_user = cancel_session.query(User).filter(User.id == current_user.id).first()
+                if cancel_user:
+                    cancel_content_service = ContentService(cancel_session, cancel_user)
+                    cancel_content_service.update_job_status(
+                        job.id,
+                        JobStatus.CANCELLED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    # Send cancellation event
+                    from .services.sse_store import get_sse_store
+                    cancel_sse_store = get_sse_store()
+                    cancel_sse_store.add_event(job.id, 'cancelled', {
+                        'job_id': job.id,
+                        'message': 'Job cancelled by user',
+                        'cancelled_at': datetime.utcnow().isoformat()
+                    })
+                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to CANCELLED")
+                cancel_session.close()
+            except Exception as cancel_error:
+                logger.error(f"[ASYNC_TASK] Failed to update job status after cancellation: {cancel_error}", exc_info=True)
+            raise  # Re-raise CancelledError
         except Exception as e:
             error_type = type(e).__name__
             error_msg_raw = str(e) if str(e) else f"{error_type} occurred"
@@ -396,11 +425,19 @@ async def create_generation_job(
     # Add done callback to log completion/failure
     task = asyncio.create_task(run_with_error_handling())
     
+    # Register task in registry for cancellation support
+    task_registry = get_task_registry()
+    asyncio.create_task(task_registry.register(job.id, task))
+    
     def task_done_callback(fut):
-        """Callback to log task completion or failure"""
+        """Callback to log task completion or failure and unregister task"""
         try:
             fut.result()  # This will raise if the task failed
             logger.info(f"[ASYNC_TASK] Task for job {job.id} completed successfully")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except asyncio.CancelledError:
+            logger.info(f"[ASYNC_TASK] Task for job {job.id} was cancelled")
             sys.stdout.flush()
             sys.stderr.flush()
         except Exception as e:
@@ -408,6 +445,9 @@ async def create_generation_job(
             logger.error(f"[ASYNC_TASK] Task for job {job.id} failed in callback: {type(e).__name__}: {str(e)}")
             sys.stdout.flush()
             sys.stderr.flush()
+        finally:
+            # Unregister task when done
+            asyncio.create_task(task_registry.unregister(job.id))
     
     task.add_done_callback(task_done_callback)
     
@@ -432,6 +472,93 @@ async def create_generation_job(
     
     # Return job info
     return _job_to_response(job)
+
+
+@router.post(
+    "/jobs/{job_id}/cancel",
+    response_model=Dict[str, Any],
+    summary="Cancel a running job",
+    description="""
+    Cancel a running content generation job.
+    
+    This will:
+    - Stop the async task (if still running)
+    - Update job status to CANCELLED
+    - Send cancellation event via SSE
+    - Prevent further API token usage
+    
+    Returns job status after cancellation.
+    """,
+    tags=["content"]
+)
+async def cancel_job(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Cancel a running job
+    
+    Args:
+        job_id: Job ID to cancel
+    
+    Returns:
+        Job status after cancellation
+    """
+    from .services.content_service import ContentService
+    
+    content_service = ContentService(db, current_user)
+    job = content_service.get_job(job_id)
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    # Check if user owns this job
+    if job.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to cancel this job"
+        )
+    
+    # Check if job is already completed/failed/cancelled
+    if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value]:
+        logger.info(f"Job {job_id} already in final state: {job.status}")
+        return {
+            "job_id": job_id,
+            "status": job.status,
+            "message": f"Job already in final state: {job.status}"
+        }
+    
+    # Try to cancel the async task
+    task_registry = get_task_registry()
+    task_cancelled = await task_registry.cancel(job_id)
+    
+    # Update job status to cancelled
+    content_service.update_job_status(
+        job_id,
+        JobStatus.CANCELLED.value,
+        finished_at=datetime.utcnow()
+    )
+    
+    # Send cancellation event via SSE
+    sse_store = get_sse_store()
+    sse_store.add_event(job_id, 'cancelled', {
+        'job_id': job_id,
+        'message': 'Job cancelled by user',
+        'cancelled_at': datetime.utcnow().isoformat()
+    })
+    
+    logger.info(f"Job {job_id} cancelled by user {current_user.id}. Task cancelled: {task_cancelled}")
+    
+    return {
+        "job_id": job_id,
+        "status": JobStatus.CANCELLED.value,
+        "message": "Job cancelled successfully",
+        "task_cancelled": task_cancelled
+    }
 
 
 @router.get(
@@ -2355,6 +2482,10 @@ async def _generate_voiceover_async(
         tts_start_time = time.time()
         tts_success = False
         try:
+            logger.info(f"[VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS provider type: {type(tts_provider).__name__}", file=sys.stdout, flush=True)
+            
             audio_bytes, metadata = tts_provider.synthesize(
                 text=narration_text,
                 voice_id=voice_id,
@@ -2362,7 +2493,30 @@ async def _generate_voiceover_async(
                 format=format
             )
             tts_success = True
-            logger.info(f"TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s")
+            logger.info(f"[VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s, audio size: {len(audio_bytes)} bytes")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS synthesis complete, audio size: {len(audio_bytes)} bytes", file=sys.stdout, flush=True)
+        except FileNotFoundError as e:
+            tts_success = False
+            error_msg = f"TTS model file not found: {str(e)}. Please ensure Piper TTS models are installed or downloadable."
+            logger.error(f"[VOICEOVER_ASYNC] FileNotFoundError during synthesis: {error_msg}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] FileNotFoundError: {error_msg}", file=sys.stderr, flush=True)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=error_msg
+            )
+        except Exception as synth_error:
+            tts_success = False
+            error_type = type(synth_error).__name__
+            error_msg = f"TTS synthesis failed: {error_type}: {str(synth_error)}"
+            logger.error(f"[VOICEOVER_ASYNC] Exception during synthesis: {error_msg}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Exception traceback:", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_msg
+            )
         finally:
             tts_duration = time.time() - tts_start_time
             TTSMetrics.record_synthesis(provider_name, tts_duration, success=tts_success)
