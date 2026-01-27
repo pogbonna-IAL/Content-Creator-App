@@ -31,27 +31,31 @@ class ContentCreationCrew():
         import yaml
         from pathlib import Path
         
-        # Set LiteLLM timeout to 3 minutes (180 seconds) for Phase 1 speed optimization
-        # Phase 1: Reduced from 1800s to 180s to match CREWAI_TIMEOUT and prevent hanging
+        # Set LiteLLM timeout to match CREWAI_TIMEOUT (default 300 seconds / 5 minutes)
+        # This ensures LLM calls don't timeout before the overall job timeout
+        from .config import config
+        timeout_value = config.CREWAI_TIMEOUT
+        # Add buffer for LLM calls (timeout + 60 seconds buffer)
+        llm_timeout = timeout_value + 60
+        
         # These must be set before importing/using LiteLLM
-        os.environ['LITELLM_REQUEST_TIMEOUT'] = '180'
-        os.environ['LITELLM_TIMEOUT'] = '180'
-        os.environ['LITELLM_CONNECTION_TIMEOUT'] = '60'  # Faster connection timeout
+        os.environ['LITELLM_REQUEST_TIMEOUT'] = str(llm_timeout)
+        os.environ['LITELLM_TIMEOUT'] = str(llm_timeout)
+        os.environ['LITELLM_CONNECTION_TIMEOUT'] = '60'  # Connection timeout
         
         # Also try setting via litellm if available
         try:
             import litellm
             # Set timeout in litellm settings
-            litellm.request_timeout = 180
-            litellm.timeout = 180
+            litellm.request_timeout = llm_timeout
+            litellm.timeout = llm_timeout
             litellm.drop_params = True  # Don't drop timeout params
             
             # Configure httpx timeout for Ollama connections
-            # Phase 1: Reduced timeout for faster failure detection
             try:
                 import httpx
                 # Set environment variable for httpx default timeout
-                os.environ['HTTPX_DEFAULT_TIMEOUT'] = '180'
+                os.environ['HTTPX_DEFAULT_TIMEOUT'] = str(llm_timeout)
             except (ImportError, AttributeError):
                 pass
         except ImportError:
@@ -197,9 +201,9 @@ class ContentCreationCrew():
             config=self.agents_config['researcher'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
-        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=3")
+        logger.debug(f"[AGENT_CREATE] Researcher agent created with LLM model '{self.llm.model}', max_iter=2")
         return agent
 
     @agent
@@ -208,7 +212,7 @@ class ContentCreationCrew():
             config=self.agents_config['writer'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
         logger.debug(f"[AGENT_CREATE] Writer agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -219,7 +223,7 @@ class ContentCreationCrew():
             config=self.agents_config['editor'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
         logger.debug(f"[AGENT_CREATE] Editor agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -230,7 +234,7 @@ class ContentCreationCrew():
             config=self.agents_config['social_media_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
         logger.debug(f"[AGENT_CREATE] Social media specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -241,7 +245,7 @@ class ContentCreationCrew():
             config=self.agents_config['audio_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
         logger.debug(f"[AGENT_CREATE] Audio content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -252,7 +256,7 @@ class ContentCreationCrew():
             config=self.agents_config['video_content_specialist'],
             llm=self.llm,
             verbose=False,  # Reduced verbosity for faster execution
-            max_iter=3  # Limit iterations to prevent timeout (default is 15, reduced to 3 for speed)
+            max_iter=2  # Limit iterations to prevent timeout and reduce API calls (default is 15, reduced to 2 for speed)
         )
         logger.debug(f"[AGENT_CREATE] Video content specialist agent created with LLM model '{self.llm.model}', max_iter=3")
         return agent
@@ -366,10 +370,17 @@ class ContentCreationCrew():
         
         tasks.extend(optional_tasks)
         
-        # Phase 1: Always use hierarchical process for better parallel execution
-        # This allows optional tasks to run in parallel after editing_task completes
-        # Improves overall generation speed without quality impact
-        process = Process.hierarchical
+        # Optimize process selection based on content types
+        # Sequential is faster for single content type (less overhead)
+        # Hierarchical is better for multiple content types (parallel execution)
+        if len(content_types) == 1 and content_types[0] == 'blog':
+            # Single blog content - use sequential for faster execution (less overhead)
+            process = Process.sequential
+            logger.info(f"[CREW_BUILD] Using sequential process for single blog content (faster)")
+        else:
+            # Multiple content types - use hierarchical for parallel execution
+            process = Process.hierarchical
+            logger.info(f"[CREW_BUILD] Using hierarchical process for multiple content types (parallel execution)")
         
         logger.info(f"[CREW_BUILD] Building crew with {len(agents)} agents and {len(tasks)} tasks")
         logger.debug(f"[CREW_BUILD] Agents: {[agent.role if hasattr(agent, 'role') else 'unknown' for agent in agents]}")
@@ -378,16 +389,22 @@ class ContentCreationCrew():
         
         # Use print() for Railway visibility
         import sys
-        print(f"[RAILWAY_DEBUG] Building Crew with process={process}, manager_llm={'SET' if self.llm else 'NOT SET'}", file=sys.stdout, flush=True)
+        print(f"[RAILWAY_DEBUG] Building Crew with process={process}, manager_llm={'SET' if process == Process.hierarchical and self.llm else 'NOT SET'}", file=sys.stdout, flush=True)
         
-        crew = Crew(
-            agents=agents,  # Manually collected agents
-            tasks=tasks,  # Only include requested tasks
-            process=process,
-            manager_llm=self.llm,  # Required for hierarchical process
-            verbose=False,  # Reduced verbosity for faster execution
-            tracing=False,  # Disable tracing to prevent interactive prompts (critical for Railway/serverless)
-        )
+        # Build crew with appropriate configuration
+        crew_kwargs = {
+            'agents': agents,  # Manually collected agents
+            'tasks': tasks,  # Only include requested tasks
+            'process': process,
+            'verbose': False,  # Reduced verbosity for faster execution
+            'tracing': False,  # Disable tracing to prevent interactive prompts (critical for Railway/serverless)
+        }
+        
+        # Only add manager_llm for hierarchical process (not needed for sequential)
+        if process == Process.hierarchical:
+            crew_kwargs['manager_llm'] = self.llm  # Required for hierarchical process
+        
+        crew = Crew(**crew_kwargs)
         
         print(f"[RAILWAY_DEBUG] Crew built successfully", file=sys.stdout, flush=True)
         logger.info(f"[CREW_BUILD] Crew built successfully")

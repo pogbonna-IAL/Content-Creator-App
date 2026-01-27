@@ -1340,14 +1340,14 @@ async def run_generation_async(
                 sys.stderr.flush()
                 llm_exec_start = time.time()
                 
-                # Phase 1: Use timeout from config (180s) for faster failure detection
-                # This prevents jobs from hanging while maintaining reliability
+                # Use timeout from config (default 300s / 5 minutes) for content generation
+                # This prevents jobs from hanging while allowing sufficient time for completion
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         None,
                         lambda: crew_obj.kickoff(inputs={'topic': topic})
                     ),
-                    timeout=timeout_seconds  # 180 seconds from config
+                    timeout=timeout_seconds  # Default 300 seconds from config
                 )
                 
                 llm_exec_duration = time.time() - llm_exec_start
@@ -1450,25 +1450,29 @@ async def run_generation_async(
         
         try:
             wait_loop_count = 0
+            # Use shorter wait interval (5 seconds instead of 10) for faster response
+            wait_interval = 5.0
             while not executor_done:
                 wait_loop_count += 1
-                # Wait for either executor completion or 10 seconds (whichever comes first)
+                # Wait for either executor completion or wait_interval seconds (whichever comes first)
                 done, pending = await asyncio.wait(
                     [executor_task],
-                    timeout=10.0,
+                    timeout=wait_interval,
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
                 if done:
                     # Executor completed
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task completed, breaking from wait loop (waited {wait_loop_count * 10}s)", file=sys.stdout, flush=True)
+                    elapsed_total = wait_loop_count * wait_interval
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task completed, breaking from wait loop (waited {elapsed_total:.1f}s)", file=sys.stdout, flush=True)
                     break
                 else:
                     # Timeout - executor still running, send progress update
                     elapsed = time.time() - last_progress_time
-                    elapsed_total = wait_loop_count * 10.0
+                    elapsed_total = wait_loop_count * wait_interval
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Executor still running, elapsed={elapsed_total:.1f}s, executor_done={executor_done}", file=sys.stdout, flush=True)
-                    if elapsed >= 10.0 and step_index < len(progress_steps):
+                    # Send progress update every wait_interval seconds
+                    if elapsed >= wait_interval and step_index < len(progress_steps):
                         step, message = progress_steps[step_index]
                         sse_store.add_event(job_id, 'agent_progress', {
                             'job_id': job_id,

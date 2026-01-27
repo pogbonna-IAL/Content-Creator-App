@@ -664,13 +664,31 @@ async def get_dunning_stats(
 # User Model Preferences Management Endpoints
 # ============================================================================
 
-# Available models list
+# Available models list - includes both OpenAI and Ollama models
+# These models are available for ALL content types: blog, social, audio, and video
+# The same model list is used for all content type dropdowns in the admin UI
+# All models work for all content types, including audio and video content generation
 AVAILABLE_MODELS = [
+    # OpenAI Models (work for all content types)
     'gpt-4o-mini',
     'gpt-4o',
     'gpt-4-turbo',
     'gpt-4',
     'gpt-3.5-turbo',
+    # Ollama Models (open source - work for all content types including audio and video)
+    # These models are suitable for generating audio scripts, video scripts, blog posts, and social media content
+    'ollama/llama3.2:1b',      # Fast, good for audio scripts and quick content
+    'ollama/llama3.2:3b',      # Balanced speed/quality for audio and video scripts
+    'ollama/llama3.1:8b',      # High quality for video scripts and complex content
+    'ollama/llama3.1:70b',     # Best quality for complex video and audio content
+    'ollama/llama3:8b',        # Alternative high-quality model
+    'ollama/llama3:70b',       # Alternative best-quality model
+    'ollama/mistral:7b',       # Good for conversational audio content
+    'ollama/mixtral:8x7b',     # High quality for complex video content
+    'ollama/codellama:7b',     # Good for technical content
+    'ollama/codellama:13b',    # Better for technical content
+    'ollama/phi:2.7b',         # Fast and efficient
+    'ollama/neural-chat:7b',   # Good for conversational content
 ]
 
 CONTENT_TYPES = ['blog', 'social', 'audio', 'video']
@@ -857,10 +875,48 @@ async def get_available_models(
 ) -> Dict[str, Any]:
     """
     Get list of available models (admin only)
+    Includes both OpenAI and Ollama models.
+    Dynamically fetches available Ollama models if OLLAMA_BASE_URL is configured.
     """
+    from ..config import config
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    models = list(AVAILABLE_MODELS)  # Start with base list
+    
+    # If Ollama is configured, try to fetch available models
+    if config.OLLAMA_BASE_URL:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                ollama_url = config.OLLAMA_BASE_URL.rstrip('/')
+                response = await client.get(f"{ollama_url}/api/tags")
+                if response.status_code == 200:
+                    ollama_data = response.json()
+                    ollama_models = ollama_data.get('models', [])
+                    for model in ollama_models:
+                        model_name = model.get('name', '')
+                        if model_name:
+                            # Format as ollama/model:tag (Ollama API returns model:tag format)
+                            ollama_model_name = f"ollama/{model_name}"
+                            if ollama_model_name not in models:
+                                models.append(ollama_model_name)
+                                logger.info(f"Added Ollama model to available list: {ollama_model_name}")
+                    logger.info(f"Successfully fetched {len(ollama_models)} Ollama models")
+                else:
+                    logger.warning(f"Ollama API returned status {response.status_code}")
+        except httpx.TimeoutException:
+            logger.warning("Timeout fetching Ollama models - Ollama service may be unavailable")
+        except httpx.ConnectError:
+            logger.warning(f"Could not connect to Ollama at {config.OLLAMA_BASE_URL} - service may not be running")
+        except Exception as e:
+            logger.warning(f"Could not fetch Ollama models: {e}")
+            # Continue with base list if Ollama fetch fails
+    
     return {
         "status": "success",
-        "models": AVAILABLE_MODELS,
+        "models": sorted(models),  # Sort for consistent display
         "content_types": CONTENT_TYPES
     }
 
