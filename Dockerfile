@@ -43,7 +43,8 @@ RUN uv pip install --system -r pyproject.toml || \
     fastapi-sso>=0.4.0 \
     pydantic[email]>=2.0.0 \
     python-dotenv>=1.0.0 \
-    redis>=5.0.0
+    redis>=5.0.0 \
+    piper-tts>=1.2.0
 
 # Stage 2: Runtime
 FROM python:3.11-slim AS runtime

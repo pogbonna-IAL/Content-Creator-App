@@ -2321,8 +2321,18 @@ async def _generate_voiceover_async(
         logger.info(f"[VOICEOVER_ASYNC] TTS provider available: {is_available}")
         
         if not is_available:
-            error_msg = f"TTS provider ({type(tts_provider).__name__}) is not available"
+            provider_name = type(tts_provider).__name__
+            error_msg = (
+                f"TTS provider ({provider_name}) is not available. "
+                f"To enable voiceover generation, install Piper TTS:\n"
+                f"1. Install piper-tts Python package: pip install piper-tts\n"
+                f"2. Or install piper binary and set PIPER_BINARY environment variable\n"
+                f"3. Download Piper voice models and set PIPER_MODEL_PATH environment variable"
+            )
             logger.error(f"[VOICEOVER_ASYNC] {error_msg}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] {error_msg}", file=sys.stderr, flush=True)
+            sys.stderr.flush()
+            # Raise RuntimeError - will be caught by exception handler and sent as SSE event
             raise RuntimeError(error_msg)
         
         logger.info(f"[VOICEOVER_ASYNC] TTS provider is available, proceeding with synthesis")
