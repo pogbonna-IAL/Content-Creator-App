@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { jobId: string } }
+  context: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const jobId = params.jobId
+    const { jobId } = await context.params
 
     if (!jobId || isNaN(Number(jobId))) {
       return NextResponse.json(
