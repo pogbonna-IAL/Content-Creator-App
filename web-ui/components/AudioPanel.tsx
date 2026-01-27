@@ -36,12 +36,19 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     setAudioUrl(null)
 
     try {
+      // Get auth token from localStorage (same as generate flow)
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+
       // Call voiceover API
       const response = await fetch('/api/voiceover', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         credentials: 'include',
         body: JSON.stringify({
           job_id: jobId || undefined,

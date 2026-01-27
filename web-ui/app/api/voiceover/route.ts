@@ -18,30 +18,39 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get auth token from cookies
-    const cookieHeader = request.headers.get('cookie') || ''
+    // Get auth token - try Authorization header first, then cookies
+    const authHeader = request.headers.get('authorization')
     let token: string | null = null
 
-    if (cookieHeader) {
-      const cookies = cookieHeader.split(';').map(c => c.trim())
-      for (const cookie of cookies) {
-        if (cookie.startsWith('auth_token=')) {
-          const value = cookie.substring('auth_token='.length).trim()
-          try {
-            token = decodeURIComponent(value)
-          } catch {
-            token = value
-          }
-          break
-        }
-      }
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim()
     }
 
-    // Also try Next.js cookies API
+    // Fallback to cookies if no Authorization header
     if (!token) {
-      const cookieToken = request.cookies.get('auth_token')?.value
-      if (cookieToken) {
-        token = cookieToken.trim()
+      const cookieHeader = request.headers.get('cookie') || ''
+      
+      if (cookieHeader) {
+        const cookies = cookieHeader.split(';').map(c => c.trim())
+        for (const cookie of cookies) {
+          if (cookie.startsWith('auth_token=')) {
+            const value = cookie.substring('auth_token='.length).trim()
+            try {
+              token = decodeURIComponent(value)
+            } catch {
+              token = value
+            }
+            break
+          }
+        }
+      }
+
+      // Also try Next.js cookies API
+      if (!token) {
+        const cookieToken = request.cookies.get('auth_token')?.value
+        if (cookieToken) {
+          token = cookieToken.trim()
+        }
       }
     }
 
