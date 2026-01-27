@@ -2125,16 +2125,41 @@ async def create_voiceover(
         )
     
     # Start voiceover generation asynchronously
-    asyncio.create_task(
-        _generate_voiceover_async(
-            job_id=job_id,
-            narration_text=narration_text,
-            voice_id=request.voice_id,
-            speed=request.speed,
-            format=request.format,
-            user_id=current_user.id
-        )
-    )
+    logger.info(f"Creating async task for voiceover generation, job_id: {job_id}, text_length: {len(narration_text) if narration_text else 0}")
+    
+    # Wrap the async function to ensure it runs and logs errors
+    async def run_voiceover_with_error_handling():
+        try:
+            logger.info(f"[VOICEOVER_TASK] Task wrapper started for job {job_id}")
+            await _generate_voiceover_async(
+                job_id=job_id,
+                narration_text=narration_text,
+                voice_id=request.voice_id,
+                speed=request.speed,
+                format=request.format,
+                user_id=current_user.id
+            )
+            logger.info(f"[VOICEOVER_TASK] Task wrapper completed successfully for job {job_id}")
+        except Exception as e:
+            logger.error(f"[VOICEOVER_TASK] Task wrapper caught exception for job {job_id}: {type(e).__name__} - {str(e)}", exc_info=True)
+            # Send error event to SSE store
+            try:
+                error_sse_store = get_sse_store()
+                error_sse_store.add_event(
+                    job_id,
+                    'tts_failed',
+                    {
+                        'job_id': job_id,
+                        'message': f'Voiceover generation failed: {str(e)}',
+                        'error_type': type(e).__name__
+                    }
+                )
+                logger.info(f"[VOICEOVER_TASK] Error event sent to SSE store for job {job_id}")
+            except Exception as sse_error:
+                logger.error(f"[VOICEOVER_TASK] Failed to send error event to SSE store: {sse_error}", exc_info=True)
+    
+    async_task = asyncio.create_task(run_voiceover_with_error_handling())
+    logger.info(f"Async task created for voiceover generation, job_id: {job_id}, task: {async_task}")
     
     return {
         "job_id": job_id,
@@ -2162,14 +2187,25 @@ async def _generate_voiceover_async(
         format: Output format
         user_id: User ID for database session
     """
+    import time
     from .database import get_db, ContentArtifact, User
     from .services.plan_policy import PlanPolicy
     
+    logger.info(f"[VOICEOVER_ASYNC] Starting voiceover generation for job {job_id}, user {user_id}")
+    logger.info(f"[VOICEOVER_ASYNC] Parameters: voice_id={voice_id}, speed={speed}, format={format}, text_length={len(narration_text) if narration_text else 0}")
+    
     # Get database session
-    db = next(get_db())
+    try:
+        db = next(get_db())
+        logger.info(f"[VOICEOVER_ASYNC] Database session obtained for job {job_id}")
+    except Exception as db_error:
+        logger.error(f"[VOICEOVER_ASYNC] Failed to get database session for job {job_id}: {db_error}", exc_info=True)
+        raise
+    
     sse_store = get_sse_store()
     
     try:
+        logger.info(f"[VOICEOVER_ASYNC] About to send tts_started event for job {job_id}")
         # Send TTS started event
         sse_store.add_event(
             job_id,
@@ -2184,10 +2220,20 @@ async def _generate_voiceover_async(
         logger.info(f"Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}")
         
         # Get TTS provider
+        logger.info(f"[VOICEOVER_ASYNC] Getting TTS provider...")
         tts_provider = get_tts_provider()
+        logger.info(f"[VOICEOVER_ASYNC] TTS provider obtained: {type(tts_provider).__name__}")
         
-        if not tts_provider.is_available():
-            raise RuntimeError("TTS provider is not available")
+        logger.info(f"[VOICEOVER_ASYNC] Checking TTS provider availability...")
+        is_available = tts_provider.is_available()
+        logger.info(f"[VOICEOVER_ASYNC] TTS provider available: {is_available}")
+        
+        if not is_available:
+            error_msg = f"TTS provider ({type(tts_provider).__name__}) is not available"
+            logger.error(f"[VOICEOVER_ASYNC] {error_msg}")
+            raise RuntimeError(error_msg)
+        
+        logger.info(f"[VOICEOVER_ASYNC] TTS provider is available, proceeding with synthesis")
         
         # Send progress event
         sse_store.add_event(
