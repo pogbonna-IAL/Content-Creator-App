@@ -140,57 +140,101 @@ export default function Home() {
   }
 
   const handleStop = async () => {
-    if (!currentJobId) {
-      console.warn('No job ID available to cancel')
-      return
-    }
-
+    console.log('Stop button clicked - cleaning up...')
+    
     try {
-      // Cancel the stream reader if active
-      if (readerRef) {
-        try {
-          await readerRef.cancel()
-        } catch (e) {
-          console.log('Reader already closed or cancelled')
-        }
-      }
-
-      // Abort the fetch request if active
+      // First, abort the fetch request if active (this will stop the stream)
       if (abortControllerRef) {
+        console.log('Aborting fetch request...')
         abortControllerRef.abort()
       }
 
-      // Call cancel endpoint
-      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
-      const headers: HeadersInit = {
-        'Content-Type': 'application/json',
-      }
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
+      // Cancel and release the stream reader if active
+      if (readerRef) {
+        try {
+          console.log('Cancelling stream reader...')
+          await readerRef.cancel()
+        } catch (e) {
+          console.log('Reader already closed or cancelled:', e)
+        }
+        
+        try {
+          console.log('Releasing reader lock...')
+          readerRef.releaseLock()
+        } catch (e) {
+          console.log('Reader lock already released:', e)
+        }
       }
 
-      const response = await fetch(`/api/jobs/${currentJobId}/cancel`, {
-        method: 'POST',
-        headers,
-        credentials: 'include',
-      })
+      // Call cancel endpoint if we have a job ID
+      if (currentJobId) {
+        try {
+          const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+          const headers: HeadersInit = {
+            'Content-Type': 'application/json',
+          }
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`
+          }
 
-      if (response.ok) {
-        setStatus('Job cancelled')
-        setIsGenerating(false)
-        console.log('Job cancelled successfully')
-      } else {
-        const errorData = await response.json().catch(() => ({ error: 'Failed to cancel job' }))
-        console.error('Failed to cancel job:', errorData)
-        setError(errorData.error || errorData.detail || 'Failed to cancel job')
+          const response = await fetch(`/api/jobs/${currentJobId}/cancel`, {
+            method: 'POST',
+            headers,
+            credentials: 'include',
+          })
+
+          if (response.ok) {
+            console.log('Job cancelled successfully on server')
+          } else {
+            const errorData = await response.json().catch(() => ({ error: 'Failed to cancel job' }))
+            console.warn('Failed to cancel job on server:', errorData)
+            // Don't set error here - we've already stopped the stream locally
+          }
+        } catch (err) {
+          console.warn('Error calling cancel endpoint:', err)
+          // Don't set error here - we've already stopped the stream locally
+        }
       }
+
+      // Clean up all state and references
+      setStatus('Generation cancelled')
+      setIsGenerating(false)
+      setProgress(0)
+      setReaderRef(null)
+      setAbortControllerRef(null)
+      setCurrentJobId(null)
+      
+      console.log('Stop cleanup complete - ready for new generation')
     } catch (err) {
-      console.error('Error cancelling job:', err)
-      setError(err instanceof Error ? err.message : 'Failed to cancel job')
+      console.error('Error during stop cleanup:', err)
+      // Even if there's an error, reset state so user can try again
+      setIsGenerating(false)
+      setStatus('Generation stopped')
+      setProgress(0)
+      setReaderRef(null)
+      setAbortControllerRef(null)
+      setCurrentJobId(null)
     }
   }
 
   const handleGenerate = async (topic: string) => {
+    // Clean up any existing stream/reader before starting new generation
+    if (readerRef) {
+      try {
+        await readerRef.cancel().catch(() => {})
+        readerRef.releaseLock().catch(() => {})
+      } catch (e) {
+        console.log('Error cleaning up previous reader:', e)
+      }
+      setReaderRef(null)
+    }
+    
+    if (abortControllerRef) {
+      abortControllerRef.abort()
+      setAbortControllerRef(null)
+    }
+
+    // Reset all state for new generation
     setIsGenerating(true)
     setError(null)
     setOutput('')
@@ -199,7 +243,7 @@ export default function Home() {
     setVideoOutput('')
     setStatus('')
     setProgress(0)
-    setCurrentJobId(null) // Reset job ID for new generation
+    setCurrentJobId(null)
 
     // Create abort controller for this request
     const abortController = new AbortController()
@@ -242,6 +286,17 @@ export default function Home() {
           signal: abortController.signal,
         })
       } catch (fetchError) {
+        // Handle abort errors gracefully (user cancelled)
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+          console.log('Request aborted by user')
+          setIsGenerating(false)
+          setStatus('Generation cancelled')
+          setProgress(0)
+          setReaderRef(null)
+          setAbortControllerRef(null)
+          return // Exit gracefully without throwing error
+        }
+        
         // Handle network-level errors (connection refused, DNS failure, etc.)
         console.error('Fetch network error:', fetchError)
         if (fetchError instanceof TypeError) {
@@ -438,7 +493,7 @@ export default function Home() {
                   }
                 } else if (data.type === 'complete') {
                   // Final content received - ALWAYS use this as it contains the complete content
-                  const finalContent = data.content
+                  const finalContent = data.content || ''
                   const socialMediaContent = data.social_media_content || ''
                   // Use audio_content from completion message, or fallback to accumulated audio content
                   const audioContent = data.audio_content || accumulatedAudioContent || ''
@@ -452,64 +507,68 @@ export default function Home() {
                   
                   // CRITICAL: Stop the spinner immediately when complete event is received
                   setIsGenerating(false)
+                  setProgress(100)
                   
+                  // Determine what content types were generated
+                  const hasBlogContent = (finalContent && finalContent.trim().length > 0) || 
+                                       (accumulatedContent && accumulatedContent.trim().length > 0)
+                  const hasSocialContent = socialMediaContent && socialMediaContent.trim().length > 0
+                  const hasAudioContent = audioContent && audioContent.trim().length > 0
+                  const hasVideoContent = videoContent && videoContent.trim().length > 0
+                  
+                  console.log('Complete event received:', {
+                    hasBlogContent,
+                    hasSocialContent,
+                    hasAudioContent,
+                    hasVideoContent,
+                    audioContentLength: audioContent.length,
+                    finalContentLength: finalContent.length,
+                    accumulatedContentLength: accumulatedContent.length
+                  })
+                  
+                  // Set blog content if available
                   if (finalContent && finalContent.trim().length > 0) {
-                    // Use the complete content from the completion message
                     accumulatedContent = finalContent
                     setOutput(accumulatedContent)
-                    setProgress(100)
-                    setStatus('Content generation complete!')
-                    console.log('✓ Stream complete - using full content from completion message')
-                    console.log('Final content length:', accumulatedContent.length)
-                    console.log('Final content preview:', accumulatedContent.substring(0, 200))
-                    
-                    // Set social media content if available
-                    if (socialMediaContent && socialMediaContent.trim().length > 0) {
-                      setSocialMediaOutput(socialMediaContent)
-                      console.log('✓ Social media content received, length:', socialMediaContent.length)
-                    }
-                    
-                    // Set audio content if available (from completion message or accumulated)
-                    if (audioContent && audioContent.trim().length > 0) {
-                      setAudioOutput(audioContent)
-                      console.log('✓ Audio content received, length:', audioContent.length)
-                    }
-                    
-                    // Set video content if available
-                    if (videoContent && videoContent.trim().length > 0) {
-                      setVideoOutput(videoContent)
-                      console.log('✓ Video content received, length:', videoContent.length)
-                    }
+                    console.log('✓ Blog content received, length:', accumulatedContent.length)
                   } else if (accumulatedContent && accumulatedContent.trim().length > 0) {
-                    // Fallback to accumulated content if completion message doesn't have content
-                    console.warn('Completion message missing content, using accumulated content')
                     setOutput(accumulatedContent)
-                    setProgress(100)
-                    setStatus('Content generation complete!')
-                    
-                    // Set social media content if available
-                    if (socialMediaContent && socialMediaContent.trim().length > 0) {
-                      setSocialMediaOutput(socialMediaContent)
+                    console.log('✓ Blog content from accumulated, length:', accumulatedContent.length)
+                  }
+                  
+                  // Set social media content if available
+                  if (hasSocialContent) {
+                    setSocialMediaOutput(socialMediaContent)
+                    console.log('✓ Social media content received, length:', socialMediaContent.length)
+                  }
+                  
+                  // Set audio content if available (ALWAYS set if present, even without blog content)
+                  if (hasAudioContent) {
+                    setAudioOutput(audioContent)
+                    console.log('✓ Audio content received, length:', audioContent.length)
+                    // If only audio content (no blog), update status accordingly
+                    if (!hasBlogContent && !hasSocialContent && !hasVideoContent) {
+                      setStatus('Audio content generation complete!')
                     }
-                    
-                    // Set audio content if available (from completion message or accumulated)
-                    if (audioContent && audioContent.trim().length > 0) {
-                      setAudioOutput(audioContent)
+                  }
+                  
+                  // Set video content if available
+                  if (hasVideoContent) {
+                    setVideoOutput(videoContent)
+                    console.log('✓ Video content received, length:', videoContent.length)
+                    // If only video content (no blog), update status accordingly
+                    if (!hasBlogContent && !hasSocialContent && !hasAudioContent) {
+                      setStatus('Video content generation complete!')
                     }
-                    
-                    // Set video content if available
-                    if (videoContent && videoContent.trim().length > 0) {
-                      setVideoOutput(videoContent)
+                  }
+                  
+                  // Set appropriate status message based on what was generated
+                  if (hasBlogContent || hasSocialContent || hasAudioContent || hasVideoContent) {
+                    if (!status || status === '') {
+                      setStatus('Content generation complete!')
                     }
-                  } else if (accumulatedAudioContent && accumulatedAudioContent.trim().length > 0) {
-                    // If only audio content was streamed (no blog content)
-                    console.log('Only audio content was generated')
-                    setAudioOutput(accumulatedAudioContent)
-                    setProgress(100)
-                    setStatus('Audio content generation complete!')
                   } else {
-                    console.error('No content in completion message and no accumulated content')
-                    // Even if no content, stop the spinner
+                    console.warn('No content received in completion event')
                     setStatus('Content generation completed but no content was received')
                   }
                   
@@ -659,7 +718,7 @@ export default function Home() {
         }
       }
 
-      // Ensure reader is released
+      // Ensure reader is released and cleaned up
       if (reader) {
         try {
           reader.releaseLock()
@@ -667,6 +726,10 @@ export default function Home() {
           console.warn('Error releasing reader:', releaseError)
         }
       }
+      
+      // Clean up references
+      setReaderRef(null)
+      setAbortControllerRef(null)
 
       // Ensure final content is set - prioritize completion message content
       console.log('Stream reading completed', shouldStop ? '(stopped due to error)' : '(normal completion)')
@@ -715,6 +778,17 @@ export default function Home() {
         }
       }
     } catch (err) {
+      // Don't show error if it was aborted (user cancelled)
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Generation aborted by user')
+        setIsGenerating(false)
+        setStatus('Generation cancelled')
+        setProgress(0)
+        setReaderRef(null)
+        setAbortControllerRef(null)
+        return
+      }
+      
       console.error('Generation error:', err)
       
       // Provide more helpful error messages based on error type
@@ -748,7 +822,10 @@ export default function Home() {
       setError(errorMessage)
       setOutput('') // Clear output on error
     } finally {
+      // Always clean up references and reset generating state
       setIsGenerating(false)
+      setReaderRef(null)
+      setAbortControllerRef(null)
     }
   }
 
