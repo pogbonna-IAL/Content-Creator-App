@@ -178,7 +178,7 @@ class RetentionNotificationService:
         Returns:
             List of artifact info dicts grouped by user
         """
-        from ..database import ContentArtifact, ContentJob, User, OrganizationMember, RetentionNotification, Membership
+        from ..database import ContentArtifact, ContentJob, User, RetentionNotification, Membership
         from .artifact_retention_service import ArtifactRetentionService
         from sqlalchemy import and_
         
