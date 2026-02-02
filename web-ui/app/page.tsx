@@ -33,6 +33,10 @@ export default function Home() {
   const [progress, setProgress] = useState<number>(0)
   const [currentJobId, setCurrentJobId] = useState<number | null>(null) // Track current job ID for voiceover generation
 
+  // Track reader and job ID for cancellation - MUST be declared before any conditional returns
+  const [readerRef, setReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null)
+
   // Prevent hydration mismatch by only rendering conditionally after mount
   useEffect(() => {
     setIsMounted(true)
@@ -134,10 +138,6 @@ export default function Home() {
       </main>
     )
   }
-
-  // Track reader and job ID for cancellation
-  const [readerRef, setReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
-  const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null)
 
   const handleStop = async () => {
     if (!currentJobId) {
