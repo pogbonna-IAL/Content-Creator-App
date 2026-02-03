@@ -124,18 +124,102 @@ export async function POST(request: NextRequest) {
 
     // Step 1: Create the job first
     // Forward content_types if provided, otherwise backend will use plan defaults
-    const requestBody: { topic: string; content_types?: string[] } = { topic }
+    const requestBody: { topic: string; content_types?: string[]; idempotency_key?: string } = { topic }
     if (content_types && Array.isArray(content_types) && content_types.length > 0) {
       requestBody.content_types = content_types
     }
     
-    console.log('Forwarding to backend:', { topic, content_types: requestBody.content_types })
+    // Add a unique idempotency key to prevent conflicts with cancelled jobs
+    // Backend auto-generates from topic+content_types, but we add timestamp to make it unique
+    // This ensures cancelled jobs don't block new generations
+    requestBody.idempotency_key = `${topic}_${content_types?.join(',') || 'blog'}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
     
-    const createJobResponse = await fetch(backendUrl, {
+    console.log('Forwarding to backend:', { topic, content_types: requestBody.content_types, hasIdempotencyKey: !!requestBody.idempotency_key })
+    
+    let createJobResponse = await fetch(backendUrl, {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify(requestBody),
     })
+
+    // Handle 409 conflict (job already exists with same idempotency key)
+    if (createJobResponse.status === 409) {
+      try {
+        const errorText = await createJobResponse.text()
+        let errorData: any = {}
+        try {
+          errorData = JSON.parse(errorText)
+        } catch {
+          errorData = { message: errorText }
+        }
+        
+        console.warn('Job conflict detected:', errorData)
+        
+        // If the existing job is cancelled, retry with a new unique idempotency key
+        if (errorData.details?.status === 'cancelled' || errorData.status === 'cancelled') {
+          console.log('Existing job is cancelled, retrying with new idempotency key...')
+          // Generate a new unique idempotency key with random component
+          requestBody.idempotency_key = `${topic}_${content_types?.join(',') || 'blog'}_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`
+          
+          createJobResponse = await fetch(backendUrl, {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify(requestBody),
+          })
+          
+          // If retry succeeds, continue normally
+          if (createJobResponse.ok) {
+            console.log('Retry with new idempotency key succeeded')
+            // Continue to process the response below
+          } else if (createJobResponse.status === 409) {
+            // Still getting conflict, return helpful error
+            const retryErrorText = await createJobResponse.text()
+            return new Response(
+              JSON.stringify({ 
+                error: 'Job conflict', 
+                detail: 'Unable to create job due to idempotency conflict. Please try again in a moment.',
+                hint: 'A job with similar parameters may be processing. Wait a few seconds and try again.'
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            )
+          } else {
+            // Other error on retry
+            const retryErrorText = await createJobResponse.text()
+            console.error('Retry failed:', createJobResponse.status, retryErrorText)
+            return new Response(
+              JSON.stringify({ 
+                error: 'Failed to create generation job', 
+                detail: retryErrorText,
+                hint: 'Please try again in a moment'
+              }),
+              { status: createJobResponse.status, headers: { 'Content-Type': 'application/json' } }
+            )
+          }
+        } else {
+          // If job exists and is not cancelled, return helpful error
+          return new Response(
+            JSON.stringify({ 
+              error: 'Job already exists', 
+              detail: errorData.message || 'A job with the same parameters is already in progress',
+              hint: 'Please wait for the current job to complete or cancel it first',
+              existing_job_id: errorData.details?.job_id || errorData.job_id
+            }),
+            { status: 409, headers: { 'Content-Type': 'application/json' } }
+          )
+        }
+      } catch (parseError) {
+        console.error('Error parsing 409 response:', parseError)
+        const errorText = await createJobResponse.text()
+        return new Response(
+          JSON.stringify({ 
+            error: 'Job conflict', 
+            detail: errorText,
+            hint: 'A job with the same parameters may already exist. Please try again with a slightly different topic or wait a moment.'
+          }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+    }
 
     if (!createJobResponse.ok) {
       const errorText = await createJobResponse.text()
