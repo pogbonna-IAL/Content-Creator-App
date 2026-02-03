@@ -727,6 +727,7 @@ async def stream_job_progress(
                     flush_buffers()  # Flush after each event for immediate delivery
             
             # Send initial job status if not already sent
+            last_sent_event_id = last_event_id_int if last_event_id_int else 0
             if not last_event_id_int:
                 event_data = {'type': 'job_started', 'job_id': job_id, 'status': job.status}
                 event_id = sse_store.add_event(job_id, 'job_started', event_data)
@@ -735,6 +736,7 @@ async def stream_job_progress(
                 yield f"data: {json.dumps(event_data)}\n\n"
                 flush_buffers()  # Critical: Flush immediately after initial event
                 logger.info(f"[STREAM_GENERATOR] Sent initial job_started event for job {job_id}, status={job.status}")
+                last_sent_event_id = event_id
                 
                 # If job is already failed, check for error events and send them
                 if job.status == JobStatus.FAILED.value:
@@ -862,6 +864,7 @@ async def stream_job_progress(
                         yield f"event: {event_type}\n"
                         yield f"data: {json.dumps(event_data)}\n\n"
                         flush_buffers()  # Flush status change events immediately
+                        last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
                         last_status = job.status
                         
                         # If completed or failed, send final event and exit
@@ -909,6 +912,7 @@ async def stream_job_progress(
                                     yield f"event: complete\n"
                                     yield f"data: {json.dumps(artifact_data)}\n\n"
                                     flush_buffers()  # Flush completion event immediately
+                                    last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
                                     logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event with content from {len(artifacts)} artifacts")
                                 except Exception as artifact_error:
                                     logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
@@ -942,6 +946,7 @@ async def stream_job_progress(
                                 yield f"event: artifact_ready\n"
                                 yield f"data: {json.dumps(event_data)}\n\n"
                                 flush_buffers()  # Flush artifact events immediately
+                                last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
                                 
                                 # Send content event if artifact has text content
                                 if artifact.content_text and artifact.type in ['blog', 'social', 'audio', 'video']:
@@ -966,6 +971,7 @@ async def stream_job_progress(
                                     yield f"event: content\n"
                                     yield f"data: {json.dumps(content_event_data)}\n\n"
                                     flush_buffers()  # Flush content events immediately
+                                    last_sent_event_id = max(last_sent_event_id, content_event_id)  # Update last sent event ID
                                     print(f"[RAILWAY_DEBUG] Job {job_id}: Content event yielded and flushed", file=sys.stdout, flush=True)
                                     logger.info(f"[STREAM_CONTENT] Job {job_id}: Sent content event for {artifact.type}, length={len(artifact.content_text)}")
                             
@@ -974,6 +980,21 @@ async def stream_job_progress(
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
                     finally:
                         artifacts_check_session.close()
+                    
+                    # Check for new SSE events (like tts_completed, tts_started, etc.) that were added directly to store
+                    try:
+                        new_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                        for event in new_events:
+                            # Skip events we've already sent (shouldn't happen, but safety check)
+                            if event['id'] > last_sent_event_id:
+                                yield f"id: {event['id']}\n"
+                                yield f"event: {event['type']}\n"
+                                yield f"data: {json.dumps(event['data'])}\n\n"
+                                flush_buffers()
+                                last_sent_event_id = event['id']
+                                logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event['type']} (id: {event['id']})")
+                    except Exception as sse_event_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE events: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
                     
                     # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
                     await asyncio.sleep(0.5)
