@@ -2309,15 +2309,13 @@ async def run_generation_async(
                 'error_type': error_type,
                 'hint': hint
             })
-                    
-                    # Track job failure metric
-                    try:
-                        from .services.metrics import increment_counter
-                        increment_counter("job_failures_total", labels={"error_type": type(e).__name__, "plan": plan})
-                    except ImportError:
-                        pass
-            except Exception as update_error:
-                logger.error(f"Failed to update job status: {update_error}")
+        
+        # Track job failure metric (regardless of session status)
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("job_failures_total", labels={"error_type": error_type, "plan": plan if 'plan' in locals() else 'unknown'})
+        except ImportError:
+            pass
     finally:
         if session:
             try:
