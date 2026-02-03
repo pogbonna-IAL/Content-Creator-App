@@ -251,8 +251,17 @@ async def lifespan(app):
     
     yield  # Application runs here
     
-    # Shutdown (if needed in the future)
-    logger.info("Application shutting down...")
+    # Shutdown - close database connections gracefully
+    logger.info("🛑 Application Shutdown - Closing Database Connections")
+    try:
+        from content_creation_crew.db import engine
+        # Dispose of all connection pool connections
+        # This ensures all connections are properly closed and transactions are rolled back
+        engine.dispose(close=True)
+        logger.info("✓ Database connections closed successfully")
+    except Exception as e:
+        logger.warning(f"Error closing database connections during shutdown: {e}")
+    logger.info("Application shutdown complete")
 
 app = FastAPI(
     lifespan=lifespan,
