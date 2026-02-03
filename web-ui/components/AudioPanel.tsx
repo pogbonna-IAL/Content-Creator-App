@@ -21,6 +21,11 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
   const [voiceoverProgress, setVoiceoverProgress] = useState<number>(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [audioMetadata, setAudioMetadata] = useState<any>(null)
+  const [voiceoverJobId, setVoiceoverJobId] = useState<number | null>(null)
+  
+  // Track voiceover stream resources for cancellation
+  const [voiceoverReaderRef, setVoiceoverReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const [voiceoverAbortControllerRef, setVoiceoverAbortControllerRef] = useState<AbortController | null>(null)
 
   // Function to generate voiceover
   const handleGenerateVoiceover = async () => {
@@ -128,14 +133,17 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
       }
 
       const result = await response.json()
-      const voiceoverJobId = result.job_id
+      const newVoiceoverJobId = result.job_id
 
-      if (!voiceoverJobId) {
+      if (!newVoiceoverJobId) {
         throw new Error('No job ID returned from voiceover API')
       }
 
+      // Store job ID for cancellation
+      setVoiceoverJobId(newVoiceoverJobId)
+
       // Stream TTS progress via SSE
-      await streamVoiceoverProgress(voiceoverJobId)
+      await streamVoiceoverProgress(newVoiceoverJobId)
 
     } catch (err) {
       console.error('Voiceover generation error:', err)
@@ -147,6 +155,26 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
   // Stream voiceover progress via SSE
   const streamVoiceoverProgress = async (voiceoverJobId: number) => {
+    // Clean up any existing stream before starting new one
+    if (voiceoverReaderRef) {
+      try {
+        await voiceoverReaderRef.cancel().catch(() => {})
+        voiceoverReaderRef.releaseLock()
+      } catch (e) {
+        console.log('Error cleaning up previous voiceover reader:', e)
+      }
+      setVoiceoverReaderRef(null)
+    }
+    
+    if (voiceoverAbortControllerRef) {
+      voiceoverAbortControllerRef.abort()
+      setVoiceoverAbortControllerRef(null)
+    }
+
+    // Create new abort controller for this stream
+    const abortController = new AbortController()
+    setVoiceoverAbortControllerRef(abortController)
+
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
       const streamUrl = `${apiUrl}/v1/content/jobs/${voiceoverJobId}/stream`
@@ -163,6 +191,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         method: 'GET',
         headers,
         credentials: 'include',
+        signal: abortController.signal,
       })
 
       console.log('AudioPanel - SSE stream response:', {
@@ -183,6 +212,9 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         throw new Error('No response body reader available')
       }
 
+      // Store reader reference for cancellation
+      setVoiceoverReaderRef(reader)
+
       const decoder = new TextDecoder()
       let buffer = ''
       let eventCount = 0
@@ -190,7 +222,19 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
       console.log('AudioPanel - Starting to read SSE stream...')
 
       while (true) {
+        // Check if we should stop (abort signal)
+        if (abortController.signal.aborted) {
+          console.log('AudioPanel - Stream aborted, stopping read loop')
+          break
+        }
+
         const { done, value } = await reader.read()
+        
+        // Handle abort errors gracefully
+        if (done && abortController.signal.aborted) {
+          console.log('AudioPanel - Stream ended due to abort')
+          break
+        }
         
         if (done) {
           console.log('AudioPanel - SSE stream ended, total events received:', eventCount)
@@ -282,11 +326,99 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         }
       }
     } catch (err) {
-      console.error('AudioPanel - Streaming error:', err)
-      setVoiceoverError(err instanceof Error ? err.message : 'Failed to stream voiceover progress')
+      // Handle abort errors gracefully (user cancelled)
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('AudioPanel - Voiceover stream aborted by user')
+        setVoiceoverStatus('Voiceover generation cancelled')
+        // Don't set error, just stop generating
+        setIsGeneratingVoiceover(false)
+        // Preserve progress and status for potential restart
+      } else {
+        console.error('AudioPanel - Streaming error:', err)
+        setVoiceoverError(err instanceof Error ? err.message : 'Failed to stream voiceover progress')
+        setIsGeneratingVoiceover(false)
+        setVoiceoverStatus('')
+        setVoiceoverProgress(0)
+      }
+    } finally {
+      // Clean up references
+      setVoiceoverReaderRef(null)
+      setVoiceoverAbortControllerRef(null)
+    }
+  }
+
+  // Stop voiceover generation
+  const handleStopVoiceover = async () => {
+    console.log('AudioPanel - Stop voiceover button clicked')
+    
+    try {
+      // Abort the fetch request if active
+      if (voiceoverAbortControllerRef) {
+        console.log('AudioPanel - Aborting voiceover fetch request...')
+        voiceoverAbortControllerRef.abort()
+      }
+
+      // Cancel and release the stream reader if active
+      if (voiceoverReaderRef) {
+        try {
+          console.log('AudioPanel - Cancelling voiceover stream reader...')
+          await voiceoverReaderRef.cancel().catch(() => {})
+        } catch (e) {
+          console.log('AudioPanel - Reader already closed or cancelled:', e)
+        }
+        
+        try {
+          console.log('AudioPanel - Releasing voiceover reader lock...')
+          voiceoverReaderRef.releaseLock()
+        } catch (e) {
+          console.log('AudioPanel - Reader lock already released:', e)
+        }
+        setVoiceoverReaderRef(null)
+      }
+
+      // Call cancel endpoint on backend if we have a job ID
+      if (voiceoverJobId) {
+        try {
+          const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+          const cancelUrl = `${apiUrl}/v1/content/jobs/${voiceoverJobId}/cancel`
+          
+          const headers: HeadersInit = {}
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`
+          }
+
+          console.log('AudioPanel - Calling cancel endpoint for job:', voiceoverJobId)
+          
+          // Don't wait for this - just fire and forget
+          fetch(cancelUrl, {
+            method: 'POST',
+            headers,
+            credentials: 'include',
+          }).catch((cancelError) => {
+            console.warn('AudioPanel - Cancel endpoint call failed (non-critical):', cancelError)
+          })
+        } catch (cancelError) {
+          console.warn('AudioPanel - Error calling cancel endpoint (non-critical):', cancelError)
+        }
+      }
+
+      // Update UI state - preserve progress and status
       setIsGeneratingVoiceover(false)
-      setVoiceoverStatus('')
-      setVoiceoverProgress(0)
+      setVoiceoverStatus('Voiceover generation cancelled')
+      // Don't reset progress or error - preserve state for potential restart
+      
+      // Clean up references
+      setVoiceoverAbortControllerRef(null)
+      
+      console.log('AudioPanel - Voiceover stopped successfully')
+    } catch (err) {
+      console.error('AudioPanel - Error stopping voiceover:', err)
+      // Still update UI even if cleanup fails
+      setIsGeneratingVoiceover(false)
+      setVoiceoverStatus('Voiceover generation stopped')
+      setVoiceoverAbortControllerRef(null)
+      setVoiceoverReaderRef(null)
     }
   }
 
@@ -298,6 +430,24 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
       }
     }
   }, [audioUrl])
+
+  // Cleanup voiceover stream on unmount
+  useEffect(() => {
+    return () => {
+      // Clean up voiceover stream resources when component unmounts
+      if (voiceoverReaderRef) {
+        voiceoverReaderRef.cancel().catch(() => {})
+        try {
+          voiceoverReaderRef.releaseLock()
+        } catch (e) {
+          // Ignore errors during cleanup
+        }
+      }
+      if (voiceoverAbortControllerRef) {
+        voiceoverAbortControllerRef.abort()
+      }
+    }
+  }, [voiceoverReaderRef, voiceoverAbortControllerRef])
 
   return (
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
@@ -368,7 +518,19 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                   <div className="space-y-3">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 border-2 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin"></div>
-                      <p className="text-neon-cyan">{voiceoverStatus || 'Generating voiceover...'}</p>
+                      <p className="text-neon-cyan flex-1">{voiceoverStatus || 'Generating voiceover...'}</p>
+                      <button
+                        onClick={handleStopVoiceover}
+                        className="px-3 py-1.5 bg-red-500/20 border border-red-500/50 rounded-lg 
+                                   text-red-400 hover:bg-red-500/30 transition-colors text-sm font-medium
+                                   flex items-center gap-2"
+                        title="Stop voiceover generation"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                        Stop
+                      </button>
                     </div>
                     {/* Progress bar with percentage */}
                     <div className="space-y-2">
@@ -465,7 +627,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
               >
                 Download Script
               </button>
-              {(jobId || output) && !isGeneratingVoiceover && !audioUrl && (
+              {(jobId || output) && !isGeneratingVoiceover && (
                 <button
                   onClick={handleGenerateVoiceover}
                   disabled={isGeneratingVoiceover}
@@ -473,7 +635,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                              text-white hover:opacity-90 transition-opacity text-sm font-semibold
                              disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🎙️ Generate Voiceover
+                  {audioUrl ? '🔄 Regenerate Voiceover' : '🎙️ Generate Voiceover'}
                 </button>
               )}
             </div>

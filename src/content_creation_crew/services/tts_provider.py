@@ -315,6 +315,10 @@ class PiperTTSProvider(TTSProvider):
             f"{voice_id.replace('_', '-')}.onnx",  # With hyphens, direct file
         ]
         
+        # Normalize local path to use voice_id format (underscores) for consistency
+        # This ensures downloaded files match what _resolve_voice_model expects
+        local_path_normalized = os.path.join(self.model_path, f"{voice_id}.onnx")
+        
         for model_path in possible_paths:
             model_url = f"{base_url}/{model_path}"
             
@@ -325,8 +329,8 @@ class PiperTTSProvider(TTSProvider):
                 os.makedirs(voice_dir, exist_ok=True)
                 local_path = os.path.join(voice_dir, "model.onnx")
             else:
-                # Direct file format
-                local_path = os.path.join(self.model_path, os.path.basename(model_path))
+                # Direct file format - always use normalized path (voice_id format)
+                local_path = local_path_normalized
             
             # Skip if already exists
             if os.path.exists(local_path) and os.path.getsize(local_path) > 1000:
@@ -344,21 +348,27 @@ class PiperTTSProvider(TTSProvider):
                         if block_num % 10 == 0:  # Log every 10 blocks
                             logger.debug(f"Download progress: {percent}%")
                 
-                urllib.request.urlretrieve(model_url, local_path, show_progress)
+                # Download to temporary path first, then rename to consistent format
+                temp_path = local_path + '.tmp'
+                urllib.request.urlretrieve(model_url, temp_path, show_progress)
                 
                 # Verify download succeeded
-                if os.path.exists(local_path):
-                    file_size = os.path.getsize(local_path)
+                if os.path.exists(temp_path):
+                    file_size = os.path.getsize(temp_path)
                     if file_size > 1000:  # At least 1KB
+                        # Move to final location (normalized to voice_id format)
+                        if os.path.exists(local_path):
+                            os.remove(local_path)  # Remove old file if exists
+                        os.rename(temp_path, local_path)
                         logger.info(f"Successfully downloaded Piper model to {local_path} ({file_size} bytes)")
                         print(f"[RAILWAY_DEBUG] Successfully downloaded {file_size} bytes to {local_path}", file=sys.stdout, flush=True)
                         return local_path
                     else:
                         logger.warning(f"Downloaded file too small: {file_size} bytes")
-                        if os.path.exists(local_path):
-                            os.remove(local_path)
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
                 else:
-                    logger.warning(f"Download completed but file not found at {local_path}")
+                    logger.warning(f"Download completed but file not found at {temp_path}")
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     logger.debug(f"Model not found at {model_url} (404)")
@@ -410,10 +420,16 @@ class PiperTTSProvider(TTSProvider):
         if os.path.exists(voice_id):
             return voice_id
         
-        # Check in model directory
-        model_file = os.path.join(self.model_path, f"{voice_id}.onnx")
-        if os.path.exists(model_file):
-            return model_file
+        # Check in model directory - try both underscore and hyphen versions
+        # Voice IDs might use underscores (en_US) but downloads use hyphens (en-US)
+        model_file_underscore = os.path.join(self.model_path, f"{voice_id}.onnx")
+        model_file_hyphen = os.path.join(self.model_path, f"{voice_id.replace('_', '-')}.onnx")
+        
+        if os.path.exists(model_file_underscore):
+            return model_file_underscore
+        if os.path.exists(model_file_hyphen):
+            logger.info(f"Found model file with hyphen format: {model_file_hyphen}")
+            return model_file_hyphen
         
         # Try to download model if not found
         logger.info(f"Voice model {voice_id} not found locally, attempting to download...")
@@ -430,15 +446,24 @@ class PiperTTSProvider(TTSProvider):
             print(f"[RAILWAY_DEBUG] Model download error: {download_error}", file=sys.stderr, flush=True)
         
         # Check if downloaded to model directory (might have been downloaded with different name)
-        if os.path.exists(model_file):
-            logger.info(f"Found model file at {model_file}")
-            return model_file
+        # Check both underscore and hyphen versions
+        if os.path.exists(model_file_underscore):
+            logger.info(f"Found model file at {model_file_underscore}")
+            return model_file_underscore
+        if os.path.exists(model_file_hyphen):
+            logger.info(f"Found model file at {model_file_hyphen}")
+            return model_file_hyphen
         
-        # Also check for directory format
-        voice_dir_model = os.path.join(self.model_path, voice_id, "model.onnx")
-        if os.path.exists(voice_dir_model):
-            logger.info(f"Found model file at {voice_dir_model}")
-            return voice_dir_model
+        # Also check for directory format (both underscore and hyphen)
+        voice_dir_model_underscore = os.path.join(self.model_path, voice_id, "model.onnx")
+        voice_dir_model_hyphen = os.path.join(self.model_path, voice_id.replace('_', '-'), "model.onnx")
+        
+        if os.path.exists(voice_dir_model_underscore):
+            logger.info(f"Found model file at {voice_dir_model_underscore}")
+            return voice_dir_model_underscore
+        if os.path.exists(voice_dir_model_hyphen):
+            logger.info(f"Found model file at {voice_dir_model_hyphen}")
+            return voice_dir_model_hyphen
         
         # Fallback: use first available voice
         logger.warning(f"Voice {voice_id} not found, using default")
