@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import AboutModal from './AboutModal'
 import ContactModal from './ContactModal'
@@ -18,10 +18,20 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
   const [showUserMenu, setShowUserMenu] = useState(false)
   const { user, logout } = useAuth()
   const router = useRouter()
+  const pathname = usePathname()
 
   const handleLogout = () => {
     logout()
     router.push('/')
+  }
+
+  const handleLogoClick = () => {
+    // If already on home page, scroll to top, otherwise navigate
+    if (pathname === '/') {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      router.push('/')
+    }
   }
 
   return (
@@ -31,7 +41,7 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
           <div className="relative flex items-center">
             {/* Logo and Title - Left Aligned */}
             <button
-              onClick={() => router.push('/')}
+              onClick={handleLogoClick}
               className="flex items-center space-x-3 flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
               aria-label="Go to home page"
             >
