@@ -143,33 +143,47 @@ class PiperTTSProvider(TTSProvider):
         try:
             from piper import PiperVoice
             
-            # Resolve voice model path (will download if needed)
-            logger.info(f"[TTS_SYNTHESIS] Resolving voice model for voice_id: {voice_id}")
-            print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolving voice model for voice_id: {voice_id}", file=sys.stdout, flush=True)
+            # Resolve "default" to actual voice ID first
+            actual_voice_id = voice_id
+            if voice_id == "default":
+                available_voices = self.get_available_voices()
+                if available_voices:
+                    actual_voice_id = available_voices[0]
+                    logger.info(f"[TTS_SYNTHESIS] Resolved 'default' to voice_id: {actual_voice_id}")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolved 'default' to voice_id: {actual_voice_id}", file=sys.stdout, flush=True)
+                else:
+                    logger.error("[TTS_SYNTHESIS] No available voices found")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] ERROR: No available voices found", file=sys.stderr, flush=True)
+                    raise RuntimeError("No Piper voices available. Check piper-tts installation.")
             
+            # Resolve voice model path (will download if needed)
+            logger.info(f"[TTS_SYNTHESIS] Resolving voice model for voice_id: {actual_voice_id}")
+            print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolving voice model for voice_id: {actual_voice_id}", file=sys.stdout, flush=True)
+            
+            voice_model = None
             try:
-                voice_model = self._resolve_voice_model(voice_id)
+                voice_model = self._resolve_voice_model(actual_voice_id)
                 logger.info(f"[TTS_SYNTHESIS] Resolved voice model path: {voice_model}")
                 print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Resolved voice model path: {voice_model}", file=sys.stdout, flush=True)
                 
                 # Verify file exists
-                if not os.path.exists(voice_model):
+                if voice_model and os.path.exists(voice_model):
+                    file_size = os.path.getsize(voice_model)
+                    logger.info(f"[TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes", file=sys.stdout, flush=True)
+                else:
                     logger.warning(f"[TTS_SYNTHESIS] Voice model file not found at resolved path: {voice_model}")
                     print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file not found at resolved path: {voice_model}", file=sys.stderr, flush=True)
                     # Don't raise error yet - try loading by voice_id directly (PiperVoice might auto-download)
                     logger.info(f"[TTS_SYNTHESIS] Will try loading by voice_id directly (PiperVoice may auto-download)")
                     voice_model = None  # Signal to try direct loading
-                else:
-                    file_size = os.path.getsize(voice_model)
-                    logger.info(f"[TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes")
-                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes", file=sys.stdout, flush=True)
             except FileNotFoundError as resolve_error:
                 logger.warning(f"[TTS_SYNTHESIS] Voice model not found, will try direct loading: {resolve_error}")
                 print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model not found, will try direct loading: {resolve_error}", file=sys.stderr, flush=True)
                 voice_model = None  # Signal to try direct loading
             except Exception as resolve_error:
-                logger.error(f"[TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", exc_info=True)
-                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", file=sys.stderr, flush=True)
+                logger.warning(f"[TTS_SYNTHESIS] Failed to resolve voice model, will try direct loading: {resolve_error}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to resolve voice model, will try direct loading: {resolve_error}", file=sys.stderr, flush=True)
                 voice_model = None  # Try direct loading as fallback
             
             # Load voice - PiperVoice.load can also accept voice_id directly
@@ -189,36 +203,40 @@ class PiperTTSProvider(TTSProvider):
                     print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to load from path, will try voice_id: {load_error}", file=sys.stderr, flush=True)
                     voice = None  # Will try voice_id next
             
-            # If path loading failed or no path, try loading by voice_id directly
+            # If path loading failed or no path, try loading by actual_voice_id directly
             # PiperVoice.load(voice_id) may auto-download the model
             if voice is None:
-                logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {voice_id}")
-                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {voice_id}", file=sys.stdout, flush=True)
+                logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {actual_voice_id}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {actual_voice_id}", file=sys.stdout, flush=True)
                 try:
-                    voice = PiperVoice.load(voice_id)
+                    voice = PiperVoice.load(actual_voice_id)
                     logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id (auto-download may have occurred)")
                     print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id", file=sys.stdout, flush=True)
                 except Exception as voice_id_error:
-                    logger.error(f"[TTS_SYNTHESIS] Failed to load by voice_id: {voice_id_error}", exc_info=True)
-                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to load by voice_id: {voice_id_error}", file=sys.stderr, flush=True)
-                    # Try with hyphen version as last resort
+                    logger.warning(f"[TTS_SYNTHESIS] Failed to load by voice_id {actual_voice_id}, trying hyphen version: {voice_id_error}")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to load by voice_id {actual_voice_id}, trying hyphen version: {voice_id_error}", file=sys.stderr, flush=True)
+                    # Try with hyphen version as fallback
                     try:
-                        voice_id_hyphen = voice_id.replace('_', '-')
+                        voice_id_hyphen = actual_voice_id.replace('_', '-')
                         logger.info(f"[TTS_SYNTHESIS] Trying hyphen version: {voice_id_hyphen}")
+                        print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Trying hyphen version: {voice_id_hyphen}", file=sys.stdout, flush=True)
                         voice = PiperVoice.load(voice_id_hyphen)
                         logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice with hyphen version")
+                        print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice with hyphen version", file=sys.stdout, flush=True)
                     except Exception as hyphen_error:
-                        logger.error(f"[TTS_SYNTHESIS] All loading methods failed. Original error: {voice_id_error}, Hyphen error: {hyphen_error}", exc_info=True)
+                        logger.error(f"[TTS_SYNTHESIS] All loading methods failed for voice_id {actual_voice_id}", exc_info=True)
+                        print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] All loading methods failed. Original: {voice_id_error}, Hyphen: {hyphen_error}", file=sys.stderr, flush=True)
+                        # Don't raise error here - let it be caught by the outer exception handler
                         raise FileNotFoundError(
                             f"Piper model not found and could not be auto-downloaded. "
-                            f"Voice ID: {voice_id}. "
+                            f"Voice ID: {actual_voice_id} (resolved from '{voice_id}'). "
                             f"Tried paths: {voice_model if voice_model else 'N/A'}. "
                             f"Set PIPER_MODEL_PATH or install piper models. "
                             f"To download models automatically, ensure piper-tts package is installed with download support."
                         )
             
             if voice is None:
-                raise FileNotFoundError(f"Failed to load Piper voice model for {voice_id}")
+                raise FileNotFoundError(f"Failed to load Piper voice model for {actual_voice_id} (resolved from '{voice_id}')")
             
             # Synthesize (PiperVoice.synthesize returns generator of AudioChunk objects)
             # Speed control may not be available in Python API, synthesize as-is
