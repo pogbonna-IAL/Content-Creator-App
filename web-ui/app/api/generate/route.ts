@@ -613,10 +613,11 @@ export async function POST(request: NextRequest) {
           
           // Log additional details for socket errors
           if (errorCause && typeof errorCause === 'object' && 'code' in errorCause && errorCause.code === 'UND_ERR_SOCKET') {
+            const socketError = errorCause as { code: string; socket?: any; message?: string }
             console.error('Socket error details:', {
-              code: errorCause.code,
-              socket: errorCause.socket,
-              message: errorCause.message
+              code: socketError.code,
+              socket: socketError.socket,
+              message: socketError.message
             })
           }
           
