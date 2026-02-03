@@ -350,24 +350,30 @@ async def create_generation_job(
                 from .services.content_service import ContentService
                 from .database import SessionLocal
                 cancel_session = SessionLocal()
-                cancel_user = cancel_session.query(User).filter(User.id == current_user.id).first()
-                if cancel_user:
-                    cancel_content_service = ContentService(cancel_session, cancel_user)
-                    cancel_content_service.update_job_status(
-                        job.id,
-                        JobStatus.CANCELLED.value,
-                        finished_at=datetime.utcnow()
-                    )
-                    # Send cancellation event
-                    from .services.sse_store import get_sse_store
-                    cancel_sse_store = get_sse_store()
-                    cancel_sse_store.add_event(job.id, 'cancelled', {
-                        'job_id': job.id,
-                        'message': 'Job cancelled by user',
-                        'cancelled_at': datetime.utcnow().isoformat()
-                    })
-                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to CANCELLED")
-                cancel_session.close()
+                try:
+                    cancel_user = cancel_session.query(User).filter(User.id == current_user.id).first()
+                    if cancel_user:
+                        cancel_content_service = ContentService(cancel_session, cancel_user)
+                        cancel_content_service.update_job_status(
+                            job.id,
+                            JobStatus.CANCELLED.value,
+                            finished_at=datetime.utcnow()
+                        )
+                        cancel_session.commit()
+                        # Send cancellation event
+                        from .services.sse_store import get_sse_store
+                        cancel_sse_store = get_sse_store()
+                        cancel_sse_store.add_event(job.id, 'cancelled', {
+                            'job_id': job.id,
+                            'message': 'Job cancelled by user',
+                            'cancelled_at': datetime.utcnow().isoformat()
+                        })
+                        logger.info(f"[ASYNC_TASK] Updated job {job.id} status to CANCELLED")
+                except Exception:
+                    cancel_session.rollback()
+                    raise
+                finally:
+                    cancel_session.close()
             except Exception as cancel_error:
                 logger.error(f"[ASYNC_TASK] Failed to update job status after cancellation: {cancel_error}", exc_info=True)
             raise  # Re-raise CancelledError
@@ -395,27 +401,33 @@ async def create_generation_job(
                 from .services.content_service import ContentService
                 from .database import SessionLocal
                 error_session = SessionLocal()
-                error_user = error_session.query(User).filter(User.id == current_user.id).first()
-                if error_user:
-                    error_content_service = ContentService(error_session, error_user)
-                    error_content_service.update_job_status(
-                        job.id,
-                        JobStatus.FAILED.value,
-                        finished_at=datetime.utcnow()
-                    )
-                    # Send error event to SSE store with hint
-                    from .services.sse_store import get_sse_store
-                    sse_store = get_sse_store()
-                    sse_store.add_event(job.id, 'error', {
-                        'job_id': job.id,
-                        'message': error_msg,
-                        'error_type': error_type,
-                        'hint': hint
-                    })
-                    logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event with hint")
-                    sys.stdout.flush()
-                    sys.stderr.flush()
-                error_session.close()
+                try:
+                    error_user = error_session.query(User).filter(User.id == current_user.id).first()
+                    if error_user:
+                        error_content_service = ContentService(error_session, error_user)
+                        error_content_service.update_job_status(
+                            job.id,
+                            JobStatus.FAILED.value,
+                            finished_at=datetime.utcnow()
+                        )
+                        error_session.commit()
+                        # Send error event to SSE store with hint
+                        from .services.sse_store import get_sse_store
+                        sse_store = get_sse_store()
+                        sse_store.add_event(job.id, 'error', {
+                            'job_id': job.id,
+                            'message': error_msg,
+                            'error_type': error_type,
+                            'hint': hint
+                        })
+                        logger.info(f"[ASYNC_TASK] Updated job {job.id} status to FAILED and sent error event with hint")
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                except Exception:
+                    error_session.rollback()
+                    raise
+                finally:
+                    error_session.close()
             except Exception as update_error:
                 logger.error(f"[ASYNC_TASK] Failed to update job status after error: {update_error}", exc_info=True)
                 sys.stdout.flush()
@@ -1132,6 +1144,7 @@ async def run_generation_async(
     sys.stdout.flush()
     sys.stderr.flush()
     
+    session = None
     try:
         # Get fresh database session
         session = SessionLocal()
@@ -1141,6 +1154,8 @@ async def run_generation_async(
             logger.error(f"User {user_id} not found for job {job_id}")
             sys.stdout.flush()
             sys.stderr.flush()
+            if session:
+                session.close()
             return
         
         content_service = ContentService(session, user)
@@ -2382,9 +2397,11 @@ async def _generate_voiceover_async(
     logger.info(f"[VOICEOVER_ASYNC] Starting voiceover generation for job {job_id}, user {user_id}")
     logger.info(f"[VOICEOVER_ASYNC] Parameters: voice_id={voice_id}, speed={speed}, format={format}, text_length={len(narration_text) if narration_text else 0}")
     
-    # Get database session
+    # Get database session - use SessionLocal directly for async tasks
+    from .database import SessionLocal
+    db = None
     try:
-        db = next(get_db())
+        db = SessionLocal()
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Database session obtained for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         logger.info(f"[VOICEOVER_ASYNC] Database session obtained for job {job_id}")
@@ -2606,6 +2623,9 @@ async def _generate_voiceover_async(
         plan_policy = PlanPolicy(db, User(id=user_id))
         plan_policy.increment_usage('voiceover_audio')
         
+        # Commit transaction before closing session
+        db.commit()
+        
         # Track TTS job success metric
         try:
             from .services.metrics import increment_counter
@@ -2675,7 +2695,15 @@ async def _generate_voiceover_async(
             }
         )
     finally:
-        db.close()
+        if db:
+            try:
+                db.rollback()  # Rollback any uncommitted transactions before closing
+            except Exception:
+                pass  # Ignore rollback errors if session is already closed/invalid
+            try:
+                db.close()
+            except Exception as close_error:
+                logger.warning(f"Error closing database session for voiceover job {job_id}: {close_error}")
 
 
 class VideoRenderRequest(BaseModel):
@@ -2843,8 +2871,15 @@ async def _render_video_async(
     from .services.video_provider import get_video_provider
     from typing import Tuple
     
-    # Get database session
-    db = next(get_db())
+    # Get database session - use SessionLocal directly for async tasks
+    from .database import SessionLocal
+    db = None
+    try:
+        db = SessionLocal()
+    except Exception as db_error:
+        logger.error(f"Failed to get database session for video render job {job_id}: {db_error}", exc_info=True)
+        raise
+    
     sse_store = get_sse_store()
     
     try:
@@ -3005,6 +3040,9 @@ async def _render_video_async(
         plan_policy = PlanPolicy(db, User(id=user_id))
         plan_policy.increment_usage('final_video')
         
+        # Commit transaction before closing session
+        db.commit()
+        
         # Track video render success metric
         try:
             from .services.metrics import increment_counter
@@ -3061,5 +3099,13 @@ async def _render_video_async(
             }
         )
     finally:
-        db.close()
+        if db:
+            try:
+                db.rollback()  # Rollback any uncommitted transactions before closing
+            except Exception:
+                pass  # Ignore rollback errors if session is already closed/invalid
+            try:
+                db.close()
+            except Exception as close_error:
+                logger.warning(f"Error closing database session for voiceover job {job_id}: {close_error}")
 
