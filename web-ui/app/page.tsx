@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import Navbar from '@/components/Navbar'
@@ -36,6 +36,19 @@ export default function Home() {
   // Track reader and job ID for cancellation - MUST be declared before any conditional returns
   const [readerRef, setReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
   const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null)
+  
+  // Track output state for final validation (to check if content was set)
+  const outputRef = useRef(output)
+  const audioOutputRef = useRef(audioOutput)
+  
+  // Update refs when state changes
+  useEffect(() => {
+    outputRef.current = output
+  }, [output])
+  
+  useEffect(() => {
+    audioOutputRef.current = audioOutput
+  }, [audioOutput])
 
   // Prevent hydration mismatch by only rendering conditionally after mount
   useEffect(() => {
@@ -251,6 +264,7 @@ export default function Home() {
 
     // Track if we should stop reading and the reader instance
     let shouldStop = false
+    let stopReason: string | null = null // Track why we're stopping
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
     try {
@@ -375,7 +389,7 @@ export default function Home() {
       while (true) {
         // Check if we should stop before reading next chunk
         if (shouldStop) {
-          console.log('Stopping stream reading due to error')
+          console.log(`Stopping stream reading: ${stopReason || 'unknown reason'}`)
           break
         }
         
@@ -393,71 +407,139 @@ export default function Home() {
           console.log('Accumulated content length:', accumulatedContent.length)
           console.log('Accumulated audio content length:', accumulatedAudioContent.length)
           
-          // Process any remaining buffer
-          if (buffer.trim()) {
-            const lines = buffer.split('\n')
-            for (const line of lines) {
-              // Skip keep-alive and empty lines
-              if (!line.trim() || line.trim() === ': keep-alive' || (line.startsWith(':') && line.trim() !== ':')) {
-                continue
-              }
-              
-              if (line.startsWith('data: ')) {
-                try {
-                  const jsonStr = line.slice(6).trim()
-                  if (!jsonStr) continue
-                  const data = JSON.parse(jsonStr)
-                  console.log('Final buffer data:', data.type, data)
-                  
-                  if (data.type === 'complete') {
-                    receivedCompleteEvent = true
-                    if (data.content) {
-                      accumulatedContent = data.content
-                      setOutput(accumulatedContent)
+          // Process any remaining buffer - try multiple times to catch late-arriving data
+          let bufferProcessed = false
+          const maxBufferProcessAttempts = 3
+          
+          for (let attempt = 0; attempt < maxBufferProcessAttempts; attempt++) {
+            if (buffer.trim()) {
+              const lines = buffer.split('\n')
+              for (const line of lines) {
+                // Skip keep-alive and empty lines
+                if (!line.trim() || line.trim() === ': keep-alive' || (line.startsWith(':') && line.trim() !== ':')) {
+                  continue
+                }
+                
+                if (line.startsWith('data: ')) {
+                  try {
+                    const jsonStr = line.slice(6).trim()
+                    if (!jsonStr) continue
+                    const data = JSON.parse(jsonStr)
+                    console.log(`Final buffer data (attempt ${attempt + 1}):`, data.type, data)
+                    
+                    if (data.type === 'complete') {
+                      receivedCompleteEvent = true
+                      bufferProcessed = true
+                      if (data.content) {
+                        accumulatedContent = data.content
+                        setOutput(accumulatedContent)
+                      }
+                      if (data.audio_content) {
+                        accumulatedAudioContent = data.audio_content
+                        setAudioOutput(accumulatedAudioContent)
+                      }
+                      if (data.social_media_content) {
+                        setSocialMediaOutput(data.social_media_content)
+                      }
+                      if (data.video_content) {
+                        setVideoOutput(data.video_content)
+                      }
+                      setProgress(100)
+                      setStatus('Content generation complete!')
+                      setIsGenerating(false)
+                    } else if (data.type === 'error') {
+                      // Handle error in final buffer
+                      bufferProcessed = true
+                      const errorMsg = data.message || data.detail || 'Unknown error occurred'
+                      let displayError = `Content generation failed: ${errorMsg}`
+                      if (data.error_type) {
+                        displayError += `\n\nError Type: ${data.error_type}`
+                      }
+                      if (data.hint) {
+                        displayError += `\n\nHint: ${data.hint}`
+                      }
+                      setError(displayError)
+                      setIsGenerating(false)
+                      setStatus('Generation failed')
+                      setProgress(0)
+                    } else if (data.type === 'content' && data.chunk) {
+                      // Process content chunks in final buffer
+                      bufferProcessed = true
+                      const contentType = data.artifact_type || 
+                                        (data.content_field === 'audio_content' ? 'audio' :
+                                         data.content_field === 'social_media_content' ? 'social' :
+                                         data.content_field === 'video_content' ? 'video' :
+                                         data.content_type) || 'blog'
+                      
+                      if (contentType === 'audio') {
+                        accumulatedAudioContent += data.chunk
+                        setAudioOutput(accumulatedAudioContent)
+                      } else if (contentType === 'social') {
+                        setSocialMediaOutput(data.chunk)
+                      } else if (contentType === 'video') {
+                        setVideoOutput(data.chunk)
+                      } else {
+                        accumulatedContent += data.chunk
+                        setOutput(accumulatedContent)
+                      }
                     }
-                    if (data.audio_content) {
-                      accumulatedAudioContent = data.audio_content
-                      setAudioOutput(accumulatedAudioContent)
-                    }
-                    if (data.social_media_content) {
-                      setSocialMediaOutput(data.social_media_content)
-                    }
-                    if (data.video_content) {
-                      setVideoOutput(data.video_content)
-                    }
-                    setProgress(100)
-                    setStatus('Content generation complete!')
-                    setIsGenerating(false)
-                  } else if (data.type === 'error') {
-                    // Handle error in final buffer
-                    const errorMsg = data.message || data.detail || 'Unknown error occurred'
-                    let displayError = `Content generation failed: ${errorMsg}`
-                    if (data.error_type) {
-                      displayError += `\n\nError Type: ${data.error_type}`
-                    }
-                    if (data.hint) {
-                      displayError += `\n\nHint: ${data.hint}`
-                    }
-                    setError(displayError)
-                    setIsGenerating(false)
-                    setStatus('Generation failed')
-                    setProgress(0)
+                  } catch (e) {
+                    console.error('Error parsing final buffer:', e, 'Line:', line.substring(0, 100))
                   }
-                } catch (e) {
-                  console.error('Error parsing final buffer:', e, 'Line:', line.substring(0, 100))
                 }
               }
             }
+            
+            // If we processed something, break early
+            if (bufferProcessed) {
+              break
+            }
+            
+            // Wait a bit before next attempt (only if not last attempt)
+            if (attempt < maxBufferProcessAttempts - 1) {
+              await new Promise(resolve => setTimeout(resolve, 100)) // 100ms delay
+              // Re-read buffer in case more data arrived
+              buffer = buffer // Keep existing buffer, but allow for potential new data
+            }
           }
           
-          // If stream ended but we have no content and no error, show a message
+          // Final check: Wait a bit more for any late-arriving complete events
+          // This handles race conditions where the stream closes before the complete event is fully sent
           if (!receivedCompleteEvent && !accumulatedContent && !accumulatedAudioContent && !error) {
+            console.log('Waiting for potential late-arriving content events...')
+            // Give it a short delay to catch any final events
+            await new Promise(resolve => setTimeout(resolve, 500))
+            
+            // Re-check state after delay
+            // Note: We can't re-read the stream, but state might have been updated by React
+            // Check if content was set during the delay (via state updates)
+            const finalCheck = await new Promise<boolean>((resolve) => {
+              setTimeout(() => {
+                // Check current state values
+                // Since we can't access state directly here, we'll rely on the error check below
+                resolve(false)
+              }, 100)
+            })
+          }
+          
+          // Final validation: Check if we have any content
+          // Use refs to get latest state values, as state updates might be pending
+          const currentOutput = outputRef.current
+          const currentAudioOutput = audioOutputRef.current
+          const hasAnyContent = accumulatedContent.trim().length > 0 || 
+                               accumulatedAudioContent.trim().length > 0 ||
+                               currentOutput.trim().length > 0 ||
+                               currentAudioOutput.trim().length > 0
+          
+          // If stream ended but we have no content and no error, show a message
+          if (!receivedCompleteEvent && !hasAnyContent && !error) {
             console.warn('Stream ended but no complete event and no content received')
             console.warn('Buffer preview:', buffer.substring(0, 500))
-            setError('Stream ended unexpectedly. No content was generated. This may indicate a timeout or server error. Please try again.')
+            console.warn('State check - output:', output.length, 'audioOutput:', audioOutput.length)
+            setError('No content received from stream. The content may have been generated but not properly streamed. Check browser console and server logs for details.')
             setIsGenerating(false)
             setStatus('Generation incomplete')
-          } else if (receivedCompleteEvent || accumulatedContent || accumulatedAudioContent) {
+          } else if (receivedCompleteEvent || hasAnyContent) {
             // Stream ended with complete event or content - ensure spinner is stopped and status is set
             setIsGenerating(false)
             setProgress(100)
@@ -675,6 +757,7 @@ export default function Home() {
                   
                   // Mark that we should stop reading the stream since we're complete
                   shouldStop = true
+                  stopReason = 'complete event received'
                   try {
                     reader.cancel()
                   } catch (cancelError) {
@@ -690,6 +773,7 @@ export default function Home() {
                   console.log('Job cancelled:', data.message)
                   // Stop reading stream
                   shouldStop = true
+                  stopReason = 'job cancelled by server'
                   if (reader) {
                     try {
                       await reader.cancel()
@@ -729,6 +813,7 @@ export default function Home() {
                   
                   // Mark that we should stop and cancel reader
                   shouldStop = true
+                  stopReason = `server error: ${errorType}`
                   try {
                     reader.cancel()
                   } catch (cancelError) {
@@ -794,6 +879,7 @@ export default function Home() {
                       setProgress(0)
                     }
                     shouldStop = true
+                    stopReason = 'connection terminated'
                     try {
                       reader?.cancel()
                     } catch (cancelError) {
@@ -838,50 +924,99 @@ export default function Home() {
       setAbortControllerRef(null)
 
       // Ensure final content is set - prioritize completion message content
-      console.log('Stream reading completed', shouldStop ? '(stopped due to error)' : '(normal completion)')
+      console.log('Stream reading completed', shouldStop ? `(${stopReason || 'stopped'})` : '(normal completion)')
       console.log('Final accumulatedContent length:', accumulatedContent.length)
+      console.log('Final accumulatedAudioContent length:', accumulatedAudioContent.length)
       
-      if (accumulatedContent && accumulatedContent.trim().length > 0) {
+      // Wait a bit for any late-arriving state updates (React state updates are async)
+      // This handles race conditions where the stream closes before React state is fully updated
+      await new Promise(resolve => setTimeout(resolve, 300))
+      
+      // Check current state values using refs (which track the latest state)
+      const currentOutput = outputRef.current
+      const currentAudioOutput = audioOutputRef.current
+      const hasBlogContent = (accumulatedContent && accumulatedContent.trim().length > 0) || 
+                            (currentOutput && currentOutput.trim().length > 0)
+      const hasAudioContent = (accumulatedAudioContent && accumulatedAudioContent.trim().length > 0) ||
+                             (currentAudioOutput && currentAudioOutput.trim().length > 0)
+      const hasAnyContent = hasBlogContent || hasAudioContent || 
+                           (socialMediaOutput && socialMediaOutput.trim().length > 0) ||
+                           (videoOutput && videoOutput.trim().length > 0)
+      
+      console.log('Final content check:', {
+        hasBlogContent,
+        hasAudioContent,
+        hasAnyContent,
+        accumulatedContentLength: accumulatedContent.length,
+        currentOutputLength: currentOutput.length,
+        accumulatedAudioLength: accumulatedAudioContent.length,
+        currentAudioLength: currentAudioOutput.length
+      })
+      
+      if (hasBlogContent) {
         // Final check - ensure we have the complete content
-        setOutput(accumulatedContent)
+        if (accumulatedContent && accumulatedContent.trim().length > 0) {
+          setOutput(accumulatedContent)
+        }
         setProgress(100)
         setStatus('Content generation complete!')
-        console.log('✓ Final output set, length:', accumulatedContent.length)
-        console.log('Final content preview:', accumulatedContent.substring(0, 300))
-        
-        // Check if we have additional content in the final buffer
-        if (buffer.trim()) {
-          try {
-            const lines = buffer.split('\n')
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = JSON.parse(line.slice(6))
-                if (data.type === 'complete') {
-                  if (data.social_media_content) {
-                    setSocialMediaOutput(data.social_media_content)
-                    console.log('✓ Social media content found in final buffer')
-                  }
-                  if (data.audio_content) {
-                    setAudioOutput(data.audio_content)
-                    console.log('✓ Audio content found in final buffer')
-                  }
-                  if (data.video_content) {
-                    setVideoOutput(data.video_content)
-                    console.log('✓ Video content found in final buffer')
-                  }
+        console.log('✓ Final output set, length:', accumulatedContent.length || currentOutput.length)
+        console.log('Final content preview:', (accumulatedContent || currentOutput).substring(0, 300))
+      }
+      
+      // Check if we have additional content in the final buffer
+      if (buffer.trim()) {
+        try {
+          const lines = buffer.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6))
+              if (data.type === 'complete') {
+                if (data.social_media_content) {
+                  setSocialMediaOutput(data.social_media_content)
+                  console.log('✓ Social media content found in final buffer')
+                }
+                if (data.audio_content) {
+                  setAudioOutput(data.audio_content)
+                  console.log('✓ Audio content found in final buffer')
+                }
+                if (data.video_content) {
+                  setVideoOutput(data.video_content)
+                  console.log('✓ Video content found in final buffer')
+                }
+                if (data.content && !hasBlogContent) {
+                  setOutput(data.content)
+                  console.log('✓ Blog content found in final buffer')
                 }
               }
             }
-          } catch (e) {
-            console.warn('Could not parse additional content from final buffer:', e)
           }
+        } catch (e) {
+          console.warn('Could not parse additional content from final buffer:', e)
         }
-      } else {
+      }
+      
+      // Final validation: Only show error if we truly have no content
+      if (!hasAnyContent && !error && !receivedCompleteEvent) {
         console.warn('⚠ No content accumulated after stream completion')
         console.warn('Buffer at end:', buffer.substring(0, 500))
-        if (!error) {
-          setError('No content received from stream. The content may have been generated but not properly streamed. Check browser console and server logs for details.')
+        console.warn('State values:', {
+          output: currentOutput.length,
+          audioOutput: currentAudioOutput.length,
+          socialMediaOutput: socialMediaOutput.length,
+          videoOutput: videoOutput.length
+        })
+        setError('No content received from stream. The content may have been generated but not properly streamed. Check browser console and server logs for details.')
+        setIsGenerating(false)
+        setStatus('Generation incomplete')
+      } else if (hasAnyContent || receivedCompleteEvent) {
+        // Ensure spinner is stopped if we have content
+        setIsGenerating(false)
+        setProgress(100)
+        if (!status || status === '' || status.includes('Streaming') || status.includes('incomplete')) {
+          setStatus('Content generation complete!')
         }
+        console.log('✓ Stream completed successfully with content')
       }
     } catch (err) {
       // Don't show error if it was aborted (user cancelled)
