@@ -383,7 +383,7 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          let response: Response
+          let response: Response | undefined
           try {
             console.log('Fetching stream from:', getApiUrl(`v1/content/jobs/${jobId}/stream`))
             response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions)
@@ -441,16 +441,30 @@ export async function POST(request: NextRequest) {
             safeClose()
             return
           } finally {
-            // Only clear timeout if fetch succeeded (if it failed, we already cleared it)
-            if (response) {
-              clearTimeout(timeoutId)
-            }
-            // Restore original dispatcher if we changed it
+            // Restore original dispatcher if we changed it (always run cleanup)
             // @ts-ignore
             if (fetchOptions._restoreDispatcher) {
               // @ts-ignore
               fetchOptions._restoreDispatcher()
             }
+            // Note: timeout is cleared in catch block if fetch fails, or will be cleared later if fetch succeeds
+          }
+          
+          // Clear timeout after successful fetch (response is guaranteed to be defined here)
+          clearTimeout(timeoutId)
+
+          // TypeScript doesn't understand that response is defined here (catch returns early)
+          // But we know it's defined because catch block returns early
+          if (!response) {
+            // This should never happen, but TypeScript needs the check
+            safeEnqueue(
+              encoder.encode(`data: ${JSON.stringify({ 
+                type: 'error', 
+                message: 'Unexpected error: response is undefined'
+              })}\n\n`)
+            )
+            safeClose()
+            return
           }
 
           // Log stream response details
