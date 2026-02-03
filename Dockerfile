@@ -197,7 +197,8 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Health check with timeout (3 seconds max)
-HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
+# Increased start-period to 120s to allow migrations to complete
+HEALTHCHECK --interval=15s --timeout=3s --start-period=120s --retries=3 \
     CMD curl -f --max-time 3 http://localhost:${PORT:-8000}/health || exit 1
 
 # Run the application

@@ -151,6 +151,9 @@ try:
 except Exception as e:
     logger.warning(f"Failed to enable PII redaction filter: {e}")
 
+# Module-level migration status (shared between lifespan and health endpoint)
+_migration_status = {"completed": False, "error": None, "in_progress": False}
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -210,41 +213,58 @@ async def lifespan(app):
     """
     FastAPI lifespan event handler.
     Runs database migrations automatically on application startup.
-    This ensures migrations are applied before the app accepts requests.
+    Migrations run in background to allow app to start immediately and respond to health checks.
     """
-    # Startup
+    import asyncio
+    import threading
+    
+    # Use module-level migration status for health checks
+    global _migration_status
+    _migration_status["in_progress"] = True
+    _migration_status["completed"] = False
+    _migration_status["error"] = None
+    
+    # Startup - yield immediately so app can respond to health checks
     logger.info("=" * 60)
-    logger.info("🚀 Application Startup - Running Database Migrations")
+    logger.info("🚀 Application Startup - Starting FastAPI server")
     logger.info("=" * 60)
+    logger.info("⚠️  Database migrations will run in background - app starting immediately")
     
-    # Track migration status for health checks
-    migration_status = {"completed": False, "error": None}
+    # Start migrations in background thread (non-blocking)
+    def run_migrations():
+        """Run migrations in background thread"""
+        global _migration_status
+        try:
+            logger.info("=" * 60)
+            logger.info("🔄 Starting database migrations in background...")
+            logger.info("=" * 60)
+            init_db()
+            logger.info("✅ Database migrations completed successfully")
+            _migration_status["completed"] = True
+            _migration_status["in_progress"] = False
+        except Exception as e:
+            error_msg = f"❌ Database initialization/migration failed: {e}"
+            logger.error(error_msg, exc_info=True)
+            _migration_status["error"] = str(e)
+            _migration_status["in_progress"] = False
+            
+            # Log critical error but don't exit - allow app to start so health checks work
+            logger.critical("=" * 60)
+            logger.critical("WARNING: Database migrations failed")
+            logger.critical("Application will continue but database features may not work")
+            logger.critical("=" * 60)
+            logger.critical("Troubleshooting steps:")
+            logger.critical("1. Check DATABASE_URL is correctly set in Railway")
+            logger.critical("2. Verify PostgreSQL service is running and accessible")
+            logger.critical("3. Check Railway logs for connection errors")
+            logger.critical("4. Manually run migrations: alembic upgrade head")
+            logger.critical("=" * 60)
     
-    try:
-        # Run database migrations using Alembic
-        logger.info("Initializing database and running migrations...")
-        init_db()
-        logger.info("✅ Database migrations completed successfully")
-        migration_status["completed"] = True
-    except Exception as e:
-        error_msg = f"❌ Database initialization/migration failed: {e}"
-        logger.error(error_msg, exc_info=True)
-        migration_status["error"] = str(e)
-        
-        # Log critical error but don't exit - allow app to start so health checks work
-        logger.critical("=" * 60)
-        logger.critical("WARNING: Database migrations failed")
-        logger.critical("Application will start but database features may not work")
-        logger.critical("=" * 60)
-        logger.critical("Troubleshooting steps:")
-        logger.critical("1. Check DATABASE_URL is correctly set in Railway")
-        logger.critical("2. Verify PostgreSQL service is running and accessible")
-        logger.critical("3. Check Railway logs for connection errors")
-        logger.critical("4. Manually run migrations: alembic upgrade head")
-        logger.critical("=" * 60)
-        logger.critical("⚠️  Application will continue to start - health endpoint will show migration status")
-        # DO NOT call sys.exit(1) - allow app to start so health checks can respond
+    # Start migration thread (daemon so it doesn't block shutdown)
+    migration_thread = threading.Thread(target=run_migrations, daemon=True)
+    migration_thread.start()
     
+    # Yield immediately - app can now respond to health checks
     yield  # Application runs here
     
     # Shutdown - close database connections gracefully
@@ -644,13 +664,32 @@ async def health():
     
     Returns:
     - 200 if critical components (database) are healthy
-    - 503 only if critical components are DOWN
+    - 200 during migrations (prevents Railway from killing container)
     
     Note: Optional components (LLM, Redis) can be DEGRADED without affecting health status.
     This ensures Railway health checks pass as long as the database is accessible.
     
     Strict timeouts enforced (never hangs)
     """
+    # Check if migrations are in progress (from module-level variable)
+    global _migration_status
+    if _migration_status.get("in_progress", False):
+        # Migrations are running - return 200 immediately to prevent Railway from killing us
+        return JSONResponse(
+            content={
+                "status": "starting",
+                "message": "Database migrations in progress - service starting up",
+                "service": "content-creation-crew",
+                "environment": config.ENV,
+                "migration_status": {
+                    "completed": _migration_status.get("completed", False),
+                    "in_progress": True,
+                    "error": _migration_status.get("error")
+                }
+            },
+            status_code=200
+        )
+    
     from content_creation_crew.services.health_check import get_health_checker, HealthStatus
     
     health_checker = get_health_checker()
@@ -659,6 +698,13 @@ async def health():
     # Add service metadata
     result["service"] = "content-creation-crew"
     result["environment"] = config.ENV
+    
+    # Add migration status
+    result["migration_status"] = {
+        "completed": _migration_status.get("completed", False),
+        "in_progress": _migration_status.get("in_progress", False),
+        "error": _migration_status.get("error")
+    }
     
     # Determine health status based on critical vs optional components
     components = result.get("components", {})
