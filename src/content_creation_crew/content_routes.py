@@ -657,8 +657,7 @@ async def stream_job_progress(
     job_id: int,
     request: FastAPIRequest,
     last_event_id: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Stream job progress via Server-Sent Events (SSE)
@@ -678,15 +677,21 @@ async def stream_job_progress(
     """
     from fastapi.responses import StreamingResponse
     from content_creation_crew.services.sse_store import get_sse_store
+    from .database import SessionLocal
     
-    content_service = ContentService(db, current_user)
-    job = content_service.get_job(job_id)
-    
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found"
-        )
+    # Get initial job with a short-lived session
+    initial_session = SessionLocal()
+    try:
+        content_service = ContentService(initial_session, current_user)
+        job = content_service.get_job(job_id)
+        
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found"
+            )
+    finally:
+        initial_session.close()
     
     # Get SSE event store
     sse_store = get_sse_store()
@@ -775,44 +780,46 @@ async def stream_job_progress(
             while True:
                 try:
                     poll_count += 1
-                    # Refresh job from database (with error handling)
+                    # Get fresh job from database using a short-lived session
+                    poll_session = SessionLocal()
                     try:
-                        db.refresh(job)
-                    except Exception as db_error:
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Database refresh failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
-                        # Try to get a fresh job from database
-                        try:
-                            fresh_job = db.query(ContentJob).filter(ContentJob.id == job_id).first()
-                            if fresh_job:
-                                job = fresh_job
-                            else:
-                                # Job not found - send error and exit
-                                error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
-                                event_id = sse_store.add_event(job_id, 'error', error_data)
-                                yield f"id: {event_id}\n"
-                                yield f"event: error\n"
-                                yield f"data: {json.dumps(error_data)}\n\n"
-                                flush_buffers()
-                                logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
-                                break
-                        except Exception as fresh_error:
-                            logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get fresh job: {type(fresh_error).__name__}: {str(fresh_error)}", exc_info=True)
-                            # Send error event and exit
-                            error_data = {'type': 'error', 'job_id': job_id, 'message': 'Database error occurred'}
+                        fresh_job = poll_session.query(ContentJob).filter(ContentJob.id == job_id).first()
+                        if fresh_job:
+                            job = fresh_job
+                        else:
+                            # Job not found - send error and exit
+                            error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
                             event_id = sse_store.add_event(job_id, 'error', error_data)
                             yield f"id: {event_id}\n"
                             yield f"event: error\n"
                             yield f"data: {json.dumps(error_data)}\n\n"
                             flush_buffers()
+                            logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
                             break
+                    except Exception as db_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
+                        # Send error event and exit
+                        error_data = {'type': 'error', 'job_id': job_id, 'message': 'Database error occurred'}
+                        event_id = sse_store.add_event(job_id, 'error', error_data)
+                        yield f"id: {event_id}\n"
+                        yield f"event: error\n"
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        flush_buffers()
+                        break
+                    finally:
+                        poll_session.close()
                     
                     # Log every 20 polls (every 10 seconds) to track progress
                     if poll_count % 20 == 0:
                         elapsed = time.time() - stream_start_time
+                        artifact_count = -1
+                        count_session = SessionLocal()
                         try:
-                            artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                            artifact_count = len(count_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
                         except Exception:
-                            artifact_count = -1  # Error querying artifacts
+                            pass  # Error querying artifacts
+                        finally:
+                            count_session.close()
                         logger.info(f"[STREAM_POLL] Job {job_id}: Poll #{poll_count}, status={job.status}, elapsed={elapsed:.1f}s, artifacts={artifact_count}")
                     
                     # Send keep-alive comment if enough time has passed (prevents undici body timeout)
@@ -860,16 +867,21 @@ async def stream_job_progress(
                         # If completed or failed, send final event and exit
                         if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
                             elapsed = time.time() - stream_start_time
+                            artifact_count = -1
+                            final_session = SessionLocal()
                             try:
-                                artifact_count = len(db.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                                artifact_count = len(final_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
                             except Exception:
-                                artifact_count = -1
+                                pass
+                            finally:
+                                final_session.close()
                             logger.info(f"[STREAM_COMPLETE] Job {job_id}: Status changed to {job.status} after {elapsed:.1f}s, total polls={poll_count}, artifacts={artifact_count}")
                             
                             # Send artifacts if completed
                             if job.status == JobStatus.COMPLETED.value:
+                                artifacts_session = SessionLocal()
                                 try:
-                                    artifacts = db.query(ContentArtifact).filter(
+                                    artifacts = artifacts_session.query(ContentArtifact).filter(
                                         ContentArtifact.job_id == job_id
                                     ).all()
                                     # Build complete event with full content from all artifacts
@@ -902,9 +914,10 @@ async def stream_job_progress(
                                     logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
                             break
                     
-                    # Check for new artifacts
+                    # Check for new artifacts - use short-lived session
+                    artifacts_check_session = SessionLocal()
                     try:
-                        current_artifacts = db.query(ContentArtifact).filter(
+                        current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
                             ContentArtifact.job_id == job_id
                         ).all()
                         
@@ -959,6 +972,8 @@ async def stream_job_progress(
                             last_artifact_count = len(current_artifacts)
                     except Exception as artifact_query_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
+                    finally:
+                        artifacts_check_session.close()
                     
                     # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
                     await asyncio.sleep(0.5)
