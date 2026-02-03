@@ -2538,12 +2538,17 @@ async def _generate_voiceover_async(
         # Store audio with metrics (M7)
         from .services.metrics import StorageMetrics
         try:
-            storage_url = storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
+            # Store the file - put() returns relative path, we'll use get_url() for the URL
+            storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
             StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
             logger.info(f"Audio file stored: {storage_key} for job {job_id}")
         except Exception as e:
             StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
             raise
+        
+        # Get the public URL for the stored file (matches FastAPI static mount)
+        storage_url = storage.get_url(storage_key)
+        logger.info(f"Generated storage URL: {storage_url} for storage_key: {storage_key}")
         
         # Moderate output before saving artifact
         if config.ENABLE_CONTENT_MODERATION:

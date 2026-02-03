@@ -556,8 +556,16 @@ import os
 # Serve storage files
 storage_path = Path(os.getenv("STORAGE_PATH", "./storage"))
 if storage_path.exists():
+    # Mount main storage directory at /v1/storage
     app.mount("/v1/storage", StaticFiles(directory=str(storage_path)), name="storage")
-    logger.info(f"Storage files served from {storage_path}")
+    
+    # Also mount voiceovers subdirectory at /voiceovers for easier access
+    voiceovers_path = storage_path / "voiceovers"
+    if voiceovers_path.exists():
+        app.mount("/voiceovers", StaticFiles(directory=str(voiceovers_path)), name="voiceovers")
+        logger.info(f"Voiceover files served from {voiceovers_path} at /voiceovers/")
+    
+    logger.info(f"Storage files served from {storage_path} at /v1/storage/")
 else:
     logger.warning(f"Storage path {storage_path} does not exist, file serving disabled")
 

@@ -166,11 +166,10 @@ class LocalDiskStorageProvider(StorageProvider):
             return False
     
     def get_url(self, key: str) -> str:
-        """Get local file URL (for dev, returns relative path)"""
-        # In production, this would return a full URL
-        # For dev, return relative path that can be served by static file handler
+        """Get local file URL (returns path that matches FastAPI static mount)"""
+        # FastAPI mounts storage at /v1/storage, so return URL matching that mount
         safe_key = key.lstrip('/').replace('..', '').replace('/', '/')
-        return f"/storage/{safe_key}"
+        return f"/v1/storage/{safe_key}"
     
     def generate_key(self, prefix: str, extension: str = "") -> str:
         """
