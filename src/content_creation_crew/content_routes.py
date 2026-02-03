@@ -777,6 +777,8 @@ async def stream_job_progress(
             keepalive_interval = 5.0  # Send keep-alive every 5 seconds to prevent timeout
             poll_count = 0
             stream_start_time = time.time()
+            consecutive_failures = 0  # Track consecutive query failures
+            max_consecutive_failures = 10  # Only break stream after 10 consecutive failures
             
             logger.info(f"[STREAM_POLL] Starting polling loop for job {job_id}, initial status={job.status}")
             
@@ -787,6 +789,7 @@ async def stream_job_progress(
                     fresh_job = None
                     max_retries = 3
                     retry_delay = 0.5  # Start with 0.5 seconds
+                    query_failed = False
                     
                     for retry_attempt in range(max_retries):
                         poll_session = SessionLocal()
@@ -794,6 +797,7 @@ async def stream_job_progress(
                             fresh_job = poll_session.query(ContentJob).filter(ContentJob.id == job_id).first()
                             if fresh_job:
                                 job = fresh_job
+                                consecutive_failures = 0  # Reset failure counter on success
                                 break  # Success - exit retry loop
                             else:
                                 # Job not found - this is not a connection error, exit retry loop
@@ -815,35 +819,68 @@ async def stream_job_progress(
                                 retry_delay *= 2  # Double the delay for next retry
                                 continue  # Retry
                             else:
-                                # All retries exhausted - send error and exit
-                                logger.error(f"[STREAM_ERROR] Job {job_id}: Database connection failed after {max_retries} retries: {error_msg}", exc_info=True)
-                                error_data = {
-                                    'type': 'error',
-                                    'job_id': job_id,
-                                    'message': f'Database connection error: {error_msg}',
-                                    'error_type': 'OperationalError',
-                                    'hint': 'Database connection was lost during streaming. The job may have completed but failed to save. Please try again.'
-                                }
+                                # All retries exhausted - log warning but continue polling
+                                query_failed = True
+                                consecutive_failures += 1
+                                logger.warning(f"[STREAM_WARN] Job {job_id}: Database connection failed after {max_retries} retries (consecutive failures: {consecutive_failures}/{max_consecutive_failures}): {error_msg}")
+                                
+                                # Send warning event (not error) if this is the first failure or every 5 failures
+                                if consecutive_failures == 1 or consecutive_failures % 5 == 0:
+                                    warning_data = {
+                                        'type': 'warning',
+                                        'job_id': job_id,
+                                        'message': f'Temporary database connection issue (attempt {consecutive_failures}). Retrying...',
+                                        'error_type': 'OperationalError',
+                                        'hint': 'The job may still be running. We will continue checking its status.'
+                                    }
+                                    event_id = sse_store.add_event(job_id, 'warning', warning_data)
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: warning\n"
+                                    yield f"data: {json.dumps(warning_data)}\n\n"
+                                    flush_buffers()
+                                
+                                # Only break stream if too many consecutive failures
+                                if consecutive_failures >= max_consecutive_failures:
+                                    logger.error(f"[STREAM_ERROR] Job {job_id}: Too many consecutive database failures ({consecutive_failures}), giving up")
+                                    error_data = {
+                                        'type': 'error',
+                                        'job_id': job_id,
+                                        'message': f'Database connection lost after {consecutive_failures} attempts. The job may have completed but we cannot verify its status.',
+                                        'error_type': 'OperationalError',
+                                        'hint': 'Please check the job status manually or try again later.'
+                                    }
+                                    event_id = sse_store.add_event(job_id, 'error', error_data)
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: error\n"
+                                    yield f"data: {json.dumps(error_data)}\n\n"
+                                    flush_buffers()
+                                    break  # Exit retry loop and while loop
+                                
+                                # Wait longer before next poll attempt
+                                await asyncio.sleep(2.0)  # Wait 2 seconds before next poll
+                                break  # Exit retry loop, continue while loop
+                        except Exception as db_error:
+                            # Non-connection error - log but continue
+                            query_failed = True
+                            consecutive_failures += 1
+                            logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
+                            try:
+                                poll_session.close()
+                            except:
+                                pass
+                            
+                            # Only break on non-connection errors if job not found or too many failures
+                            if consecutive_failures >= max_consecutive_failures:
+                                error_data = {'type': 'error', 'job_id': job_id, 'message': f'Database error after {consecutive_failures} attempts: {str(db_error)}'}
                                 event_id = sse_store.add_event(job_id, 'error', error_data)
                                 yield f"id: {event_id}\n"
                                 yield f"event: error\n"
                                 yield f"data: {json.dumps(error_data)}\n\n"
                                 flush_buffers()
                                 break  # Exit retry loop
-                        except Exception as db_error:
-                            # Non-connection error - don't retry, just log and exit
-                            logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
-                            try:
-                                poll_session.close()
-                            except:
-                                pass
-                            error_data = {'type': 'error', 'job_id': job_id, 'message': f'Database error: {str(db_error)}'}
-                            event_id = sse_store.add_event(job_id, 'error', error_data)
-                            yield f"id: {event_id}\n"
-                            yield f"event: error\n"
-                            yield f"data: {json.dumps(error_data)}\n\n"
-                            flush_buffers()
-                            break  # Exit retry loop
+                            else:
+                                await asyncio.sleep(2.0)  # Wait before next poll
+                                break  # Exit retry loop, continue while loop
                         finally:
                             # Ensure session is closed if not already closed
                             try:
@@ -851,17 +888,31 @@ async def stream_job_progress(
                             except:
                                 pass
                     
+                    # If query failed, use last known job status and continue polling
+                    if query_failed and not fresh_job:
+                        # Use last known job status - don't break the stream
+                        logger.debug(f"[STREAM_CONTINUE] Job {job_id}: Using last known status={last_status}, continuing to poll...")
+                        # Wait a bit longer before next poll attempt
+                        await asyncio.sleep(2.0)
+                        continue
+                    
                     # Check if job was found after retries
                     if not fresh_job:
-                        # Job not found - send error and exit
-                        error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
-                        event_id = sse_store.add_event(job_id, 'error', error_data)
-                        yield f"id: {event_id}\n"
-                        yield f"event: error\n"
-                        yield f"data: {json.dumps(error_data)}\n\n"
-                        flush_buffers()
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
-                        break
+                        # Job not found - this could be a real issue or temporary connection problem
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database after multiple attempts'}
+                            event_id = sse_store.add_event(job_id, 'error', error_data)
+                            yield f"id: {event_id}\n"
+                            yield f"event: error\n"
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            flush_buffers()
+                            logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database after {consecutive_failures} attempts")
+                            break
+                        else:
+                            logger.warning(f"[STREAM_WARN] Job {job_id}: Job not found (attempt {consecutive_failures}/{max_consecutive_failures}), continuing to poll...")
+                            await asyncio.sleep(2.0)
+                            continue
                     
                     # Log every 20 polls (every 10 seconds) to track progress
                     if poll_count % 20 == 0:
