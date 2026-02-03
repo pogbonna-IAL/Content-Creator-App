@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 interface AudioPanelProps {
   output: string
@@ -431,23 +431,37 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     }
   }, [audioUrl])
 
-  // Cleanup voiceover stream on unmount
+  // Cleanup voiceover stream on unmount only
+  // Use refs to track current values without triggering cleanup on every change
+  const voiceoverReaderRefForCleanup = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const voiceoverAbortControllerRefForCleanup = useRef<AbortController | null>(null)
+  
+  // Update refs when state changes (for cleanup access)
+  useEffect(() => {
+    voiceoverReaderRefForCleanup.current = voiceoverReaderRef
+  }, [voiceoverReaderRef])
+  
+  useEffect(() => {
+    voiceoverAbortControllerRefForCleanup.current = voiceoverAbortControllerRef
+  }, [voiceoverAbortControllerRef])
+  
+  // Only run cleanup on unmount
   useEffect(() => {
     return () => {
       // Clean up voiceover stream resources when component unmounts
-      if (voiceoverReaderRef) {
-        voiceoverReaderRef.cancel().catch(() => {})
+      if (voiceoverReaderRefForCleanup.current) {
+        voiceoverReaderRefForCleanup.current.cancel().catch(() => {})
         try {
-          voiceoverReaderRef.releaseLock()
+          voiceoverReaderRefForCleanup.current.releaseLock()
         } catch (e) {
           // Ignore errors during cleanup
         }
       }
-      if (voiceoverAbortControllerRef) {
-        voiceoverAbortControllerRef.abort()
+      if (voiceoverAbortControllerRefForCleanup.current) {
+        voiceoverAbortControllerRefForCleanup.current.abort()
       }
     }
-  }, [voiceoverReaderRef, voiceoverAbortControllerRef])
+  }, []) // Empty dependency array - only runs on unmount
 
   return (
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
