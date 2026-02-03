@@ -1875,6 +1875,34 @@ async def run_generation_async(
                     prompt_version=PROMPT_VERSION,
                     model_used=model_name
                 )
+                # Commit immediately after artifact creation to avoid long transactions
+                try:
+                    session.commit()
+                except Exception as commit_error:
+                    logger.error(f"Job {job_id}: Failed to commit blog artifact: {commit_error}", exc_info=True)
+                    session.rollback()
+                    # Retry with new session if commit failed
+                    try:
+                        retry_session = SessionLocal()
+                        try:
+                            retry_user = retry_session.query(User).filter(User.id == user_id).first()
+                            if retry_user:
+                                retry_content_service = ContentService(retry_session, retry_user)
+                                artifact = retry_content_service.create_artifact(
+                                    job_id,
+                                    'blog',
+                                    content,
+                                    content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                                    prompt_version=PROMPT_VERSION,
+                                    model_used=model_name
+                                )
+                                retry_session.commit()
+                                logger.info(f"Job {job_id}: Successfully created blog artifact with retry session")
+                        finally:
+                            retry_session.close()
+                    except Exception as retry_error:
+                        logger.error(f"Job {job_id}: Failed to create blog artifact even with retry: {retry_error}", exc_info=True)
+                        raise
                 artifact_duration = time.time() - artifact_start
                 
                 # Send content immediately (early streaming optimization)
@@ -1959,6 +1987,34 @@ async def run_generation_async(
                             prompt_version=PROMPT_VERSION,
                             model_used=model_name
                         )
+                        # Commit immediately after artifact creation to avoid long transactions
+                        try:
+                            session.commit()
+                        except Exception as commit_error:
+                            logger.error(f"Job {job_id}: Failed to commit {content_type} artifact: {commit_error}", exc_info=True)
+                            session.rollback()
+                            # Retry with new session if commit failed
+                            try:
+                                retry_session = SessionLocal()
+                                try:
+                                    retry_user = retry_session.query(User).filter(User.id == user_id).first()
+                                    if retry_user:
+                                        retry_content_service = ContentService(retry_session, retry_user)
+                                        artifact = retry_content_service.create_artifact(
+                                            job_id,
+                                            content_type,
+                                            validated_content,
+                                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                                            prompt_version=PROMPT_VERSION,
+                                            model_used=model_name
+                                        )
+                                        retry_session.commit()
+                                        logger.info(f"Job {job_id}: Successfully created {content_type} artifact with retry session")
+                                finally:
+                                    retry_session.close()
+                            except Exception as retry_error:
+                                logger.error(f"Job {job_id}: Failed to create {content_type} artifact even with retry: {retry_error}", exc_info=True)
+                                raise
                         artifact_duration = time.time() - artifact_start
                         
                         # Send content immediately (early streaming optimization)
@@ -2024,15 +2080,48 @@ async def run_generation_async(
                         'hint': f'Check backend logs for {content_type} extraction details. The CrewAI result may not contain the expected content.'
                     })
         
-        # Update job status to completed
-        content_service.update_job_status(
-            job_id,
-            JobStatus.COMPLETED.value,
-            finished_at=datetime.utcnow()
-        )
+        # Update job status to completed - commit immediately
+        try:
+            content_service.update_job_status(
+                job_id,
+                JobStatus.COMPLETED.value,
+                finished_at=datetime.utcnow()
+            )
+            session.commit()
+        except Exception as commit_error:
+            logger.error(f"Job {job_id}: Failed to commit job completion: {commit_error}", exc_info=True)
+            session.rollback()
+            # Retry with new session
+            try:
+                retry_session = SessionLocal()
+                try:
+                    retry_user = retry_session.query(User).filter(User.id == user_id).first()
+                    if retry_user:
+                        retry_content_service = ContentService(retry_session, retry_user)
+                        retry_content_service.update_job_status(
+                            job_id,
+                            JobStatus.COMPLETED.value,
+                            finished_at=datetime.utcnow()
+                        )
+                        retry_session.commit()
+                        logger.info(f"Job {job_id}: Successfully updated job status with retry session")
+                finally:
+                    retry_session.close()
+            except Exception as retry_error:
+                logger.error(f"Job {job_id}: Failed to update job status even with retry: {retry_error}", exc_info=True)
+                # Continue anyway - we'll still send completion event
         
-        # Get all artifacts for completion event
-        artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+        # Get all artifacts for completion event - use fresh session if needed
+        try:
+            artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+        except Exception as query_error:
+            logger.warning(f"Job {job_id}: Failed to query artifacts with existing session: {query_error}. Using new session...")
+            # Use new session for artifact query
+            artifact_session = SessionLocal()
+            try:
+                artifacts = artifact_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+            finally:
+                artifact_session.close()
         artifact_content = {}
         for artifact in artifacts:
             if artifact.content_text:
@@ -2104,8 +2193,18 @@ async def run_generation_async(
         error_msg_raw = str(e) if str(e) else f"{error_type} occurred"
         total_duration = time.time() - llm_start_time if 'llm_start_time' in locals() else 0
         
+        # Check if this is a database connection error
+        is_db_error = (
+            'OperationalError' in error_type or 
+            'psycopg2' in error_msg_raw.lower() or 
+            'connection' in error_msg_raw.lower() and ('reset' in error_msg_raw.lower() or 'closed' in error_msg_raw.lower() or 'lost' in error_msg_raw.lower())
+        )
+        
         # Build detailed error message with hints based on error content
-        if 'OPENAI_API_KEY' in error_msg_raw or 'api key' in error_msg_raw.lower() or 'authentication' in error_msg_raw.lower():
+        if is_db_error:
+            error_msg = f"Database connection error: {error_msg_raw}"
+            hint = "Database connection was lost during generation. The job may have completed but failed to save. Please try again."
+        elif 'OPENAI_API_KEY' in error_msg_raw or 'api key' in error_msg_raw.lower() or 'authentication' in error_msg_raw.lower():
             error_msg = f"LLM authentication failed: {error_msg_raw}"
             hint = "Set OPENAI_API_KEY in Railway backend service variables (not frontend .env). Get your key from https://platform.openai.com/api-keys"
         elif 'Ollama' in error_msg_raw or 'ollama' in error_msg_raw.lower() or ('connection' in error_msg_raw.lower() and 'ollama' in error_msg_raw.lower()):
@@ -2128,10 +2227,12 @@ async def run_generation_async(
         logger.error(f"[JOB_FAILED] Job {job_id}: Error details - model={model_name if 'model_name' in locals() else 'unknown'}, topic='{topic if 'topic' in locals() else 'unknown'}', error_type={error_type}")
         logger.error(f"[JOB_FAILED] Job {job_id}: Hint for user: {hint}")
         
+        # Try to update job status with error handling for database connection issues
         if session:
             try:
-                # Refresh session if needed
+                # Try to refresh session - if connection is broken, this will fail
                 session.rollback()
+                # Test if session is still valid by querying user
                 user = session.query(User).filter(User.id == user_id).first()
                 if user:
                     content_service = ContentService(session, user)
@@ -2140,12 +2241,74 @@ async def run_generation_async(
                         JobStatus.FAILED.value,
                         finished_at=datetime.utcnow()
                     )
+                    session.commit()
                     sse_store.add_event(job_id, 'error', {
                         'job_id': job_id,
                         'message': error_msg,
                         'error_type': error_type,
                         'hint': hint
                     })
+                else:
+                    # User not found - session might be stale, create new session
+                    raise Exception("Session stale - user not found")
+            except Exception as update_error:
+                # Session is broken - create a new one
+                logger.warning(f"Job {job_id}: Failed to update job status with existing session: {update_error}. Creating new session...")
+                try:
+                    # Close broken session
+                    if session:
+                        try:
+                            session.close()
+                        except:
+                            pass
+                    
+                    # Create new session for error update
+                    error_session = SessionLocal()
+                    try:
+                        error_user = error_session.query(User).filter(User.id == user_id).first()
+                        if error_user:
+                            error_content_service = ContentService(error_session, error_user)
+                            error_content_service.update_job_status(
+                                job_id,
+                                JobStatus.FAILED.value,
+                                finished_at=datetime.utcnow()
+                            )
+                            error_session.commit()
+                            sse_store.add_event(job_id, 'error', {
+                                'job_id': job_id,
+                                'message': error_msg,
+                                'error_type': error_type,
+                                'hint': hint
+                            })
+                            logger.info(f"Job {job_id}: Successfully updated job status with new session")
+                        else:
+                            logger.error(f"Job {job_id}: User {user_id} not found even with new session")
+                            # Still send error event even if we can't update DB
+                            sse_store.add_event(job_id, 'error', {
+                                'job_id': job_id,
+                                'message': error_msg,
+                                'error_type': error_type,
+                                'hint': hint
+                            })
+                    finally:
+                        error_session.close()
+                except Exception as new_session_error:
+                    logger.error(f"Job {job_id}: Failed to update job status even with new session: {new_session_error}", exc_info=True)
+                    # Last resort - just send error event without DB update
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': error_msg,
+                        'error_type': error_type,
+                        'hint': hint
+                    })
+        else:
+            # No session available - just send error event
+            sse_store.add_event(job_id, 'error', {
+                'job_id': job_id,
+                'message': error_msg,
+                'error_type': error_type,
+                'hint': hint
+            })
                     
                     # Track job failure metric
                     try:

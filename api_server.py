@@ -665,6 +665,7 @@ async def health():
     Returns:
     - 200 if critical components (database) are healthy
     - 200 during migrations (prevents Railway from killing container)
+    - 200 during startup (prevents Railway from killing container)
     
     Note: Optional components (LLM, Redis) can be DEGRADED without affecting health status.
     This ensures Railway health checks pass as long as the database is accessible.
@@ -673,70 +674,116 @@ async def health():
     """
     # Check if migrations are in progress (from module-level variable)
     global _migration_status
-    if _migration_status.get("in_progress", False):
-        # Migrations are running - return 200 immediately to prevent Railway from killing us
+    
+    # CRITICAL: Return 200 immediately during migrations or if migrations haven't completed yet
+    # This prevents Railway from killing the container during startup
+    # Check both in_progress flag and completed flag to catch all startup scenarios
+    migration_in_progress = _migration_status.get("in_progress", False)
+    migration_completed = _migration_status.get("completed", False)
+    
+    if migration_in_progress or not migration_completed:
+        # Migrations are running or not completed - return 200 immediately to prevent Railway from killing us
         return JSONResponse(
             content={
                 "status": "starting",
-                "message": "Database migrations in progress - service starting up",
+                "message": "Service starting up - migrations in progress or pending",
                 "service": "content-creation-crew",
                 "environment": config.ENV,
                 "migration_status": {
                     "completed": _migration_status.get("completed", False),
-                    "in_progress": True,
+                    "in_progress": _migration_status.get("in_progress", False),
                     "error": _migration_status.get("error")
                 }
             },
             status_code=200
         )
     
-    from content_creation_crew.services.health_check import get_health_checker, HealthStatus
-    
-    health_checker = get_health_checker()
-    result = await health_checker.check_all()
-    
-    # Add service metadata
-    result["service"] = "content-creation-crew"
-    result["environment"] = config.ENV
-    
-    # Add migration status
-    result["migration_status"] = {
-        "completed": _migration_status.get("completed", False),
-        "in_progress": _migration_status.get("in_progress", False),
-        "error": _migration_status.get("error")
-    }
-    
-    # Determine health status based on critical vs optional components
-    components = result.get("components", {})
-    database_status = components.get("database", {}).get("status", "unknown")
-    
-    # Critical components that must be OK for service to be healthy
-    critical_components = ["database"]
-    
-    # Check if any critical component is DOWN
-    critical_down = any(
-        components.get(comp, {}).get("status") == HealthStatus.DOWN.value
-        for comp in critical_components
-    )
-    
-    # IMPORTANT: Always return 200 to prevent restart loops
-    # Even if database is DOWN, return 200 so Railway doesn't restart us endlessly
-    # The response body will indicate the actual health status
-    # This prevents the container from restarting in a loop during migration failures
-    
-    if critical_down or database_status == HealthStatus.DOWN.value:
-        # Database is down, but return 200 to prevent restart loop
-        # The status in the response body will indicate degraded state
-        result["status"] = "degraded"
-        result["message"] = "Database connectivity issue - service may have limited functionality"
-        logger.warning(f"Health check: Database is DOWN but returning 200 to prevent restart loop")
-    
-    # Always return 200 - prevents Railway from restarting the container
-    # The response body contains the actual health status for monitoring
-    return JSONResponse(
-        content=result,
-        status_code=200
-    )
+    # Only run health checks after migrations are complete
+    # Use timeout wrapper to prevent hanging
+    try:
+        from content_creation_crew.services.health_check import get_health_checker, HealthStatus
+        import asyncio
+        
+        # Wrap health check in timeout to prevent hanging (5 second max)
+        health_checker = get_health_checker()
+        result = await asyncio.wait_for(health_checker.check_all(), timeout=5.0)
+        
+        # Add service metadata
+        result["service"] = "content-creation-crew"
+        result["environment"] = config.ENV
+        
+        # Add migration status
+        result["migration_status"] = {
+            "completed": _migration_status.get("completed", False),
+            "in_progress": _migration_status.get("in_progress", False),
+            "error": _migration_status.get("error")
+        }
+        
+        # Determine health status based on critical vs optional components
+        components = result.get("components", {})
+        database_status = components.get("database", {}).get("status", "unknown")
+        
+        # Critical components that must be OK for service to be healthy
+        critical_components = ["database"]
+        
+        # Check if any critical component is DOWN
+        critical_down = any(
+            components.get(comp, {}).get("status") == HealthStatus.DOWN.value
+            for comp in critical_components
+        )
+        
+        # IMPORTANT: Always return 200 to prevent restart loops
+        # Even if database is DOWN, return 200 so Railway doesn't restart us endlessly
+        # The response body will indicate the actual health status
+        # This prevents the container from restarting in a loop during migration failures
+        
+        if critical_down or database_status == HealthStatus.DOWN.value:
+            # Database is down, but return 200 to prevent restart loop
+            # The status in the response body will indicate degraded state
+            result["status"] = "degraded"
+            result["message"] = "Database connectivity issue - service may have limited functionality"
+            logger.warning(f"Health check: Database is DOWN but returning 200 to prevent restart loop")
+        
+        # Always return 200 - prevents Railway from restarting the container
+        # The response body contains the actual health status for monitoring
+        return JSONResponse(
+            content=result,
+            status_code=200
+        )
+    except asyncio.TimeoutError:
+        # Health check timed out - return 200 to prevent Railway from killing us
+        logger.warning("Health check timed out after 5 seconds - returning 200 to prevent restart")
+        return JSONResponse(
+            content={
+                "status": "degraded",
+                "message": "Health check timed out - service may be starting up",
+                "service": "content-creation-crew",
+                "environment": config.ENV,
+                "migration_status": {
+                    "completed": _migration_status.get("completed", False),
+                    "in_progress": _migration_status.get("in_progress", False),
+                    "error": _migration_status.get("error")
+                }
+            },
+            status_code=200
+        )
+    except Exception as health_error:
+        # Any error in health check - return 200 to prevent Railway from killing us
+        logger.error(f"Health check failed: {type(health_error).__name__}: {str(health_error)}", exc_info=True)
+        return JSONResponse(
+            content={
+                "status": "degraded",
+                "message": f"Health check error: {str(health_error)}",
+                "service": "content-creation-crew",
+                "environment": config.ENV,
+                "migration_status": {
+                    "completed": _migration_status.get("completed", False),
+                    "in_progress": _migration_status.get("in_progress", False),
+                    "error": _migration_status.get("error")
+                }
+            },
+            status_code=200
+        )
 
 
 @app.get("/health/ready")
