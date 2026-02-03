@@ -222,7 +222,7 @@ export default function Home() {
     if (readerRef) {
       try {
         await readerRef.cancel().catch(() => {})
-        readerRef.releaseLock().catch(() => {})
+        readerRef.releaseLock() // releaseLock() returns void, not a Promise
       } catch (e) {
         console.log('Error cleaning up previous reader:', e)
       }
