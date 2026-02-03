@@ -320,9 +320,39 @@ export default function Home() {
           throw new Error(errorMessage)
         }
         
-        // Handle other errors
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-        throw new Error(errorData.error || errorData.detail || 'Failed to generate content')
+        // Handle other errors - try to parse detailed error message
+        let errorData: any = { error: 'Unknown error' }
+        try {
+          const errorText = await response.text()
+          try {
+            errorData = JSON.parse(errorText)
+          } catch {
+            // If not JSON, use the text as the error detail
+            errorData = { error: 'Failed to generate content', detail: errorText }
+          }
+        } catch (e) {
+          console.error('Error parsing error response:', e)
+          errorData = { error: 'Failed to generate content', detail: `HTTP ${response.status}: ${response.statusText}` }
+        }
+        
+        // Build comprehensive error message
+        let errorMessage = errorData.error || 'Failed to generate content'
+        if (errorData.detail && errorData.detail !== errorMessage) {
+          errorMessage = `${errorMessage}: ${errorData.detail}`
+        }
+        if (errorData.hint) {
+          errorMessage = `${errorMessage}\n\nHint: ${errorData.hint}`
+        }
+        
+        console.error('Generation request failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData.error,
+          detail: errorData.detail,
+          hint: errorData.hint
+        })
+        
+        throw new Error(errorMessage)
       }
 
       if (!response.body) {
