@@ -5,7 +5,9 @@ Jobs-first persistence with SSE streaming support
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, DisconnectionError
+import psycopg2
+import psycopg2.extensions
 from pydantic import BaseModel, Field
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime
@@ -802,10 +804,22 @@ async def stream_job_progress(
                             else:
                                 # Job not found - this is not a connection error, exit retry loop
                                 break
-                        except OperationalError as db_error:
+                        except (OperationalError, DisconnectionError) as db_error:
                             # Connection error - retry with exponential backoff
+                            # Also check if it's a psycopg2 connection error
                             error_msg = str(db_error)
-                            logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error on attempt {retry_attempt + 1}/{max_retries}: {error_msg}")
+                            is_connection_error = (
+                                isinstance(db_error, (OperationalError, DisconnectionError)) or
+                                'connection' in error_msg.lower() or
+                                'SSL' in error_msg or
+                                'closed' in error_msg.lower() or
+                                'reset' in error_msg.lower() or
+                                'EOF' in error_msg or
+                                (hasattr(db_error, 'orig') and isinstance(db_error.orig, (psycopg2.OperationalError, psycopg2.InterfaceError)))
+                            )
+                            
+                            if is_connection_error:
+                                logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error on attempt {retry_attempt + 1}/{max_retries}: {error_msg}")
                             
                             # Close the broken session
                             try:
@@ -860,27 +874,90 @@ async def stream_job_progress(
                                 await asyncio.sleep(2.0)  # Wait 2 seconds before next poll
                                 break  # Exit retry loop, continue while loop
                         except Exception as db_error:
-                            # Non-connection error - log but continue
-                            query_failed = True
-                            consecutive_failures += 1
-                            logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
-                            try:
-                                poll_session.close()
-                            except:
-                                pass
+                            # Check if this is actually a connection error that wasn't caught above
+                            error_msg = str(db_error)
+                            is_connection_error = (
+                                isinstance(db_error, (OperationalError, DisconnectionError)) or
+                                'connection' in error_msg.lower() or
+                                'SSL' in error_msg or
+                                'closed' in error_msg.lower() or
+                                'reset' in error_msg.lower() or
+                                'EOF' in error_msg or
+                                'psycopg2' in error_msg.lower() or
+                                (hasattr(db_error, 'orig') and isinstance(db_error.orig, (psycopg2.OperationalError, psycopg2.InterfaceError)))
+                            )
                             
-                            # Only break on non-connection errors if job not found or too many failures
-                            if consecutive_failures >= max_consecutive_failures:
-                                error_data = {'type': 'error', 'job_id': job_id, 'message': f'Database error after {consecutive_failures} attempts: {str(db_error)}'}
-                                event_id = sse_store.add_event(job_id, 'error', error_data)
-                                yield f"id: {event_id}\n"
-                                yield f"event: error\n"
-                                yield f"data: {json.dumps(error_data)}\n\n"
-                                flush_buffers()
-                                break  # Exit retry loop
+                            if is_connection_error:
+                                # Treat as connection error - retry logic
+                                query_failed = True
+                                consecutive_failures += 1
+                                logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error (caught as Exception) on attempt {retry_attempt + 1}/{max_retries} (consecutive failures: {consecutive_failures}/{max_consecutive_failures}): {error_msg}")
+                                
+                                try:
+                                    poll_session.close()
+                                except:
+                                    pass
+                                
+                                if retry_attempt < max_retries - 1:
+                                    await asyncio.sleep(retry_delay)
+                                    retry_delay *= 2
+                                    continue  # Retry
+                                else:
+                                    # All retries exhausted - continue polling
+                                    if consecutive_failures == 1 or consecutive_failures % 5 == 0:
+                                        warning_data = {
+                                            'type': 'warning',
+                                            'job_id': job_id,
+                                            'message': f'Temporary database connection issue (attempt {consecutive_failures}). Retrying...',
+                                            'error_type': 'ConnectionError',
+                                            'hint': 'The job may still be running. We will continue checking its status.'
+                                        }
+                                        event_id = sse_store.add_event(job_id, 'warning', warning_data)
+                                        yield f"id: {event_id}\n"
+                                        yield f"event: warning\n"
+                                        yield f"data: {json.dumps(warning_data)}\n\n"
+                                        flush_buffers()
+                                    
+                                    if consecutive_failures >= max_consecutive_failures:
+                                        logger.error(f"[STREAM_ERROR] Job {job_id}: Too many consecutive database failures ({consecutive_failures}), giving up")
+                                        error_data = {
+                                            'type': 'error',
+                                            'job_id': job_id,
+                                            'message': f'Database connection lost after {consecutive_failures} attempts. The job may have completed but we cannot verify its status.',
+                                            'error_type': 'ConnectionError',
+                                            'hint': 'Please check the job status manually or try again later.'
+                                        }
+                                        event_id = sse_store.add_event(job_id, 'error', error_data)
+                                        yield f"id: {event_id}\n"
+                                        yield f"event: error\n"
+                                        yield f"data: {json.dumps(error_data)}\n\n"
+                                        flush_buffers()
+                                        break
+                                    
+                                    await asyncio.sleep(2.0)
+                                    break  # Exit retry loop, continue while loop
                             else:
-                                await asyncio.sleep(2.0)  # Wait before next poll
-                                break  # Exit retry loop, continue while loop
+                                # Non-connection error - log but continue
+                                query_failed = True
+                                consecutive_failures += 1
+                                logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
+                                try:
+                                    poll_session.close()
+                                except:
+                                    pass
+                                
+                                # Only break on non-connection errors if job not found or too many failures
+                                if consecutive_failures >= max_consecutive_failures:
+                                    error_data = {'type': 'error', 'job_id': job_id, 'message': f'Database error after {consecutive_failures} attempts: {str(db_error)}'}
+                                    event_id = sse_store.add_event(job_id, 'error', error_data)
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: error\n"
+                                    yield f"data: {json.dumps(error_data)}\n\n"
+                                    flush_buffers()
+                                    break  # Exit retry loop
+                                else:
+                                    await asyncio.sleep(2.0)  # Wait before next poll
+                                    break  # Exit retry loop, continue while loop
                         finally:
                             # Ensure session is closed if not already closed
                             try:
@@ -924,7 +1001,7 @@ async def stream_job_progress(
                             try:
                                 artifact_count = len(count_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
                                 break  # Success - exit retry loop
-                            except OperationalError as count_error:
+                            except (OperationalError, DisconnectionError) as count_error:
                                 logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact count query failed on attempt {count_retry + 1}/2: {count_error}")
                                 try:
                                     count_session.close()
@@ -998,7 +1075,7 @@ async def stream_job_progress(
                                 try:
                                     artifact_count = len(final_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
                                     break  # Success
-                                except OperationalError as final_error:
+                                except (OperationalError, DisconnectionError) as final_error:
                                     logger.warning(f"[STREAM_RETRY] Job {job_id}: Final artifact count query failed on attempt {final_retry + 1}/2: {final_error}")
                                     try:
                                         final_session.close()
@@ -1028,7 +1105,7 @@ async def stream_job_progress(
                                             ContentArtifact.job_id == job_id
                                         ).all()
                                         break  # Success
-                                    except OperationalError as artifacts_error:
+                                    except (OperationalError, DisconnectionError) as artifacts_error:
                                         logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifacts query failed on attempt {artifacts_retry + 1}/3: {artifacts_error}")
                                         try:
                                             artifacts_session.close()
@@ -1091,7 +1168,7 @@ async def stream_job_progress(
                                 ContentArtifact.job_id == job_id
                             ).all()
                             break  # Success
-                        except OperationalError as check_error:
+                        except (OperationalError, DisconnectionError) as check_error:
                             logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact check query failed on attempt {check_retry + 1}/2: {check_error}")
                             try:
                                 artifacts_check_session.close()
@@ -1380,7 +1457,7 @@ async def run_generation_async(
                     sys.stderr.flush()
                     session.close()
                     return
-            except OperationalError as init_error:
+            except (OperationalError, DisconnectionError) as init_error:
                 logger.warning(f"[INIT_RETRY] Job {job_id}: Initial database query failed on attempt {init_retry + 1}/{max_init_retries}: {init_error}")
                 try:
                     session.close()
@@ -1422,7 +1499,7 @@ async def run_generation_async(
                 )
                 session.commit()
                 break  # Success - exit retry loop
-            except OperationalError as status_error:
+            except (OperationalError, DisconnectionError) as status_error:
                 logger.warning(f"[STATUS_RETRY] Job {job_id}: Status update failed on attempt {status_retry + 1}/{max_status_retries}: {status_error}")
                 session.rollback()
                 if status_retry < max_status_retries - 1:
@@ -2242,7 +2319,7 @@ async def run_generation_async(
                                 session.commit()
                                 artifact_created = True
                                 break  # Success - exit retry loop
-                            except OperationalError as commit_error:
+                            except (OperationalError, DisconnectionError) as commit_error:
                                 logger.warning(f"[ARTIFACT_RETRY] Job {job_id}: Failed to commit {content_type} artifact on attempt {artifact_retry + 1}/{max_artifact_retries}: {commit_error}")
                                 session.rollback()
                                 if artifact_retry < max_artifact_retries - 1:
@@ -2360,7 +2437,7 @@ async def run_generation_async(
                 session.commit()
                 completion_updated = True
                 break  # Success - exit retry loop
-            except OperationalError as commit_error:
+            except (OperationalError, DisconnectionError) as commit_error:
                 logger.warning(f"[COMPLETION_RETRY] Job {job_id}: Failed to commit job completion on attempt {completion_retry + 1}/{max_completion_retries}: {commit_error}")
                 session.rollback()
                 if completion_retry < max_completion_retries - 1:
@@ -2397,7 +2474,7 @@ async def run_generation_async(
             try:
                 artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
                 break  # Success - exit retry loop
-            except OperationalError as query_error:
+            except (OperationalError, DisconnectionError) as query_error:
                 logger.warning(f"[ARTIFACTS_QUERY_RETRY] Job {job_id}: Failed to query artifacts on attempt {artifacts_retry + 1}/{max_artifacts_retries}: {query_error}")
                 if artifacts_retry < max_artifacts_retries - 1:
                     await asyncio.sleep(artifacts_retry_delay)
