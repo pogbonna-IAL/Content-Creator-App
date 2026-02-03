@@ -5,6 +5,7 @@ Jobs-first persistence with SSE streaming support
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 from pydantic import BaseModel, Field
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime
@@ -782,46 +783,115 @@ async def stream_job_progress(
             while True:
                 try:
                     poll_count += 1
-                    # Get fresh job from database using a short-lived session
-                    poll_session = SessionLocal()
-                    try:
-                        fresh_job = poll_session.query(ContentJob).filter(ContentJob.id == job_id).first()
-                        if fresh_job:
-                            job = fresh_job
-                        else:
-                            # Job not found - send error and exit
-                            error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
+                    # Get fresh job from database using a short-lived session with retry logic
+                    fresh_job = None
+                    max_retries = 3
+                    retry_delay = 0.5  # Start with 0.5 seconds
+                    
+                    for retry_attempt in range(max_retries):
+                        poll_session = SessionLocal()
+                        try:
+                            fresh_job = poll_session.query(ContentJob).filter(ContentJob.id == job_id).first()
+                            if fresh_job:
+                                job = fresh_job
+                                break  # Success - exit retry loop
+                            else:
+                                # Job not found - this is not a connection error, exit retry loop
+                                break
+                        except OperationalError as db_error:
+                            # Connection error - retry with exponential backoff
+                            error_msg = str(db_error)
+                            logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error on attempt {retry_attempt + 1}/{max_retries}: {error_msg}")
+                            
+                            # Close the broken session
+                            try:
+                                poll_session.close()
+                            except:
+                                pass
+                            
+                            if retry_attempt < max_retries - 1:
+                                # Wait before retrying (exponential backoff)
+                                await asyncio.sleep(retry_delay)
+                                retry_delay *= 2  # Double the delay for next retry
+                                continue  # Retry
+                            else:
+                                # All retries exhausted - send error and exit
+                                logger.error(f"[STREAM_ERROR] Job {job_id}: Database connection failed after {max_retries} retries: {error_msg}", exc_info=True)
+                                error_data = {
+                                    'type': 'error',
+                                    'job_id': job_id,
+                                    'message': f'Database connection error: {error_msg}',
+                                    'error_type': 'OperationalError',
+                                    'hint': 'Database connection was lost during streaming. The job may have completed but failed to save. Please try again.'
+                                }
+                                event_id = sse_store.add_event(job_id, 'error', error_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: error\n"
+                                yield f"data: {json.dumps(error_data)}\n\n"
+                                flush_buffers()
+                                break  # Exit retry loop
+                        except Exception as db_error:
+                            # Non-connection error - don't retry, just log and exit
+                            logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
+                            try:
+                                poll_session.close()
+                            except:
+                                pass
+                            error_data = {'type': 'error', 'job_id': job_id, 'message': f'Database error: {str(db_error)}'}
                             event_id = sse_store.add_event(job_id, 'error', error_data)
                             yield f"id: {event_id}\n"
                             yield f"event: error\n"
                             yield f"data: {json.dumps(error_data)}\n\n"
                             flush_buffers()
-                            logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
-                            break
-                    except Exception as db_error:
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Database query failed: {type(db_error).__name__}: {str(db_error)}", exc_info=True)
-                        # Send error event and exit
-                        error_data = {'type': 'error', 'job_id': job_id, 'message': 'Database error occurred'}
+                            break  # Exit retry loop
+                        finally:
+                            # Ensure session is closed if not already closed
+                            try:
+                                poll_session.close()
+                            except:
+                                pass
+                    
+                    # Check if job was found after retries
+                    if not fresh_job:
+                        # Job not found - send error and exit
+                        error_data = {'type': 'error', 'job_id': job_id, 'message': 'Job not found in database'}
                         event_id = sse_store.add_event(job_id, 'error', error_data)
                         yield f"id: {event_id}\n"
                         yield f"event: error\n"
                         yield f"data: {json.dumps(error_data)}\n\n"
                         flush_buffers()
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Job not found in database")
                         break
-                    finally:
-                        poll_session.close()
                     
                     # Log every 20 polls (every 10 seconds) to track progress
                     if poll_count % 20 == 0:
                         elapsed = time.time() - stream_start_time
                         artifact_count = -1
-                        count_session = SessionLocal()
-                        try:
-                            artifact_count = len(count_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
-                        except Exception:
-                            pass  # Error querying artifacts
-                        finally:
-                            count_session.close()
+                        # Retry logic for artifact count query
+                        for count_retry in range(2):  # 2 retries for artifact count
+                            count_session = SessionLocal()
+                            try:
+                                artifact_count = len(count_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                                break  # Success - exit retry loop
+                            except OperationalError as count_error:
+                                logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact count query failed on attempt {count_retry + 1}/2: {count_error}")
+                                try:
+                                    count_session.close()
+                                except:
+                                    pass
+                                if count_retry < 1:
+                                    await asyncio.sleep(0.5)  # Brief delay before retry
+                                    continue
+                                # If retries exhausted, just use -1 (unknown count)
+                                artifact_count = -1
+                            except Exception:
+                                # Non-connection error - just use -1
+                                artifact_count = -1
+                            finally:
+                                try:
+                                    count_session.close()
+                                except:
+                                    pass
                         logger.info(f"[STREAM_POLL] Job {job_id}: Poll #{poll_count}, status={job.status}, elapsed={elapsed:.1f}s, artifacts={artifact_count}")
                     
                     # Send keep-alive comment if enough time has passed (prevents undici body timeout)
@@ -871,31 +941,72 @@ async def stream_job_progress(
                         if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
                             elapsed = time.time() - stream_start_time
                             artifact_count = -1
-                            final_session = SessionLocal()
-                            try:
-                                artifact_count = len(final_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
-                            except Exception:
-                                pass
-                            finally:
-                                final_session.close()
+                            # Retry logic for final artifact count query
+                            for final_retry in range(2):  # 2 retries
+                                final_session = SessionLocal()
+                                try:
+                                    artifact_count = len(final_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all())
+                                    break  # Success
+                                except OperationalError as final_error:
+                                    logger.warning(f"[STREAM_RETRY] Job {job_id}: Final artifact count query failed on attempt {final_retry + 1}/2: {final_error}")
+                                    try:
+                                        final_session.close()
+                                    except:
+                                        pass
+                                    if final_retry < 1:
+                                        await asyncio.sleep(0.5)
+                                        continue
+                                    artifact_count = -1
+                                except Exception:
+                                    artifact_count = -1
+                                finally:
+                                    try:
+                                        final_session.close()
+                                    except:
+                                        pass
                             logger.info(f"[STREAM_COMPLETE] Job {job_id}: Status changed to {job.status} after {elapsed:.1f}s, total polls={poll_count}, artifacts={artifact_count}")
                             
                             # Send artifacts if completed
                             if job.status == JobStatus.COMPLETED.value:
-                                artifacts_session = SessionLocal()
-                                try:
-                                    artifacts = artifacts_session.query(ContentArtifact).filter(
-                                        ContentArtifact.job_id == job_id
-                                    ).all()
-                                    # Build complete event with full content from all artifacts
-                                    artifact_data = {
-                                        'type': 'complete',
-                                        'job_id': job_id,
-                                        'status': JobStatus.COMPLETED.value,
-                                        'message': 'Content generation completed successfully'
-                                    }
-                                    
-                                    # Include full content from each artifact type
+                                artifacts = []
+                                # Retry logic for artifacts query
+                                for artifacts_retry in range(3):  # 3 retries for artifacts (more important)
+                                    artifacts_session = SessionLocal()
+                                    try:
+                                        artifacts = artifacts_session.query(ContentArtifact).filter(
+                                            ContentArtifact.job_id == job_id
+                                        ).all()
+                                        break  # Success
+                                    except OperationalError as artifacts_error:
+                                        logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifacts query failed on attempt {artifacts_retry + 1}/3: {artifacts_error}")
+                                        try:
+                                            artifacts_session.close()
+                                        except:
+                                            pass
+                                        if artifacts_retry < 2:
+                                            await asyncio.sleep(0.5 * (artifacts_retry + 1))  # Increasing delay
+                                            continue
+                                        # If all retries fail, use empty list
+                                        artifacts = []
+                                    except Exception as artifacts_error:
+                                        logger.error(f"[STREAM_ERROR] Job {job_id}: Non-connection error querying artifacts: {artifacts_error}")
+                                        artifacts = []
+                                    finally:
+                                        try:
+                                            artifacts_session.close()
+                                        except:
+                                            pass
+                                
+                                # Build complete event with full content from all artifacts
+                                artifact_data = {
+                                    'type': 'complete',
+                                    'job_id': job_id,
+                                    'status': JobStatus.COMPLETED.value,
+                                    'message': 'Content generation completed successfully'
+                                }
+                                
+                                # Include full content from each artifact type
+                                if artifacts:
                                     for artifact in artifacts:
                                         if artifact.content_text:
                                             if artifact.type == 'blog':
@@ -906,26 +1017,49 @@ async def stream_job_progress(
                                                 artifact_data['audio_content'] = artifact.content_text
                                             elif artifact.type == 'video':
                                                 artifact_data['video_content'] = artifact.content_text
-                                    
-                                    event_id = sse_store.add_event(job_id, 'complete', artifact_data)
-                                    yield f"id: {event_id}\n"
-                                    yield f"event: complete\n"
-                                    yield f"data: {json.dumps(artifact_data)}\n\n"
-                                    flush_buffers()  # Flush completion event immediately
-                                    last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
-                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event with content from {len(artifacts)} artifacts")
-                                except Exception as artifact_error:
-                                    logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get artifacts: {type(artifact_error).__name__}: {str(artifact_error)}", exc_info=True)
+                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Prepared complete event with content from {len(artifacts)} artifacts")
+                                else:
+                                    logger.warning(f"[STREAM_WARN] Job {job_id}: No artifacts found or query failed - sending complete event without artifact content")
+                                
+                                # Send complete event
+                                event_id = sse_store.add_event(job_id, 'complete', artifact_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: complete\n"
+                                yield f"data: {json.dumps(artifact_data)}\n\n"
+                                flush_buffers()  # Flush completion event immediately
+                                last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
+                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event")
                             break
                     
-                    # Check for new artifacts - use short-lived session
-                    artifacts_check_session = SessionLocal()
-                    try:
-                        current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
-                            ContentArtifact.job_id == job_id
-                        ).all()
-                        
-                        if len(current_artifacts) > last_artifact_count:
+                    # Check for new artifacts - use short-lived session with retry logic
+                    current_artifacts = []
+                    for check_retry in range(2):  # 2 retries for artifact check
+                        artifacts_check_session = SessionLocal()
+                        try:
+                            current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
+                                ContentArtifact.job_id == job_id
+                            ).all()
+                            break  # Success
+                        except OperationalError as check_error:
+                            logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact check query failed on attempt {check_retry + 1}/2: {check_error}")
+                            try:
+                                artifacts_check_session.close()
+                            except:
+                                pass
+                            if check_retry < 1:
+                                await asyncio.sleep(0.5)
+                                continue
+                            current_artifacts = []
+                        except Exception as check_error:
+                            logger.warning(f"[STREAM_WARN] Job {job_id}: Artifact check query error: {check_error}")
+                            current_artifacts = []
+                        finally:
+                            try:
+                                artifacts_check_session.close()
+                            except:
+                                pass
+                    
+                    if current_artifacts and len(current_artifacts) > last_artifact_count:
                             # New artifacts created
                             print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
                             new_artifacts = current_artifacts[last_artifact_count:]
@@ -977,9 +1111,7 @@ async def stream_job_progress(
                             
                             last_artifact_count = len(current_artifacts)
                     except Exception as artifact_query_error:
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to query artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
-                    finally:
-                        artifacts_check_session.close()
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to process artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
                     
                     # Check for new SSE events (like tts_completed, tts_started, etc.) that were added directly to store
                     try:
