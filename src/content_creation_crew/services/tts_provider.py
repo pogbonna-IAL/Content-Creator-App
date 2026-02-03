@@ -771,9 +771,45 @@ class GoogleTTSProvider(TTSProvider):
             # Note: gTTS doesn't support speed control, so we ignore the speed parameter
             tts = gTTS(text=text, lang=lang, slow=False)
             
-            # Generate audio to BytesIO buffer
+            # Generate audio to BytesIO buffer with timeout protection
+            # Use threading to prevent blocking deployment/startup
+            import threading
+            import queue
+            
             audio_buffer = io.BytesIO()
-            tts.write_to_fp(audio_buffer)
+            result_queue = queue.Queue()
+            error_queue = queue.Queue()
+            
+            def write_audio():
+                """Write audio in a separate thread to prevent blocking"""
+                try:
+                    tts.write_to_fp(audio_buffer)
+                    result_queue.put(True)
+                except Exception as e:
+                    error_queue.put(e)
+            
+            # Start write operation in a separate thread
+            write_thread = threading.Thread(target=write_audio, daemon=True)
+            write_thread.start()
+            
+            # Wait for completion with timeout (60 seconds)
+            write_thread.join(timeout=60)
+            
+            # Check for timeout
+            if write_thread.is_alive():
+                logger.error("gTTS request timed out after 60 seconds. Check network connectivity.")
+                raise TimeoutError("gTTS request timed out after 60 seconds. Check network connectivity.")
+            
+            # Check for errors
+            if not error_queue.empty():
+                error = error_queue.get()
+                logger.error(f"gTTS write operation failed: {error}")
+                raise error
+            
+            # Verify result was received
+            if result_queue.empty():
+                raise RuntimeError("gTTS write operation failed - no result received")
+            
             audio_bytes = audio_buffer.getvalue()
             
             # gTTS outputs MP3 format

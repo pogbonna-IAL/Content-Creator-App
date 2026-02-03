@@ -116,55 +116,56 @@ RUN python -c "from content_creation_crew.services.password_validator import get
 RUN mkdir -p /app/data
 
 # Download Piper TTS voice models during build (optional)
-# If download fails, build continues - model will be downloaded on first use
+# If download fails or times out, build continues - model will be downloaded on first use
+# Wrapped in timeout to prevent hanging deployments (120 second timeout)
 RUN mkdir -p /app/models/piper && \
-    echo "========================================" && \
+    timeout 120 bash -c 'echo "========================================" && \
     echo "Downloading Piper TTS models..." && \
     echo "========================================" && \
     (python -c "import sys; \
                from piper import download_voice; \
                import os; \
                import shutil; \
-               print('[INFO] Using piper-tts library to download model...'); \
+               print(\"[INFO] Using piper-tts library to download model...\"); \
                voice_path = None; \
                try: \
-                   voice_path = download_voice('en_US-lessac-medium', '/app/models/piper'); \
-                   print(f'[OK] Downloaded to: {voice_path}'); \
+                   voice_path = download_voice(\"en_US-lessac-medium\", \"/app/models/piper\"); \
+                   print(f\"[OK] Downloaded to: {voice_path}\"); \
                except Exception as e: \
-                   print(f'[WARN] Download with underscore failed: {e}'); \
+                   print(f\"[WARN] Download with underscore failed: {e}\"); \
                    try: \
-                       voice_path = download_voice('en-US-lessac-medium', '/app/models/piper'); \
-                       print(f'[OK] Downloaded to: {voice_path}'); \
+                       voice_path = download_voice(\"en-US-lessac-medium\", \"/app/models/piper\"); \
+                       print(f\"[OK] Downloaded to: {voice_path}\"); \
                    except Exception as e2: \
-                       print(f'[WARN] Download with hyphen also failed: {e2}'); \
-                       print('[INFO] Model will be downloaded on first use'); \
+                       print(f\"[WARN] Download with hyphen also failed: {e2}\"); \
+                       print(\"[INFO] Model will be downloaded on first use\"); \
                        sys.exit(0); \
                if not voice_path or not os.path.exists(voice_path): \
-                   print('[WARN] Download succeeded but file not found'); \
+                   print(\"[WARN] Download succeeded but file not found\"); \
                    sys.exit(0); \
                file_size = os.path.getsize(voice_path); \
                if file_size < 1000: \
-                   print(f'[WARN] Downloaded file too small: {file_size} bytes'); \
+                   print(f\"[WARN] Downloaded file too small: {file_size} bytes\"); \
                    sys.exit(0); \
-               print(f'[OK] Model file verified: {file_size:,} bytes'); \
-               target_path = '/app/models/piper/en_US-lessac-medium.onnx'; \
+               print(f\"[OK] Model file verified: {file_size:,} bytes\"); \
+               target_path = \"/app/models/piper/en_US-lessac-medium.onnx\"; \
                if voice_path != target_path: \
                    if os.path.exists(target_path): \
                        os.remove(target_path); \
                    if os.path.isdir(voice_path): \
-                       model_file = os.path.join(voice_path, 'model.onnx'); \
+                       model_file = os.path.join(voice_path, \"model.onnx\"); \
                        if os.path.exists(model_file): \
                            shutil.copy2(model_file, target_path); \
                        else: \
-                           print('[WARN] Model directory found but model.onnx not inside'); \
+                           print(\"[WARN] Model directory found but model.onnx not inside\"); \
                            sys.exit(0); \
                    else: \
                        shutil.copy2(voice_path, target_path); \
                if not os.path.exists(target_path): \
-                   print('[WARN] Failed to copy model to target location'); \
+                   print(\"[WARN] Failed to copy model to target location\"); \
                    sys.exit(0); \
                final_size = os.path.getsize(target_path); \
-               print(f'[OK] Model ready at: {target_path} ({final_size:,} bytes)');" || \
+               print(f\"[OK] Model ready at: {target_path} ({final_size:,} bytes)\");" || \
      echo "[WARN] Piper model download failed - will be downloaded on first use") && \
     echo "Checking for downloaded model..." && \
     if [ -f /app/models/piper/en_US-lessac-medium.onnx ]; then \
@@ -181,7 +182,8 @@ RUN mkdir -p /app/models/piper && \
     echo "========================================" && \
     echo "[INFO] Piper TTS model setup complete" && \
     echo "[INFO] Note: If model not downloaded, it will be fetched on first use" && \
-    echo "========================================"
+    echo "========================================"' || \
+    echo "[WARN] Piper model download timed out or failed - will be downloaded on first use"
 
 # Set default PIPER_MODEL_PATH if not already set
 ENV PIPER_MODEL_PATH=/app/models/piper
