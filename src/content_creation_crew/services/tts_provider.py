@@ -684,12 +684,148 @@ class CoquiXTTSProvider(TTSProvider):
         )
 
 
+class GoogleTTSProvider(TTSProvider):
+    """Google Text-to-Speech (gTTS) provider - Free, no API key required"""
+    
+    def __init__(self):
+        """Initialize Google TTS provider"""
+        self._available = self._check_availability()
+    
+    def _check_availability(self) -> bool:
+        """Check if gTTS is available"""
+        try:
+            from gtts import gTTS
+            return True
+        except ImportError:
+            logger.warning("Google TTS (gTTS) not available: gTTS package not installed")
+            return False
+    
+    def is_available(self) -> bool:
+        """Check if gTTS is available"""
+        return self._available
+    
+    def get_available_voices(self) -> list[str]:
+        """Get list of available language codes"""
+        # gTTS supports many languages via language codes
+        # Common ones: 'en' (English), 'es' (Spanish), 'fr' (French), etc.
+        return [
+            "en",      # English
+            "en-us",   # English (US)
+            "en-gb",   # English (UK)
+            "es",      # Spanish
+            "fr",      # French
+            "de",      # German
+            "it",      # Italian
+            "pt",      # Portuguese
+            "ru",      # Russian
+            "ja",      # Japanese
+            "ko",      # Korean
+            "zh",      # Chinese
+            "ar",      # Arabic
+            "hi",      # Hindi
+        ]
+    
+    def synthesize(
+        self,
+        text: str,
+        voice_id: str = "default",
+        speed: float = 1.0,
+        format: str = "wav"
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Synthesize speech using Google TTS (gTTS)
+        
+        Args:
+            text: Text to synthesize
+            voice_id: Language code (e.g., 'en', 'en-us', 'es') or 'default' for English
+            speed: Speech speed (0.5-2.0) - Note: gTTS doesn't support speed control directly
+            format: Output format ('mp3' supported, 'wav' will be converted)
+        
+        Returns:
+            Tuple of (audio_bytes, metadata_dict)
+        """
+        if not self._available:
+            raise RuntimeError("Google TTS (gTTS) is not available. Install gTTS package.")
+        
+        from gtts import gTTS
+        import io
+        import hashlib
+        import tempfile
+        
+        # Hash text for metadata
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        
+        # Resolve language code
+        lang = "en"  # Default to English
+        if voice_id and voice_id != "default":
+            # Extract language code from voice_id
+            # Handle formats like "en", "en-us", "en_US", etc.
+            lang = voice_id.lower().replace("_", "-").split("-")[0]
+            # Validate it's a 2-letter code (gTTS requirement)
+            if len(lang) != 2:
+                logger.warning(f"Invalid language code '{lang}', defaulting to 'en'")
+                lang = "en"
+        
+        try:
+            # Create gTTS object
+            # Note: gTTS doesn't support speed control, so we ignore the speed parameter
+            tts = gTTS(text=text, lang=lang, slow=False)
+            
+            # Generate audio to BytesIO buffer
+            audio_buffer = io.BytesIO()
+            tts.write_to_fp(audio_buffer)
+            audio_bytes = audio_buffer.getvalue()
+            
+            # gTTS outputs MP3 format
+            # If WAV format is requested, convert using pydub (requires ffmpeg)
+            output_format = "mp3"  # gTTS default output
+            
+            if format == "wav":
+                logger.info(f"gTTS outputs MP3 format. Converting to WAV...")
+                try:
+                    from pydub import AudioSegment
+                    # Convert MP3 to WAV
+                    audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+                    wav_buffer = io.BytesIO()
+                    audio_segment.export(wav_buffer, format="wav")
+                    audio_bytes = wav_buffer.getvalue()
+                    output_format = "wav"
+                    logger.info("Successfully converted MP3 to WAV")
+                except ImportError:
+                    logger.warning("pydub not available, returning MP3 format instead of WAV")
+                    output_format = "mp3"
+                except Exception as conv_error:
+                    logger.warning(f"Failed to convert MP3 to WAV: {conv_error}. Returning MP3 format.")
+                    output_format = "mp3"
+            
+            # Estimate duration (rough calculation for MP3)
+            # MP3 files: ~1KB per second at 128kbps
+            # This is approximate
+            estimated_duration = len(audio_bytes) / 16000.0  # Rough estimate
+            
+            metadata = {
+                "duration_sec": estimated_duration,
+                "format": output_format,
+                "sample_rate": 22050 if output_format == "mp3" else 22050,  # gTTS default
+                "voice_id": voice_id,
+                "language": lang,
+                "text_hash": text_hash,
+                "provider": "gtts"
+            }
+            
+            return audio_bytes, metadata
+            
+        except Exception as e:
+            logger.error(f"Google TTS synthesis failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to synthesize speech with Google TTS: {str(e)}")
+
+
 def get_tts_provider(provider_name: str = None) -> TTSProvider:
     """
     Factory function to get TTS provider
     
     Args:
-        provider_name: Provider name ('piper', 'coqui', or None for auto-detect)
+        provider_name: Provider name ('piper', 'gtts', 'coqui', or None for auto-detect)
     
     Returns:
         TTSProvider instance
@@ -700,9 +836,13 @@ def get_tts_provider(provider_name: str = None) -> TTSProvider:
     if provider_name is None:
         provider_name = os.getenv("TTS_PROVIDER", "piper")
     
-    if provider_name.lower() == "piper":
+    provider_name_lower = provider_name.lower()
+    
+    if provider_name_lower == "piper":
         return PiperTTSProvider()
-    elif provider_name.lower() == "coqui":
+    elif provider_name_lower == "gtts" or provider_name_lower == "google":
+        return GoogleTTSProvider()
+    elif provider_name_lower == "coqui":
         # Check if enabled via config
         if os.getenv("ENABLE_COQUI_TTS", "false").lower() == "true":
             return CoquiXTTSProvider()
@@ -710,5 +850,5 @@ def get_tts_provider(provider_name: str = None) -> TTSProvider:
             logger.warning("Coqui TTS requested but not enabled. Using Piper.")
             return PiperTTSProvider()
     else:
-        raise ValueError(f"Unknown TTS provider: {provider_name}")
+        raise ValueError(f"Unknown TTS provider: {provider_name}. Supported: 'piper', 'gtts', 'coqui'")
 

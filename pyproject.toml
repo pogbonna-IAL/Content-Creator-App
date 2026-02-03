@@ -34,6 +34,8 @@ dependencies = [
     "httpx>=0.25.0",
     "reportlab>=4.0.0",
     "piper-tts>=1.2.0",
+    "gtts>=2.4.0",
+    "pydub>=0.25.1",
 ]
 
 [project.scripts]
