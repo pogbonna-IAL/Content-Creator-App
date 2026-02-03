@@ -266,6 +266,9 @@ export default function Home() {
     let shouldStop = false
     let stopReason: string | null = null // Track why we're stopping
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    
+    // Track if component is still mounted to prevent state updates after unmount
+    let isMounted = true
 
     try {
       console.log('Sending streaming request for topic:', topic)
@@ -693,14 +696,16 @@ export default function Home() {
                   const videoContent = data.video_content || ''
                   
                   // Capture job_id if present in completion event
-                  if (data.job_id) {
+                  if (data.job_id && isMounted) {
                     setCurrentJobId(data.job_id)
                     console.log(`✓ Job ID from completion: ${data.job_id}`)
                   }
                   
                   // CRITICAL: Stop the spinner immediately when complete event is received
-                  setIsGenerating(false)
-                  setProgress(100)
+                  if (isMounted) {
+                    setIsGenerating(false)
+                    setProgress(100)
+                  }
                   
                   // Determine what content types were generated
                   const hasBlogContent = (finalContent && finalContent.trim().length > 0) || 
@@ -719,50 +724,52 @@ export default function Home() {
                     accumulatedContentLength: accumulatedContent.length
                   })
                   
-                  // Set blog content if available
-                  if (finalContent && finalContent.trim().length > 0) {
-                    accumulatedContent = finalContent
-                    setOutput(accumulatedContent)
-                    console.log('✓ Blog content received, length:', accumulatedContent.length)
-                  } else if (accumulatedContent && accumulatedContent.trim().length > 0) {
-                    setOutput(accumulatedContent)
-                    console.log('✓ Blog content from accumulated, length:', accumulatedContent.length)
-                  }
-                  
-                  // Set social media content if available
-                  if (hasSocialContent) {
-                    setSocialMediaOutput(socialMediaContent)
-                    console.log('✓ Social media content received, length:', socialMediaContent.length)
-                  }
-                  
-                  // Set audio content if available (ALWAYS set if present, even without blog content)
-                  if (hasAudioContent) {
-                    setAudioOutput(audioContent)
-                    console.log('✓ Audio content received, length:', audioContent.length)
-                    // If only audio content (no blog), update status accordingly
-                    if (!hasBlogContent && !hasSocialContent && !hasVideoContent) {
-                      setStatus('Audio content generation complete!')
+                  // Set blog content if available (only if component is still mounted)
+                  if (isMounted) {
+                    if (finalContent && finalContent.trim().length > 0) {
+                      accumulatedContent = finalContent
+                      setOutput(accumulatedContent)
+                      console.log('✓ Blog content received, length:', accumulatedContent.length)
+                    } else if (accumulatedContent && accumulatedContent.trim().length > 0) {
+                      setOutput(accumulatedContent)
+                      console.log('✓ Blog content from accumulated, length:', accumulatedContent.length)
                     }
-                  }
-                  
-                  // Set video content if available
-                  if (hasVideoContent) {
-                    setVideoOutput(videoContent)
-                    console.log('✓ Video content received, length:', videoContent.length)
-                    // If only video content (no blog), update status accordingly
-                    if (!hasBlogContent && !hasSocialContent && !hasAudioContent) {
-                      setStatus('Video content generation complete!')
+                    
+                    // Set social media content if available
+                    if (hasSocialContent) {
+                      setSocialMediaOutput(socialMediaContent)
+                      console.log('✓ Social media content received, length:', socialMediaContent.length)
                     }
-                  }
-                  
-                  // Set appropriate status message based on what was generated
-                  if (hasBlogContent || hasSocialContent || hasAudioContent || hasVideoContent) {
-                    if (!status || status === '') {
-                      setStatus('Content generation complete!')
+                    
+                    // Set audio content if available (ALWAYS set if present, even without blog content)
+                    if (hasAudioContent) {
+                      setAudioOutput(audioContent)
+                      console.log('✓ Audio content received, length:', audioContent.length)
+                      // If only audio content (no blog), update status accordingly
+                      if (!hasBlogContent && !hasSocialContent && !hasVideoContent) {
+                        setStatus('Audio content generation complete!')
+                      }
                     }
-                  } else {
-                    console.warn('No content received in completion event')
-                    setStatus('Content generation completed but no content was received')
+                    
+                    // Set video content if available
+                    if (hasVideoContent) {
+                      setVideoOutput(videoContent)
+                      console.log('✓ Video content received, length:', videoContent.length)
+                      // If only video content (no blog), update status accordingly
+                      if (!hasBlogContent && !hasSocialContent && !hasAudioContent) {
+                        setStatus('Video content generation complete!')
+                      }
+                    }
+                    
+                    // Set appropriate status message based on what was generated
+                    if (hasBlogContent || hasSocialContent || hasAudioContent || hasVideoContent) {
+                      if (!status || status === '') {
+                        setStatus('Content generation complete!')
+                      }
+                    } else {
+                      console.warn('No content received in completion event')
+                      setStatus('Content generation completed but no content was received')
+                    }
                   }
                   
                   // Mark that we should stop reading the stream since we're complete
@@ -1081,13 +1088,22 @@ export default function Home() {
         errorMessage = String(err)
       }
       
-      setError(errorMessage)
-      setOutput('') // Clear output on error
+      if (isMounted) {
+        setError(errorMessage)
+        setOutput('') // Clear output on error
+      }
     } finally {
-      // Always clean up references and reset generating state
-      setIsGenerating(false)
-      setReaderRef(null)
-      setAbortControllerRef(null)
+      // Mark component as unmounted to prevent state updates
+      isMounted = false
+      // Always clean up references and reset generating state (only if still mounted)
+      try {
+        setIsGenerating(false)
+        setReaderRef(null)
+        setAbortControllerRef(null)
+      } catch (e) {
+        // Ignore errors if component has unmounted
+        console.debug('Component unmounted during cleanup:', e)
+      }
     }
   }
 

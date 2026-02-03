@@ -3035,6 +3035,7 @@ async def _generate_voiceover_async(
                 job_id,
                 'tts_started',
                 {
+                    'type': 'tts_started',  # Add type field for frontend compatibility
                     'job_id': job_id,
                     'voice_id': voice_id,
                     'text_length': len(narration_text)
@@ -3265,10 +3266,12 @@ async def _generate_voiceover_async(
             job_id,
             'tts_completed',
             {
+                'type': 'tts_completed',  # Add type field for frontend compatibility
                 'job_id': job_id,
                 'artifact_id': artifact.id,
                 'duration_sec': metadata.get('duration_sec'),
-                'storage_url': storage_url
+                'storage_url': storage_url,
+                'url': storage_url  # Also include 'url' field for frontend compatibility
             }
         )
         
