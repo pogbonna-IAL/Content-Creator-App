@@ -682,19 +682,66 @@ async def stream_job_progress(
     from content_creation_crew.services.sse_store import get_sse_store
     from .database import SessionLocal
     
-    # Get initial job with a short-lived session
-    initial_session = SessionLocal()
-    try:
-        content_service = ContentService(initial_session, current_user)
-        job = content_service.get_job(job_id)
-        
-        if not job:
+    # Get initial job with a short-lived session and retry logic
+    job = None
+    max_init_query_retries = 3
+    init_query_retry_delay = 0.5
+    for init_query_retry in range(max_init_query_retries):
+        initial_session = SessionLocal()
+        try:
+            content_service = ContentService(initial_session, current_user)
+            job = content_service.get_job(job_id)
+            
+            if job:
+                break  # Success - exit retry loop
+            else:
+                # Job not found - don't retry
+                initial_session.close()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Job not found"
+                )
+        except (OperationalError, DisconnectionError) as init_query_error:
+            logger.warning(f"[STREAM_INIT_RETRY] Job {job_id}: Initial job query failed on attempt {init_query_retry + 1}/{max_init_query_retries}: {init_query_error}")
+            try:
+                initial_session.close()
+            except:
+                pass
+            if init_query_retry < max_init_query_retries - 1:
+                await asyncio.sleep(init_query_retry_delay)
+                init_query_retry_delay *= 2  # Exponential backoff
+                continue
+            else:
+                # All retries exhausted - raise HTTP exception
+                logger.error(f"[STREAM_INIT_ERROR] Job {job_id}: Failed to query job after {max_init_query_retries} retries")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Database temporarily unavailable. Please try again."
+                )
+        except HTTPException:
+            # Re-raise HTTP exceptions (like 404)
+            try:
+                initial_session.close()
+            except:
+                pass
+            raise
+        except Exception as init_query_error:
+            # Non-connection error - don't retry
+            try:
+                initial_session.close()
+            except:
+                pass
+            logger.error(f"[STREAM_INIT_ERROR] Job {job_id}: Non-connection error querying job: {init_query_error}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Job not found"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error querying job: {str(init_query_error)}"
             )
-    finally:
-        initial_session.close()
+        finally:
+            # Ensure session is closed if not already closed
+            try:
+                initial_session.close()
+            except:
+                pass
     
     # Get SSE event store
     sse_store = get_sse_store()
@@ -1539,7 +1586,10 @@ async def run_generation_async(
                 break  # Success - exit retry loop
             except (OperationalError, DisconnectionError) as status_error:
                 logger.warning(f"[STATUS_RETRY] Job {job_id}: Status update failed on attempt {status_retry + 1}/{max_status_retries}: {status_error}")
-                session.rollback()
+                try:
+                    session.rollback()
+                except:
+                    pass
                 if status_retry < max_status_retries - 1:
                     await asyncio.sleep(status_retry_delay)
                     status_retry_delay *= 2  # Exponential backoff
@@ -1549,10 +1599,32 @@ async def run_generation_async(
                     except:
                         pass
                     session = SessionLocal()
-                    user = session.query(User).filter(User.id == user_id).first()
+                    # Retry user query with retry logic
+                    user = None
+                    for user_retry in range(2):  # 2 retries for user query
+                        try:
+                            user = session.query(User).filter(User.id == user_id).first()
+                            if user:
+                                break  # Success
+                        except (OperationalError, DisconnectionError) as user_error:
+                            logger.warning(f"[STATUS_RETRY] Job {job_id}: User query failed during status retry, attempt {user_retry + 1}/2: {user_error}")
+                            try:
+                                session.close()
+                            except:
+                                pass
+                            if user_retry < 1:
+                                await asyncio.sleep(0.5)
+                                session = SessionLocal()
+                                continue
+                            else:
+                                # User query failed - re-raise to be caught by outer handler
+                                raise
                     if not user:
                         logger.error(f"User {user_id} not found during status update retry")
-                        session.close()
+                        try:
+                            session.close()
+                        except:
+                            pass
                         return
                     content_service = ContentService(session, user)
                     continue
@@ -2640,59 +2712,100 @@ async def run_generation_async(
         logger.error(f"[JOB_FAILED] Job {job_id}: Hint for user: {hint}")
         
         # Try to update job status with error handling for database connection issues
-        if session:
+        # Use retry logic for database connection errors
+        max_error_update_retries = 3
+        error_update_retry_delay = 0.5
+        error_update_success = False
+        
+        for error_update_retry in range(max_error_update_retries):
             try:
-                # Try to refresh session - if connection is broken, this will fail
-                session.rollback()
-                # Test if session is still valid by querying user
-                user = session.query(User).filter(User.id == user_id).first()
-                if user:
-                    content_service = ContentService(session, user)
-                    content_service.update_job_status(
-                        job_id,
-                        JobStatus.FAILED.value,
-                        finished_at=datetime.utcnow()
-                    )
-                    session.commit()
-                    sse_store.add_event(job_id, 'error', {
-                        'job_id': job_id,
-                        'message': error_msg,
-                        'error_type': error_type,
-                        'hint': hint
-                    })
+                if session:
+                    # Try to refresh session - if connection is broken, this will fail
+                    session.rollback()
+                    # Test if session is still valid by querying user
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if user:
+                        content_service = ContentService(session, user)
+                        # update_job_status calls get_job() which can fail - wrap in try/except
+                        try:
+                            content_service.update_job_status(
+                                job_id,
+                                JobStatus.FAILED.value,
+                                finished_at=datetime.utcnow()
+                            )
+                            session.commit()
+                            error_update_success = True
+                            break  # Success - exit retry loop
+                        except (OperationalError, DisconnectionError) as update_inner_error:
+                            # get_job() failed - this will be caught by outer retry loop
+                            raise
+                        except Exception as update_inner_error:
+                            # Non-connection error from update_job_status (e.g., job not found)
+                            logger.warning(f"Job {job_id}: update_job_status failed with non-connection error: {update_inner_error}")
+                            # Still send error event even if we can't update DB
+                            error_update_success = False
+                            break  # Exit retry loop, will send error event below
+                    else:
+                        # User not found - session might be stale, create new session
+                        raise Exception("Session stale - user not found")
                 else:
-                    # User not found - session might be stale, create new session
-                    raise Exception("Session stale - user not found")
-            except Exception as update_error:
-                # Session is broken - create a new one
-                logger.warning(f"Job {job_id}: Failed to update job status with existing session: {update_error}. Creating new session...")
-                try:
-                    # Close broken session
+                    # No session - create new one
+                    raise Exception("No session available")
+            except (OperationalError, DisconnectionError) as update_error:
+                logger.warning(f"Job {job_id}: Database connection error updating job status on attempt {error_update_retry + 1}/{max_error_update_retries}: {update_error}")
+                if session:
+                    try:
+                        session.rollback()
+                        session.close()
+                    except:
+                        pass
+                    session = None
+                
+                if error_update_retry < max_error_update_retries - 1:
+                    await asyncio.sleep(error_update_retry_delay)
+                    error_update_retry_delay *= 2  # Exponential backoff
+                    # Create new session for retry
+                    session = SessionLocal()
+                    continue
+                else:
+                    # All retries exhausted - try one more time with fresh session
+                    logger.error(f"Job {job_id}: All retries exhausted for error status update, trying final attempt...")
                     if session:
                         try:
                             session.close()
                         except:
                             pass
-                    
-                    # Create new session for error update
                     error_session = SessionLocal()
                     try:
                         error_user = error_session.query(User).filter(User.id == user_id).first()
                         if error_user:
                             error_content_service = ContentService(error_session, error_user)
-                            error_content_service.update_job_status(
-                                job_id,
-                                JobStatus.FAILED.value,
-                                finished_at=datetime.utcnow()
-                            )
-                            error_session.commit()
+                            # update_job_status calls get_job() which can fail - wrap in try/except
+                            try:
+                                error_content_service.update_job_status(
+                                    job_id,
+                                    JobStatus.FAILED.value,
+                                    finished_at=datetime.utcnow()
+                                )
+                                error_session.commit()
+                                error_update_success = True
+                                logger.info(f"Job {job_id}: Successfully updated job status with new session")
+                            except (OperationalError, DisconnectionError) as final_update_error:
+                                # get_job() failed even in final attempt - log and continue
+                                logger.error(f"Job {job_id}: Final update_job_status attempt failed: {final_update_error}")
+                                error_update_success = False
+                            except Exception as final_update_error:
+                                # Non-connection error (e.g., job not found)
+                                logger.warning(f"Job {job_id}: Final update_job_status failed with non-connection error: {final_update_error}")
+                                error_update_success = False
+                            
+                            # Always send error event, even if DB update failed
                             sse_store.add_event(job_id, 'error', {
                                 'job_id': job_id,
                                 'message': error_msg,
                                 'error_type': error_type,
                                 'hint': hint
                             })
-                            logger.info(f"Job {job_id}: Successfully updated job status with new session")
                         else:
                             logger.error(f"Job {job_id}: User {user_id} not found even with new session")
                             # Still send error event even if we can't update DB
@@ -2702,17 +2815,40 @@ async def run_generation_async(
                                 'error_type': error_type,
                                 'hint': hint
                             })
+                            error_update_success = True
+                    except Exception as new_session_error:
+                        logger.error(f"Job {job_id}: Failed to update job status even with new session: {new_session_error}", exc_info=True)
+                        # Last resort - just send error event without DB update
+                        sse_store.add_event(job_id, 'error', {
+                            'job_id': job_id,
+                            'message': error_msg,
+                            'error_type': error_type,
+                            'hint': hint
+                        })
                     finally:
-                        error_session.close()
-                except Exception as new_session_error:
-                    logger.error(f"Job {job_id}: Failed to update job status even with new session: {new_session_error}", exc_info=True)
-                    # Last resort - just send error event without DB update
+                        try:
+                            error_session.close()
+                        except:
+                            pass
+            except Exception as update_error:
+                # Non-connection error - log and send error event
+                if not isinstance(update_error, (OperationalError, DisconnectionError)):
+                    logger.error(f"Job {job_id}: Non-connection error updating job status: {update_error}")
                     sse_store.add_event(job_id, 'error', {
                         'job_id': job_id,
                         'message': error_msg,
                         'error_type': error_type,
                         'hint': hint
                     })
+        
+        # If we couldn't update the database, still send error event
+        if not error_update_success:
+            sse_store.add_event(job_id, 'error', {
+                'job_id': job_id,
+                'message': error_msg,
+                'error_type': error_type,
+                'hint': hint
+            })
         else:
             # No session available - just send error event
             sse_store.add_event(job_id, 'error', {
