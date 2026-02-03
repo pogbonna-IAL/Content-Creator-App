@@ -1312,14 +1312,46 @@ async def run_generation_async(
     
     session = None
     try:
-        # Get fresh database session
-        session = SessionLocal()
-        user = session.query(User).filter(User.id == user_id).first()
+        # Get fresh database session with retry logic for connection errors
+        user = None
+        max_init_retries = 3
+        init_retry_delay = 0.5
+        for init_retry in range(max_init_retries):
+            session = SessionLocal()
+            try:
+                user = session.query(User).filter(User.id == user_id).first()
+                if user:
+                    break  # Success - exit retry loop
+                else:
+                    # User not found - don't retry
+                    logger.error(f"User {user_id} not found for job {job_id}")
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    session.close()
+                    return
+            except OperationalError as init_error:
+                logger.warning(f"[INIT_RETRY] Job {job_id}: Initial database query failed on attempt {init_retry + 1}/{max_init_retries}: {init_error}")
+                try:
+                    session.close()
+                except:
+                    pass
+                if init_retry < max_init_retries - 1:
+                    await asyncio.sleep(init_retry_delay)
+                    init_retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    # All retries exhausted - re-raise to be caught by outer handler
+                    raise
+            except Exception as init_error:
+                # Non-connection error - don't retry
+                try:
+                    session.close()
+                except:
+                    pass
+                raise
         
         if not user:
-            logger.error(f"User {user_id} not found for job {job_id}")
-            sys.stdout.flush()
-            sys.stderr.flush()
+            logger.error(f"User {user_id} not found for job {job_id} after retries")
             if session:
                 session.close()
             return
@@ -1327,12 +1359,44 @@ async def run_generation_async(
         content_service = ContentService(session, user)
         policy = PlanPolicy(session, user)
         
-        # Update job status to running
-        content_service.update_job_status(
-            job_id,
-            JobStatus.RUNNING.value,
-            started_at=datetime.utcnow()
-        )
+        # Update job status to running with retry logic
+        max_status_retries = 3
+        status_retry_delay = 0.5
+        for status_retry in range(max_status_retries):
+            try:
+                content_service.update_job_status(
+                    job_id,
+                    JobStatus.RUNNING.value,
+                    started_at=datetime.utcnow()
+                )
+                session.commit()
+                break  # Success - exit retry loop
+            except OperationalError as status_error:
+                logger.warning(f"[STATUS_RETRY] Job {job_id}: Status update failed on attempt {status_retry + 1}/{max_status_retries}: {status_error}")
+                session.rollback()
+                if status_retry < max_status_retries - 1:
+                    await asyncio.sleep(status_retry_delay)
+                    status_retry_delay *= 2  # Exponential backoff
+                    # Refresh session and user for retry
+                    try:
+                        session.close()
+                    except:
+                        pass
+                    session = SessionLocal()
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        logger.error(f"User {user_id} not found during status update retry")
+                        session.close()
+                        return
+                    content_service = ContentService(session, user)
+                    continue
+                else:
+                    # All retries exhausted - re-raise to be caught by outer handler
+                    raise
+            except Exception as status_error:
+                # Non-connection error - don't retry
+                session.rollback()
+                raise
         
         # Get the single content type being generated (enforced at function start)
         content_type = content_types[0] if content_types else 'blog'
@@ -2118,33 +2182,54 @@ async def run_generation_async(
                             model_used=model_name
                         )
                         # Commit immediately after artifact creation to avoid long transactions
-                        try:
-                            session.commit()
-                        except Exception as commit_error:
-                            logger.error(f"Job {job_id}: Failed to commit {content_type} artifact: {commit_error}", exc_info=True)
-                            session.rollback()
-                            # Retry with new session if commit failed
+                        # Retry logic for OperationalError (connection failures)
+                        max_artifact_retries = 3
+                        artifact_retry_delay = 0.5
+                        artifact_created = False
+                        for artifact_retry in range(max_artifact_retries):
                             try:
-                                retry_session = SessionLocal()
-                                try:
-                                    retry_user = retry_session.query(User).filter(User.id == user_id).first()
-                                    if retry_user:
-                                        retry_content_service = ContentService(retry_session, retry_user)
-                                        artifact = retry_content_service.create_artifact(
-                                            job_id,
-                                            content_type,
-                                            validated_content,
-                                            content_json=validated_model.model_dump() if is_valid and validated_model else None,
-                                            prompt_version=PROMPT_VERSION,
-                                            model_used=model_name
-                                        )
-                                        retry_session.commit()
-                                        logger.info(f"Job {job_id}: Successfully created {content_type} artifact with retry session")
-                                finally:
-                                    retry_session.close()
-                            except Exception as retry_error:
-                                logger.error(f"Job {job_id}: Failed to create {content_type} artifact even with retry: {retry_error}", exc_info=True)
+                                session.commit()
+                                artifact_created = True
+                                break  # Success - exit retry loop
+                            except OperationalError as commit_error:
+                                logger.warning(f"[ARTIFACT_RETRY] Job {job_id}: Failed to commit {content_type} artifact on attempt {artifact_retry + 1}/{max_artifact_retries}: {commit_error}")
+                                session.rollback()
+                                if artifact_retry < max_artifact_retries - 1:
+                                    await asyncio.sleep(artifact_retry_delay)
+                                    artifact_retry_delay *= 2  # Exponential backoff
+                                    # Refresh session and recreate artifact
+                                    try:
+                                        session.close()
+                                    except:
+                                        pass
+                                    session = SessionLocal()
+                                    user = session.query(User).filter(User.id == user_id).first()
+                                    if not user:
+                                        logger.error(f"User {user_id} not found during artifact retry")
+                                        session.close()
+                                        raise
+                                    content_service = ContentService(session, user)
+                                    artifact = content_service.create_artifact(
+                                        job_id,
+                                        content_type,
+                                        validated_content,
+                                        content_json=validated_model.model_dump() if is_valid and validated_model else None,
+                                        prompt_version=PROMPT_VERSION,
+                                        model_used=model_name
+                                    )
+                                    continue
+                                else:
+                                    # All retries exhausted - re-raise to be caught by outer handler
+                                    raise
+                            except Exception as commit_error:
+                                # Non-connection error - don't retry
+                                logger.error(f"Job {job_id}: Failed to commit {content_type} artifact: {commit_error}", exc_info=True)
+                                session.rollback()
                                 raise
+                        
+                        if not artifact_created:
+                            logger.error(f"Job {job_id}: Failed to create {content_type} artifact after {max_artifact_retries} retries")
+                            raise Exception(f"Failed to create {content_type} artifact after retries")
                         artifact_duration = time.time() - artifact_start
                         
                         # Send content immediately (early streaming optimization)
@@ -2210,48 +2295,79 @@ async def run_generation_async(
                         'hint': f'Check backend logs for {content_type} extraction details. The CrewAI result may not contain the expected content.'
                     })
         
-        # Update job status to completed - commit immediately
-        try:
-            content_service.update_job_status(
-                job_id,
-                JobStatus.COMPLETED.value,
-                finished_at=datetime.utcnow()
-            )
-            session.commit()
-        except Exception as commit_error:
-            logger.error(f"Job {job_id}: Failed to commit job completion: {commit_error}", exc_info=True)
-            session.rollback()
-            # Retry with new session
+        # Update job status to completed - commit immediately with retry logic
+        max_completion_retries = 3
+        completion_retry_delay = 0.5
+        completion_updated = False
+        for completion_retry in range(max_completion_retries):
             try:
-                retry_session = SessionLocal()
-                try:
-                    retry_user = retry_session.query(User).filter(User.id == user_id).first()
-                    if retry_user:
-                        retry_content_service = ContentService(retry_session, retry_user)
-                        retry_content_service.update_job_status(
-                            job_id,
-                            JobStatus.COMPLETED.value,
-                            finished_at=datetime.utcnow()
-                        )
-                        retry_session.commit()
-                        logger.info(f"Job {job_id}: Successfully updated job status with retry session")
-                finally:
-                    retry_session.close()
-            except Exception as retry_error:
-                logger.error(f"Job {job_id}: Failed to update job status even with retry: {retry_error}", exc_info=True)
-                # Continue anyway - we'll still send completion event
+                content_service.update_job_status(
+                    job_id,
+                    JobStatus.COMPLETED.value,
+                    finished_at=datetime.utcnow()
+                )
+                session.commit()
+                completion_updated = True
+                break  # Success - exit retry loop
+            except OperationalError as commit_error:
+                logger.warning(f"[COMPLETION_RETRY] Job {job_id}: Failed to commit job completion on attempt {completion_retry + 1}/{max_completion_retries}: {commit_error}")
+                session.rollback()
+                if completion_retry < max_completion_retries - 1:
+                    await asyncio.sleep(completion_retry_delay)
+                    completion_retry_delay *= 2  # Exponential backoff
+                    # Refresh session and user for retry
+                    try:
+                        session.close()
+                    except:
+                        pass
+                    session = SessionLocal()
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        logger.error(f"User {user_id} not found during completion retry")
+                        session.close()
+                        break  # Continue anyway - we'll still send completion event
+                    content_service = ContentService(session, user)
+                    continue
+                else:
+                    # All retries exhausted - log but continue (we'll still send completion event)
+                    logger.error(f"Job {job_id}: Failed to update job status after {max_completion_retries} retries: {commit_error}", exc_info=True)
+                    break
+            except Exception as commit_error:
+                # Non-connection error - log but continue (we'll still send completion event)
+                logger.error(f"Job {job_id}: Failed to commit job completion: {commit_error}", exc_info=True)
+                session.rollback()
+                break
         
-        # Get all artifacts for completion event - use fresh session if needed
-        try:
-            artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
-        except Exception as query_error:
-            logger.warning(f"Job {job_id}: Failed to query artifacts with existing session: {query_error}. Using new session...")
-            # Use new session for artifact query
-            artifact_session = SessionLocal()
+        # Get all artifacts for completion event - use retry logic for connection errors
+        artifacts = []
+        max_artifacts_retries = 3
+        artifacts_retry_delay = 0.5
+        for artifacts_retry in range(max_artifacts_retries):
             try:
-                artifacts = artifact_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
-            finally:
-                artifact_session.close()
+                artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+                break  # Success - exit retry loop
+            except OperationalError as query_error:
+                logger.warning(f"[ARTIFACTS_QUERY_RETRY] Job {job_id}: Failed to query artifacts on attempt {artifacts_retry + 1}/{max_artifacts_retries}: {query_error}")
+                if artifacts_retry < max_artifacts_retries - 1:
+                    await asyncio.sleep(artifacts_retry_delay)
+                    artifacts_retry_delay *= 2  # Exponential backoff
+                    # Use new session for retry
+                    try:
+                        session.close()
+                    except:
+                        pass
+                    session = SessionLocal()
+                    continue
+                else:
+                    # All retries exhausted - use empty list
+                    logger.error(f"Job {job_id}: Failed to query artifacts after {max_artifacts_retries} retries: {query_error}")
+                    artifacts = []
+                    break
+            except Exception as query_error:
+                # Non-connection error - use empty list
+                logger.warning(f"Job {job_id}: Failed to query artifacts: {query_error}")
+                artifacts = []
+                break
         artifact_content = {}
         for artifact in artifacts:
             if artifact.content_text:
