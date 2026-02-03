@@ -154,37 +154,71 @@ class PiperTTSProvider(TTSProvider):
                 
                 # Verify file exists
                 if not os.path.exists(voice_model):
-                    raise FileNotFoundError(f"Voice model file not found at resolved path: {voice_model}")
-                
-                file_size = os.path.getsize(voice_model)
-                logger.info(f"[TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes")
-                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes", file=sys.stdout, flush=True)
+                    logger.warning(f"[TTS_SYNTHESIS] Voice model file not found at resolved path: {voice_model}")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file not found at resolved path: {voice_model}", file=sys.stderr, flush=True)
+                    # Don't raise error yet - try loading by voice_id directly (PiperVoice might auto-download)
+                    logger.info(f"[TTS_SYNTHESIS] Will try loading by voice_id directly (PiperVoice may auto-download)")
+                    voice_model = None  # Signal to try direct loading
+                else:
+                    file_size = os.path.getsize(voice_model)
+                    logger.info(f"[TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model file exists, size: {file_size} bytes", file=sys.stdout, flush=True)
+            except FileNotFoundError as resolve_error:
+                logger.warning(f"[TTS_SYNTHESIS] Voice model not found, will try direct loading: {resolve_error}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Voice model not found, will try direct loading: {resolve_error}", file=sys.stderr, flush=True)
+                voice_model = None  # Signal to try direct loading
             except Exception as resolve_error:
                 logger.error(f"[TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", exc_info=True)
                 print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to resolve voice model: {resolve_error}", file=sys.stderr, flush=True)
-                raise
+                voice_model = None  # Try direct loading as fallback
             
             # Load voice - PiperVoice.load can also accept voice_id directly
-            # Try loading by path first, then by voice_id
-            logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}")
-            print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}", file=sys.stdout, flush=True)
+            # Try loading by path first, then by voice_id (which may auto-download)
+            voice = None
             
-            try:
-                voice = PiperVoice.load(voice_model, config_path=None)
-                logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice")
-                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice", file=sys.stdout, flush=True)
-            except Exception as load_error:
-                # If path loading fails, try loading by voice_id directly
-                # PiperVoice might download automatically
-                logger.warning(f"[TTS_SYNTHESIS] Failed to load voice from path {voice_model}, trying voice_id {voice_id}: {load_error}")
-                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Trying to load by voice_id: {voice_id}", file=sys.stdout, flush=True)
+            if voice_model and os.path.exists(voice_model):
+                logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice from path: {voice_model}", file=sys.stdout, flush=True)
+                
+                try:
+                    voice = PiperVoice.load(voice_model, config_path=None)
+                    logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice from file")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice from file", file=sys.stdout, flush=True)
+                except Exception as load_error:
+                    logger.warning(f"[TTS_SYNTHESIS] Failed to load voice from path {voice_model}: {load_error}")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to load from path, will try voice_id: {load_error}", file=sys.stderr, flush=True)
+                    voice = None  # Will try voice_id next
+            
+            # If path loading failed or no path, try loading by voice_id directly
+            # PiperVoice.load(voice_id) may auto-download the model
+            if voice is None:
+                logger.info(f"[TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {voice_id}")
+                print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Loading PiperVoice by voice_id (may auto-download): {voice_id}", file=sys.stdout, flush=True)
                 try:
                     voice = PiperVoice.load(voice_id)
-                    logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id")
+                    logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id (auto-download may have occurred)")
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Successfully loaded PiperVoice by voice_id", file=sys.stdout, flush=True)
                 except Exception as voice_id_error:
                     logger.error(f"[TTS_SYNTHESIS] Failed to load by voice_id: {voice_id_error}", exc_info=True)
-                    # Last resort: try with model path again
-                    raise load_error
+                    print(f"[RAILWAY_DEBUG] [TTS_SYNTHESIS] Failed to load by voice_id: {voice_id_error}", file=sys.stderr, flush=True)
+                    # Try with hyphen version as last resort
+                    try:
+                        voice_id_hyphen = voice_id.replace('_', '-')
+                        logger.info(f"[TTS_SYNTHESIS] Trying hyphen version: {voice_id_hyphen}")
+                        voice = PiperVoice.load(voice_id_hyphen)
+                        logger.info(f"[TTS_SYNTHESIS] Successfully loaded PiperVoice with hyphen version")
+                    except Exception as hyphen_error:
+                        logger.error(f"[TTS_SYNTHESIS] All loading methods failed. Original error: {voice_id_error}, Hyphen error: {hyphen_error}", exc_info=True)
+                        raise FileNotFoundError(
+                            f"Piper model not found and could not be auto-downloaded. "
+                            f"Voice ID: {voice_id}. "
+                            f"Tried paths: {voice_model if voice_model else 'N/A'}. "
+                            f"Set PIPER_MODEL_PATH or install piper models. "
+                            f"To download models automatically, ensure piper-tts package is installed with download support."
+                        )
+            
+            if voice is None:
+                raise FileNotFoundError(f"Failed to load Piper voice model for {voice_id}")
             
             # Synthesize (PiperVoice.synthesize returns generator of AudioChunk objects)
             # Speed control may not be available in Python API, synthesize as-is
@@ -307,12 +341,17 @@ class PiperTTSProvider(TTSProvider):
         base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
         
         # Try different possible paths for the voice model
-        # Common formats: en_US-lessac-medium/model.onnx or en_US-lessac-medium.onnx
+        # HuggingFace Piper voices repository structure:
+        # - Some voices are in directories: en-US-lessac-medium/model.onnx
+        # - Some are direct files: en-US-lessac-medium.onnx
+        # - Voice IDs use underscores: en_US-lessac-medium
+        # - URLs use hyphens: en-US-lessac-medium
+        voice_id_hyphen = voice_id.replace('_', '-')
         possible_paths = [
-            f"{voice_id}/model.onnx",  # Directory format
-            f"{voice_id}.onnx",  # Direct file format
-            f"{voice_id.replace('_', '-')}/model.onnx",  # With hyphens
-            f"{voice_id.replace('_', '-')}.onnx",  # With hyphens, direct file
+            f"{voice_id_hyphen}/model.onnx",  # Directory format with hyphens (most common)
+            f"{voice_id_hyphen}.onnx",  # Direct file format with hyphens
+            f"{voice_id}/model.onnx",  # Directory format with underscores
+            f"{voice_id}.onnx",  # Direct file format with underscores
         ]
         
         # Normalize local path to use voice_id format (underscores) for consistency
@@ -340,6 +379,8 @@ class PiperTTSProvider(TTSProvider):
             try:
                 logger.info(f"Attempting to download Piper model from {model_url} to {local_path}")
                 print(f"[RAILWAY_DEBUG] Downloading Piper model: {model_url}", file=sys.stdout, flush=True)
+                logger.info(f"Download target path: {local_path}")
+                print(f"[RAILWAY_DEBUG] Download target path: {local_path}", file=sys.stdout, flush=True)
                 
                 # Download with progress tracking
                 def show_progress(block_num, block_size, total_size):
@@ -347,67 +388,147 @@ class PiperTTSProvider(TTSProvider):
                         percent = min(100, (block_num * block_size * 100) // total_size)
                         if block_num % 10 == 0:  # Log every 10 blocks
                             logger.debug(f"Download progress: {percent}%")
+                            print(f"[RAILWAY_DEBUG] Download progress: {percent}%", file=sys.stdout, flush=True)
                 
                 # Download to temporary path first, then rename to consistent format
                 temp_path = local_path + '.tmp'
+                logger.info(f"Downloading to temporary path: {temp_path}")
+                print(f"[RAILWAY_DEBUG] Downloading to temporary path: {temp_path}", file=sys.stdout, flush=True)
+                
                 urllib.request.urlretrieve(model_url, temp_path, show_progress)
                 
                 # Verify download succeeded
                 if os.path.exists(temp_path):
                     file_size = os.path.getsize(temp_path)
+                    logger.info(f"Downloaded file size: {file_size} bytes")
+                    print(f"[RAILWAY_DEBUG] Downloaded file size: {file_size} bytes", file=sys.stdout, flush=True)
+                    
                     if file_size > 1000:  # At least 1KB
                         # Move to final location (normalized to voice_id format)
                         if os.path.exists(local_path):
+                            logger.info(f"Removing existing file at {local_path}")
                             os.remove(local_path)  # Remove old file if exists
+                        
+                        logger.info(f"Moving temp file to final location: {local_path}")
+                        print(f"[RAILWAY_DEBUG] Moving temp file to final location: {local_path}", file=sys.stdout, flush=True)
                         os.rename(temp_path, local_path)
-                        logger.info(f"Successfully downloaded Piper model to {local_path} ({file_size} bytes)")
-                        print(f"[RAILWAY_DEBUG] Successfully downloaded {file_size} bytes to {local_path}", file=sys.stdout, flush=True)
-                        return local_path
+                        
+                        # Verify final file exists
+                        if os.path.exists(local_path):
+                            final_size = os.path.getsize(local_path)
+                            logger.info(f"Successfully downloaded Piper model to {local_path} ({final_size} bytes)")
+                            print(f"[RAILWAY_DEBUG] Successfully downloaded {final_size} bytes to {local_path}", file=sys.stdout, flush=True)
+                            return local_path
+                        else:
+                            logger.error(f"File rename succeeded but final file not found at {local_path}")
+                            print(f"[RAILWAY_DEBUG] ERROR: File rename succeeded but final file not found at {local_path}", file=sys.stderr, flush=True)
                     else:
-                        logger.warning(f"Downloaded file too small: {file_size} bytes")
+                        logger.warning(f"Downloaded file too small: {file_size} bytes (expected > 1KB)")
+                        print(f"[RAILWAY_DEBUG] WARNING: Downloaded file too small: {file_size} bytes", file=sys.stderr, flush=True)
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
                 else:
-                    logger.warning(f"Download completed but file not found at {temp_path}")
+                    logger.error(f"Download completed but file not found at {temp_path}")
+                    print(f"[RAILWAY_DEBUG] ERROR: Download completed but file not found at {temp_path}", file=sys.stderr, flush=True)
             except urllib.error.HTTPError as e:
+                error_msg = f"HTTP error downloading {model_url}: {e.code} - {e.reason}"
                 if e.code == 404:
-                    logger.debug(f"Model not found at {model_url} (404)")
+                    logger.warning(f"Model not found at {model_url} (404)")
+                    print(f"[RAILWAY_DEBUG] Model not found at {model_url} (404)", file=sys.stderr, flush=True)
                 else:
-                    logger.warning(f"HTTP error downloading {model_url}: {e.code} - {e.reason}")
+                    logger.error(error_msg)
+                    print(f"[RAILWAY_DEBUG] {error_msg}", file=sys.stderr, flush=True)
+            except urllib.error.URLError as e:
+                error_msg = f"URL error downloading {model_url}: {str(e)}"
+                logger.error(error_msg)
+                print(f"[RAILWAY_DEBUG] {error_msg}", file=sys.stderr, flush=True)
             except Exception as e:
-                logger.warning(f"Failed to download {model_url}: {type(e).__name__} - {str(e)}")
+                error_msg = f"Failed to download {model_url}: {type(e).__name__} - {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                print(f"[RAILWAY_DEBUG] {error_msg}", file=sys.stderr, flush=True)
                 # Clean up partial download
                 if os.path.exists(local_path):
                     try:
                         os.remove(local_path)
                     except:
                         pass
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
         
         # Try using piper-tts download utility if available (fallback)
+        # This is often more reliable than manual HuggingFace downloads
         try:
             from piper import download_voice, get_voices
+            logger.info(f"Attempting to download voice {voice_id} using piper-tts library...")
+            print(f"[RAILWAY_DEBUG] Attempting to download voice {voice_id} using piper-tts library...", file=sys.stdout, flush=True)
+            
             try:
+                # Try downloading with the voice_id as-is
                 voice_path = download_voice(voice_id, self.model_path)
                 if voice_path and os.path.exists(voice_path):
-                    logger.info(f"Downloaded Piper voice model {voice_id} via piper-tts to {voice_path}")
+                    file_size = os.path.getsize(voice_path)
+                    logger.info(f"Downloaded Piper voice model {voice_id} via piper-tts to {voice_path} ({file_size} bytes)")
+                    print(f"[RAILWAY_DEBUG] Downloaded Piper voice model via piper-tts to {voice_path} ({file_size} bytes)", file=sys.stdout, flush=True)
+                    # If downloaded to a different location, copy/symlink to expected location
+                    if voice_path != local_path_normalized and os.path.exists(voice_path):
+                        # Check if we should copy it to the normalized location
+                        if not os.path.exists(local_path_normalized):
+                            try:
+                                import shutil
+                                shutil.copy2(voice_path, local_path_normalized)
+                                logger.info(f"Copied model to normalized location: {local_path_normalized}")
+                                return local_path_normalized
+                            except Exception as copy_error:
+                                logger.warning(f"Failed to copy to normalized location, using original: {copy_error}")
                     return voice_path
             except Exception as download_error:
-                logger.debug(f"download_voice failed: {download_error}")
+                logger.warning(f"download_voice failed: {download_error}")
+                print(f"[RAILWAY_DEBUG] download_voice failed: {download_error}", file=sys.stderr, flush=True)
+                
+                # Try with hyphen version
+                try:
+                    voice_id_hyphen = voice_id.replace('_', '-')
+                    logger.info(f"Trying download with hyphen version: {voice_id_hyphen}")
+                    voice_path = download_voice(voice_id_hyphen, self.model_path)
+                    if voice_path and os.path.exists(voice_path):
+                        file_size = os.path.getsize(voice_path)
+                        logger.info(f"Downloaded Piper voice model {voice_id_hyphen} via piper-tts to {voice_path} ({file_size} bytes)")
+                        print(f"[RAILWAY_DEBUG] Downloaded Piper voice model {voice_id_hyphen} via piper-tts to {voice_path} ({file_size} bytes)", file=sys.stdout, flush=True)
+                        # Copy to normalized location if needed
+                        if voice_path != local_path_normalized and os.path.exists(voice_path):
+                            if not os.path.exists(local_path_normalized):
+                                try:
+                                    import shutil
+                                    shutil.copy2(voice_path, local_path_normalized)
+                                    logger.info(f"Copied model to normalized location: {local_path_normalized}")
+                                    return local_path_normalized
+                                except Exception as copy_error:
+                                    logger.warning(f"Failed to copy to normalized location, using original: {copy_error}")
+                        return voice_path
+                except Exception as hyphen_error:
+                    logger.debug(f"download_voice with hyphen also failed: {hyphen_error}")
             
             try:
                 voices = get_voices()
                 if voice_id in voices:
                     voice_info = voices[voice_id]
                     if hasattr(voice_info, 'path') and os.path.exists(voice_info.path):
+                        logger.info(f"Found voice {voice_id} in piper-tts voices list: {voice_info.path}")
                         return voice_info.path
             except Exception as find_error:
                 logger.debug(f"get_voices failed: {find_error}")
         except ImportError:
-            logger.debug("piper download utilities not available")
+            logger.warning("piper download utilities not available - install piper-tts package")
+            print(f"[RAILWAY_DEBUG] piper download utilities not available", file=sys.stderr, flush=True)
         except Exception as e:
-            logger.debug(f"Failed to use piper download utilities: {e}")
+            logger.error(f"Failed to use piper download utilities: {e}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] Failed to use piper download utilities: {e}", file=sys.stderr, flush=True)
         
         logger.error(f"Failed to download Piper model {voice_id} from all attempted sources")
+        print(f"[RAILWAY_DEBUG] ERROR: Failed to download Piper model {voice_id} from all attempted sources", file=sys.stderr, flush=True)
         return None
     
     def _resolve_voice_model(self, voice_id: str) -> str:
