@@ -89,16 +89,43 @@ export async function POST(request: NextRequest) {
     // Call backend voiceover endpoint
     const backendUrl = getApiUrl('v1/content/voiceover')
     console.log('Calling voiceover endpoint:', backendUrl)
+    console.log('Voiceover request body:', JSON.stringify(requestBody, null, 2))
 
-    const response = await fetch(backendUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
-      },
-      body: JSON.stringify(requestBody),
-    })
+    // Add timeout to prevent hanging requests (30 seconds)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+
+    let response: Response
+    try {
+      response = await fetch(backendUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+        console.error('Voiceover request timed out after 30 seconds')
+        return new Response(
+          JSON.stringify({ 
+            error: 'Request timeout', 
+            detail: 'Voiceover request took too long. Please try again.',
+            hint: 'The backend may be processing. Check backend logs for details.'
+          }),
+          { status: 504, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      throw fetchError
+    }
+
+    console.log('Voiceover API - Backend response status:', response.status, response.statusText)
+    console.log('Voiceover API - Response headers:', Object.fromEntries(response.headers.entries()))
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -137,6 +164,12 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await response.json()
+    console.log('Voiceover API - Backend response received:', {
+      hasJobId: !!result.job_id,
+      jobId: result.job_id,
+      message: result.message,
+      keys: Object.keys(result)
+    })
     return NextResponse.json(result)
 
   } catch (error) {

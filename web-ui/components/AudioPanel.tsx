@@ -32,7 +32,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     setIsGeneratingVoiceover(true)
     setVoiceoverError(null)
     setVoiceoverStatus('Starting voiceover generation...')
-    setVoiceoverProgress(0)
+    setVoiceoverProgress(5) // Start at 5% to show progress bar immediately
     setAudioUrl(null)
 
     try {
@@ -310,14 +310,23 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                       <div className="w-8 h-8 border-2 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin"></div>
                       <p className="text-neon-cyan">{voiceoverStatus || 'Generating voiceover...'}</p>
                     </div>
-                    {voiceoverProgress > 0 && (
-                      <div className="w-full bg-gray-700 rounded-full h-2">
-                        <div 
-                          className="bg-neon-purple h-2 rounded-full transition-all duration-300" 
-                          style={{ width: `${voiceoverProgress}%` }}
-                        ></div>
+                    {/* Progress bar with percentage */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-300">Progress</span>
+                        <span className="text-neon-cyan font-semibold">{voiceoverProgress}%</span>
                       </div>
-                    )}
+                      <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                        <div 
+                          className="bg-gradient-to-r from-neon-cyan to-neon-purple h-3 rounded-full transition-all duration-300 ease-out flex items-center justify-end pr-2"
+                          style={{ width: `${Math.max(voiceoverProgress, 5)}%` }}
+                        >
+                          {voiceoverProgress >= 15 && (
+                            <span className="text-xs text-white font-medium">{voiceoverProgress}%</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
                 
