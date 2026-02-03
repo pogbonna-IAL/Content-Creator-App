@@ -93,18 +93,18 @@ validate_database_url(config.DATABASE_URL)
 try:
     engine = create_engine(
         config.DATABASE_URL,
-        pool_pre_ping=True,  # Verify connections before using (health check)
-        pool_size=config.DB_POOL_SIZE,  # Base pool size (default: 10)
-        max_overflow=config.DB_MAX_OVERFLOW,  # Additional connections (default: 10, total: 20)
-        pool_recycle=config.DB_POOL_RECYCLE,  # Recycle connections after 1 hour (default)
+        pool_pre_ping=True,  # Verify connections before using (health check) - CRITICAL for detecting dead connections
+        pool_size=config.DB_POOL_SIZE,  # Base pool size (default: 20)
+        max_overflow=config.DB_MAX_OVERFLOW,  # Additional connections (default: 10, total: 30)
+        pool_recycle=1800,  # Recycle connections after 30 minutes (reduced from 1 hour to prevent stale connections)
         pool_timeout=config.DB_POOL_TIMEOUT,  # Wait up to 30s for connection (default)
         echo=False,  # Disable SQL logging for performance
         connect_args={
-            "connect_timeout": 5,  # Connection timeout (5 seconds)
+            "connect_timeout": 10,  # Connection timeout (increased to 10 seconds for reliability)
             "keepalives": 1,  # Enable TCP keepalives
-            "keepalives_idle": 60,  # Start keepalives after 60 seconds idle (increased from 30)
+            "keepalives_idle": 30,  # Start keepalives after 30 seconds idle (reduced from 60 for faster detection)
             "keepalives_interval": 10,  # Send keepalive every 10 seconds
-            "keepalives_count": 5,  # Keepalive failures before disconnect (increased from 3)
+            "keepalives_count": 5,  # Keepalive failures before disconnect
             "application_name": "content_creation_crew",
             # Set statement timeout and idle transaction timeout at connection level
             # Note: DB_STATEMENT_TIMEOUT is in milliseconds, so 10000 = 10 seconds
@@ -160,9 +160,10 @@ logger.info(f"  - Statement timeout: {config.DB_STATEMENT_TIMEOUT}ms")
 @event.listens_for(Pool, "checkout")
 def receive_checkout(dbapi_conn, connection_record, connection_proxy):
     """Called when a connection is retrieved from the pool"""
-    # Track pool statistics
+    # Track pool statistics (pool_pre_ping already validates connection health)
     pool_status = engine.pool.status()
-    logger.debug(f"Connection checked out from pool | Pool status: {pool_status}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Connection checked out from pool | Pool status: {pool_status}")
 
 @event.listens_for(Pool, "checkin")
 def receive_checkin(dbapi_conn, connection_record):
