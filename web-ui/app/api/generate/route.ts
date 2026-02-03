@@ -387,8 +387,64 @@ export async function POST(request: NextRequest) {
           try {
             console.log('Fetching stream from:', getApiUrl(`v1/content/jobs/${jobId}/stream`))
             response = await fetch(getApiUrl(`v1/content/jobs/${jobId}/stream`), fetchOptions)
-          } finally {
+          } catch (fetchError: any) {
+            // Handle fetch errors (network errors, connection refused, socket closed, etc.)
             clearTimeout(timeoutId)
+            // Restore original dispatcher if we changed it
+            // @ts-ignore
+            if (fetchOptions._restoreDispatcher) {
+              // @ts-ignore
+              fetchOptions._restoreDispatcher()
+            }
+            
+            console.error('Fetch error (before response):', {
+              name: fetchError?.name,
+              message: fetchError?.message,
+              cause: fetchError?.cause,
+              code: fetchError?.code,
+              stack: fetchError?.stack
+            })
+            
+            // Check if it's a socket/connection error
+            const errorMsg = fetchError?.message || 'Unknown fetch error'
+            const errorCause = fetchError?.cause
+            const errorCode = errorCause && typeof errorCause === 'object' && 'code' in errorCause ? errorCause.code : fetchError?.code
+            
+            const isConnectionError = errorMsg.includes('terminated') ||
+              errorMsg.includes('SocketError') ||
+              errorMsg.includes('other side closed') ||
+              errorCode === 'UND_ERR_SOCKET' ||
+              fetchError?.name === 'TypeError' ||
+              errorMsg.includes('fetch failed')
+            
+            if (isConnectionError) {
+              safeEnqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'error', 
+                  message: 'Failed to connect to backend server. The connection was closed before streaming could start.',
+                  error_code: 'CONNECTION_FAILED',
+                  error_type: 'SocketError',
+                  hint: 'This usually means: 1) Backend server is not running or crashed, 2) Network connectivity issue, 3) Backend rejected the connection. Check Railway backend service logs and ensure the backend is healthy and accessible.'
+                })}\n\n`)
+              )
+            } else {
+              safeEnqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'error', 
+                  message: `Connection error: ${errorMsg}`,
+                  error_code: 'FETCH_ERROR',
+                  error_type: fetchError?.name || 'UnknownError',
+                  hint: 'Check network connectivity and ensure backend server is accessible.'
+                })}\n\n`)
+              )
+            }
+            safeClose()
+            return
+          } finally {
+            // Only clear timeout if fetch succeeded (if it failed, we already cleared it)
+            if (response) {
+              clearTimeout(timeoutId)
+            }
             // Restore original dispatcher if we changed it
             // @ts-ignore
             if (fetchOptions._restoreDispatcher) {
@@ -536,8 +592,19 @@ export async function POST(request: NextRequest) {
           console.error('Streaming error:', error)
           const errorMessage = error instanceof Error ? error.message : 'Unknown error'
           const errorCause = error instanceof Error && error.cause ? error.cause : null
+          console.error('Error name:', error instanceof Error ? error.name : 'Unknown')
           console.error('Error details:', errorMessage)
           console.error('Error cause:', errorCause)
+          console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace')
+          
+          // Log additional details for socket errors
+          if (errorCause && typeof errorCause === 'object' && 'code' in errorCause && errorCause.code === 'UND_ERR_SOCKET') {
+            console.error('Socket error details:', {
+              code: errorCause.code,
+              socket: errorCause.socket,
+              message: errorCause.message
+            })
+          }
           
           // Check error types
           const errorCode = errorCause && typeof errorCause === 'object' && 'code' in errorCause ? errorCause.code : null

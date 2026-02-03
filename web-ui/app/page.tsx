@@ -450,13 +450,23 @@ export default function Home() {
                     } else if (data.type === 'error') {
                       // Handle error in final buffer
                       bufferProcessed = true
-                      const errorMsg = data.message || data.detail || 'Unknown error occurred'
+                      // Safely extract error message - handle both string and object cases
+                      let errorMsg: string = 'Unknown error occurred'
+                      if (data.message) {
+                        errorMsg = typeof data.message === 'string' ? data.message : JSON.stringify(data.message)
+                      } else if (data.detail) {
+                        errorMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+                      } else if (data.error) {
+                        errorMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error)
+                      }
+                      
                       let displayError = `Content generation failed: ${errorMsg}`
                       if (data.error_type) {
                         displayError += `\n\nError Type: ${data.error_type}`
                       }
                       if (data.hint) {
-                        displayError += `\n\nHint: ${data.hint}`
+                        const hintText = typeof data.hint === 'string' ? data.hint : JSON.stringify(data.hint)
+                        displayError += `\n\nHint: ${hintText}`
                       }
                       setError(displayError)
                       setIsGenerating(false)
@@ -784,11 +794,21 @@ export default function Home() {
                   break
                 } else if (data.type === 'error') {
                   // Handle error messages from the server - STOP IMMEDIATELY
-                  const errorMsg = data.message || data.detail || 'Unknown error occurred'
+                  // Safely extract error message - handle both string and object cases
+                  let errorMsg: string = 'Unknown error occurred'
+                  if (data.message) {
+                    errorMsg = typeof data.message === 'string' ? data.message : JSON.stringify(data.message)
+                  } else if (data.detail) {
+                    errorMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+                  } else if (data.error) {
+                    errorMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error)
+                  }
+                  
                   const errorType = data.error_type || data.error_code || 'unknown'
                   
-                  console.error('❌ Server error received - stopping immediately:', {
-                    message: errorMsg,
+                  // Log error message as string first for better console visibility
+                  console.error('❌ Server error received - stopping immediately:', errorMsg)
+                  console.error('Error details:', {
                     type: errorType,
                     job_id: data.job_id,
                     status: data.status,
@@ -806,7 +826,8 @@ export default function Home() {
                     displayError += `\n\nError Type: ${data.error_type}`
                   }
                   if (data.hint) {
-                    displayError += `\n\nHint: ${data.hint}`
+                    const hintText = typeof data.hint === 'string' ? data.hint : JSON.stringify(data.hint)
+                    displayError += `\n\nHint: ${hintText}`
                   }
                   
                   setError(displayError)
