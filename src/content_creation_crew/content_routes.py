@@ -1060,58 +1060,56 @@ async def stream_job_progress(
                                 pass
                     
                     if current_artifacts and len(current_artifacts) > last_artifact_count:
-                            # New artifacts created
-                            print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
-                            new_artifacts = current_artifacts[last_artifact_count:]
-                            for artifact in new_artifacts:
-                                print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}", file=sys.stdout, flush=True)
-                                # Send artifact_ready event
-                                event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
-                                
-                                # Include metadata for voiceover_audio artifacts
-                                if artifact.type == 'voiceover_audio' and artifact.content_json:
-                                    event_data['metadata'] = artifact.content_json
-                                    if artifact.content_json.get('storage_key'):
-                                        storage = get_storage_provider()
-                                        event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
-                                
-                                event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
-                                yield f"id: {event_id}\n"
-                                yield f"event: artifact_ready\n"
-                                yield f"data: {json.dumps(event_data)}\n\n"
-                                flush_buffers()  # Flush artifact events immediately
-                                last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
-                                
-                                # Send content event if artifact has text content
-                                if artifact.content_text and artifact.type in ['blog', 'social', 'audio', 'video']:
-                                    content_field = {
-                                        'blog': 'content',
-                                        'social': 'social_media_content',
-                                        'audio': 'audio_content',
-                                        'video': 'video_content'
-                                    }.get(artifact.type, 'content')
-                                    
-                                    content_event_data = {
-                                        'type': 'content',
-                                        'job_id': job_id,
-                                        'chunk': artifact.content_text,  # Send full content
-                                        'progress': 100,  # Content is complete
-                                        'artifact_type': artifact.type,
-                                        'content_field': content_field
-                                    }
-                                    content_event_id = sse_store.add_event(job_id, 'content', content_event_data)
-                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Yielding content event for {artifact.type}, length={len(artifact.content_text)}", file=sys.stdout, flush=True)
-                                    yield f"id: {content_event_id}\n"
-                                    yield f"event: content\n"
-                                    yield f"data: {json.dumps(content_event_data)}\n\n"
-                                    flush_buffers()  # Flush content events immediately
-                                    last_sent_event_id = max(last_sent_event_id, content_event_id)  # Update last sent event ID
-                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Content event yielded and flushed", file=sys.stdout, flush=True)
-                                    logger.info(f"[STREAM_CONTENT] Job {job_id}: Sent content event for {artifact.type}, length={len(artifact.content_text)}")
+                        # New artifacts created
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
+                        new_artifacts = current_artifacts[last_artifact_count:]
+                        for artifact in new_artifacts:
+                            print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}", file=sys.stdout, flush=True)
+                            # Send artifact_ready event
+                            event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
                             
-                            last_artifact_count = len(current_artifacts)
-                    except Exception as artifact_query_error:
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to process artifacts: {type(artifact_query_error).__name__}: {str(artifact_query_error)}", exc_info=True)
+                            # Include metadata for voiceover_audio artifacts
+                            if artifact.type == 'voiceover_audio' and artifact.content_json:
+                                event_data['metadata'] = artifact.content_json
+                                if artifact.content_json.get('storage_key'):
+                                    storage = get_storage_provider()
+                                    event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
+                            
+                            event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
+                            yield f"id: {event_id}\n"
+                            yield f"event: artifact_ready\n"
+                            yield f"data: {json.dumps(event_data)}\n\n"
+                            flush_buffers()  # Flush artifact events immediately
+                            last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
+                            
+                            # Send content event if artifact has text content
+                            if artifact.content_text and artifact.type in ['blog', 'social', 'audio', 'video']:
+                                content_field = {
+                                    'blog': 'content',
+                                    'social': 'social_media_content',
+                                    'audio': 'audio_content',
+                                    'video': 'video_content'
+                                }.get(artifact.type, 'content')
+                                
+                                content_event_data = {
+                                    'type': 'content',
+                                    'job_id': job_id,
+                                    'chunk': artifact.content_text,  # Send full content
+                                    'progress': 100,  # Content is complete
+                                    'artifact_type': artifact.type,
+                                    'content_field': content_field
+                                }
+                                content_event_id = sse_store.add_event(job_id, 'content', content_event_data)
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Yielding content event for {artifact.type}, length={len(artifact.content_text)}", file=sys.stdout, flush=True)
+                                yield f"id: {content_event_id}\n"
+                                yield f"event: content\n"
+                                yield f"data: {json.dumps(content_event_data)}\n\n"
+                                flush_buffers()  # Flush content events immediately
+                                last_sent_event_id = max(last_sent_event_id, content_event_id)  # Update last sent event ID
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Content event yielded and flushed", file=sys.stdout, flush=True)
+                                logger.info(f"[STREAM_CONTENT] Job {job_id}: Sent content event for {artifact.type}, length={len(artifact.content_text)}")
+                        
+                        last_artifact_count = len(current_artifacts)
                     
                     # Check for new SSE events (like tts_completed, tts_started, etc.) that were added directly to store
                     try:
