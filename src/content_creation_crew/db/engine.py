@@ -102,12 +102,15 @@ try:
         connect_args={
             "connect_timeout": 5,  # Connection timeout (5 seconds)
             "keepalives": 1,  # Enable TCP keepalives
-            "keepalives_idle": 30,  # Start keepalives after 30 seconds idle
+            "keepalives_idle": 60,  # Start keepalives after 60 seconds idle (increased from 30)
             "keepalives_interval": 10,  # Send keepalive every 10 seconds
-            "keepalives_count": 3,  # Keepalive failures before disconnect
+            "keepalives_count": 5,  # Keepalive failures before disconnect (increased from 3)
             "application_name": "content_creation_crew",
-            # Set statement timeout at connection level (default: 10 seconds)
-            "options": f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT}",
+            # Set statement timeout and idle transaction timeout at connection level
+            # Note: DB_STATEMENT_TIMEOUT is in milliseconds, so 10000 = 10 seconds
+            # idle_in_transaction_session_timeout prevents transactions from staying open too long (30 seconds)
+            # This ensures transactions don't stay open indefinitely - PostgreSQL will cancel idle transactions after 30s
+            "options": f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT} -c idle_in_transaction_session_timeout=30000",
         }
     )
 except ValueError as e:
