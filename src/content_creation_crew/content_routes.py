@@ -1147,16 +1147,54 @@ async def stream_job_progress(
                                                 artifact_data['video_content'] = artifact.content_text
                                     logger.info(f"[STREAM_COMPLETE] Job {job_id}: Prepared complete event with content from {len(artifacts)} artifacts")
                                 else:
-                                    logger.warning(f"[STREAM_WARN] Job {job_id}: No artifacts found or query failed - sending complete event without artifact content")
+                                    # Fallback: Try to get content from SSE store events that were already sent
+                                    logger.warning(f"[STREAM_WARN] Job {job_id}: No artifacts found - checking SSE store for content events")
+                                    try:
+                                        all_events = sse_store.get_events_since(job_id, 0)
+                                        content_events = [e for e in all_events if e.get('type') == 'content']
+                                        for content_event in content_events:
+                                            event_data = content_event.get('data', {})
+                                            chunk = event_data.get('chunk', '')
+                                            artifact_type = event_data.get('artifact_type', '')
+                                            if chunk and artifact_type:
+                                                if artifact_type == 'blog':
+                                                    artifact_data['content'] = chunk
+                                                elif artifact_type == 'social':
+                                                    artifact_data['social_media_content'] = chunk
+                                                elif artifact_type == 'audio':
+                                                    artifact_data['audio_content'] = chunk
+                                                elif artifact_type == 'video':
+                                                    artifact_data['video_content'] = chunk
+                                        
+                                        if any(key in artifact_data for key in ['content', 'audio_content', 'social_media_content', 'video_content']):
+                                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: Found content in SSE store events, including in complete event")
+                                        else:
+                                            logger.warning(f"[STREAM_WARN] Job {job_id}: No content found in artifacts or SSE store - sending complete event without content")
+                                    except Exception as sse_fallback_error:
+                                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get content from SSE store: {sse_fallback_error}")
+                                        logger.warning(f"[STREAM_WARN] Job {job_id}: Sending complete event without artifact content")
                                 
                                 # Send complete event
                                 event_id = sse_store.add_event(job_id, 'complete', artifact_data)
+                                
+                                # Log what content is being sent in the complete event
+                                content_summary = {
+                                    'has_content': 'content' in artifact_data and bool(artifact_data.get('content')),
+                                    'content_length': len(artifact_data.get('content', '')),
+                                    'has_audio': 'audio_content' in artifact_data and bool(artifact_data.get('audio_content')),
+                                    'audio_length': len(artifact_data.get('audio_content', '')),
+                                    'has_social': 'social_media_content' in artifact_data and bool(artifact_data.get('social_media_content')),
+                                    'has_video': 'video_content' in artifact_data and bool(artifact_data.get('video_content')),
+                                }
+                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sending complete event with content: {content_summary}")
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Complete event content summary: {content_summary}", file=sys.stdout, flush=True)
+                                
                                 yield f"id: {event_id}\n"
                                 yield f"event: complete\n"
                                 yield f"data: {json.dumps(artifact_data)}\n\n"
                                 flush_buffers()  # Flush completion event immediately
                                 last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
-                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event")
+                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event with {len(artifact_data)} fields")
                             break
                     
                     # Check for new artifacts - use short-lived session with retry logic
