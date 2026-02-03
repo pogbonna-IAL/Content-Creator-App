@@ -368,6 +368,9 @@ export default function Home() {
       let accumulatedAudioContent = '' // Track audio content separately during streaming
 
       console.log('Starting to read stream...')
+      
+      let chunkCount = 0
+      let receivedCompleteEvent = false
 
       while (true) {
         // Check if we should stop before reading next chunk
@@ -377,30 +380,54 @@ export default function Home() {
         }
         
         const { done, value } = await reader.read()
+        chunkCount++
+        
+        if (chunkCount % 10 === 0 || done) {
+          console.log(`Stream chunk #${chunkCount} read: { done: ${done}, valueLength: ${value?.length || 0}, preview: ${value ? decoder.decode(value.slice(0, 50), { stream: true }).replace(/\n/g, '\\n') : 'null'} }`)
+        }
         
         if (done) {
-          console.log('Stream completed, final buffer:', buffer)
+          console.log(`Stream ended (done=true), total chunks received: ${chunkCount}`)
+          console.log('Final buffer length:', buffer.length)
+          console.log('Received complete event:', receivedCompleteEvent)
+          console.log('Accumulated content length:', accumulatedContent.length)
+          console.log('Accumulated audio content length:', accumulatedAudioContent.length)
+          
           // Process any remaining buffer
           if (buffer.trim()) {
             const lines = buffer.split('\n')
             for (const line of lines) {
+              // Skip keep-alive and empty lines
+              if (!line.trim() || line.trim() === ': keep-alive' || (line.startsWith(':') && line.trim() !== ':')) {
+                continue
+              }
+              
               if (line.startsWith('data: ')) {
                 try {
                   const jsonStr = line.slice(6).trim()
                   if (!jsonStr) continue
                   const data = JSON.parse(jsonStr)
-                  console.log('Final data:', data)
-                  if (data.type === 'complete' && data.content) {
-                    accumulatedContent = data.content
-                    setOutput(accumulatedContent)
+                  console.log('Final buffer data:', data.type, data)
+                  
+                  if (data.type === 'complete') {
+                    receivedCompleteEvent = true
+                    if (data.content) {
+                      accumulatedContent = data.content
+                      setOutput(accumulatedContent)
+                    }
+                    if (data.audio_content) {
+                      accumulatedAudioContent = data.audio_content
+                      setAudioOutput(accumulatedAudioContent)
+                    }
+                    if (data.social_media_content) {
+                      setSocialMediaOutput(data.social_media_content)
+                    }
+                    if (data.video_content) {
+                      setVideoOutput(data.video_content)
+                    }
                     setProgress(100)
                     setStatus('Content generation complete!')
-                    setIsGenerating(false) // Stop spinner when complete event is in final buffer
-                  } else if (data.type === 'complete') {
-                    // Complete event without content field - still stop spinner
                     setIsGenerating(false)
-                    setProgress(100)
-                    setStatus('Content generation complete!')
                   } else if (data.type === 'error') {
                     // Handle error in final buffer
                     const errorMsg = data.message || data.detail || 'Unknown error occurred'
@@ -417,26 +444,27 @@ export default function Home() {
                     setProgress(0)
                   }
                 } catch (e) {
-                  console.error('Error parsing final buffer:', e)
+                  console.error('Error parsing final buffer:', e, 'Line:', line.substring(0, 100))
                 }
               }
             }
           }
           
           // If stream ended but we have no content and no error, show a message
-          if (!accumulatedContent && !error) {
-            console.warn('Stream ended but no content or error received')
+          if (!receivedCompleteEvent && !accumulatedContent && !accumulatedAudioContent && !error) {
+            console.warn('Stream ended but no complete event and no content received')
+            console.warn('Buffer preview:', buffer.substring(0, 500))
             setError('Stream ended unexpectedly. No content was generated. This may indicate a timeout or server error. Please try again.')
             setIsGenerating(false)
             setStatus('Generation incomplete')
-          } else if (accumulatedContent && !error) {
-            // Stream ended with content - ensure spinner is stopped and status is set
+          } else if (receivedCompleteEvent || accumulatedContent || accumulatedAudioContent) {
+            // Stream ended with complete event or content - ensure spinner is stopped and status is set
             setIsGenerating(false)
             setProgress(100)
             if (!status || status === '' || status.includes('Streaming')) {
               setStatus('Content generation complete!')
             }
-            console.log('✓ Stream ended with content, spinner stopped')
+            console.log('✓ Stream ended successfully, spinner stopped')
           }
           
           break
@@ -444,10 +472,17 @@ export default function Home() {
 
         // Decode the chunk
         const chunk = decoder.decode(value, { stream: true })
+        
+        // Skip keep-alive messages (they're just heartbeat, not actual data)
+        if (chunk.trim() === ': keep-alive' || chunk.trim().startsWith(': ')) {
+          // This is a keep-alive heartbeat, ignore it and continue reading
+          continue
+        }
+        
         // Log first 10 chunks fully, then periodically
         const chunkNum = (buffer.match(/\n\n/g) || []).length + 1
         if (chunkNum <= 10 || chunkNum % 10 === 0) {
-          console.log(`Frontend received chunk #${chunkNum}:`, chunk)
+          console.log(`Frontend received chunk #${chunkNum}:`, chunk.substring(0, 100))
           if (chunk.includes('data: ')) {
             console.log(`✓ Frontend chunk #${chunkNum} contains data event!`)
           }
@@ -502,7 +537,20 @@ export default function Home() {
                 } else if (data.type === 'content') {
                   // Append chunk to accumulated content based on content type
                   if (data.chunk) {
-                    const contentType = data.content_type || 'blog' // Default to blog if not specified
+                    // Check artifact_type first (from artifact_ready events), then content_field, then content_type
+                    const contentType = data.artifact_type || 
+                                      (data.content_field === 'audio_content' ? 'audio' :
+                                       data.content_field === 'social_media_content' ? 'social' :
+                                       data.content_field === 'video_content' ? 'video' :
+                                       data.content_type) || 'blog' // Default to blog if not specified
+                    
+                    console.log(`Content event received:`, {
+                      artifact_type: data.artifact_type,
+                      content_field: data.content_field,
+                      content_type: data.content_type,
+                      resolved_content_type: contentType,
+                      chunk_length: data.chunk?.length || 0
+                    })
                     
                     // Route to appropriate content accumulator based on content type
                     if (contentType === 'audio') {
@@ -511,17 +559,40 @@ export default function Home() {
                       setAudioOutput(accumulatedAudioContent)
                       setProgress(data.progress || 0)
                       setStatus(`Streaming audio content... ${data.progress || 0}%`)
-                      console.log(`Received audio chunk, total length: ${accumulatedAudioContent.length}, progress: ${data.progress}%`)
+                      console.log(`✓ Received audio chunk, total length: ${accumulatedAudioContent.length}, progress: ${data.progress}%`)
+                    } else if (contentType === 'social') {
+                      // For social media content
+                      setSocialMediaOutput(data.chunk) // Social content is usually sent complete
+                      setProgress(data.progress || 0)
+                      setStatus(`Social media content received`)
+                      console.log(`✓ Received social media content, length: ${data.chunk.length}`)
+                    } else if (contentType === 'video') {
+                      // For video content
+                      setVideoOutput(data.chunk) // Video content is usually sent complete
+                      setProgress(data.progress || 0)
+                      setStatus(`Video content received`)
+                      console.log(`✓ Received video content, length: ${data.chunk.length}`)
                     } else {
                       // Default to blog content
                       accumulatedContent += data.chunk
                       setOutput(accumulatedContent)
                       setProgress(data.progress || 0)
                       setStatus(`Streaming content... ${data.progress || 0}%`)
-                      console.log(`Received chunk, total length: ${accumulatedContent.length}, progress: ${data.progress}%`)
+                      console.log(`✓ Received blog chunk, total length: ${accumulatedContent.length}, progress: ${data.progress}%`)
                     }
                   }
                 } else if (data.type === 'complete') {
+                  // Mark that we received the complete event
+                  receivedCompleteEvent = true
+                  console.log('✓ Complete event received:', {
+                    hasContent: !!data.content,
+                    contentLength: data.content?.length || 0,
+                    hasAudio: !!data.audio_content,
+                    audioLength: data.audio_content?.length || 0,
+                    hasSocial: !!data.social_media_content,
+                    hasVideo: !!data.video_content
+                  })
+                  
                   // Final content received - ALWAYS use this as it contains the complete content
                   const finalContent = data.content || ''
                   const socialMediaContent = data.social_media_content || ''
@@ -741,8 +812,13 @@ export default function Home() {
                 // Continue processing other messages - don't break on parse errors
               }
             } else if (line.trim() && !line.startsWith(':')) {
-              // Log non-data lines for debugging
-              console.log('Non-data line:', line)
+              // Log non-data lines for debugging (but skip keep-alive)
+              if (line.trim() !== ': keep-alive') {
+                console.log('Non-data line:', line)
+              }
+            } else if (line.trim() === ': keep-alive' || line.startsWith(': ')) {
+              // Skip keep-alive heartbeat messages silently
+              continue
             }
           }
         }
