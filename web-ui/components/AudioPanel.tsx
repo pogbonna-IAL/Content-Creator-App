@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { getApiUrl } from '@/lib/env'
 
 interface AudioPanelProps {
   output: string
@@ -176,8 +177,8 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     setVoiceoverAbortControllerRef(abortController)
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const streamUrl = `${apiUrl}/v1/content/jobs/${voiceoverJobId}/stream`
+      // Use getApiUrl helper to properly handle relative URLs and API URL configuration
+      const streamUrl = getApiUrl(`v1/content/jobs/${voiceoverJobId}/stream`)
 
       const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
       const headers: HeadersInit = {}
@@ -187,12 +188,35 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
       console.log('AudioPanel - Starting SSE stream for voiceover job:', voiceoverJobId, 'URL:', streamUrl)
 
-      const response = await fetch(streamUrl, {
-        method: 'GET',
-        headers,
-        credentials: 'include',
-        signal: abortController.signal,
-      })
+      let response: Response
+      try {
+        response = await fetch(streamUrl, {
+          method: 'GET',
+          headers,
+          credentials: 'include',
+          signal: abortController.signal,
+        })
+      } catch (fetchError: any) {
+        // Handle network errors (CORS, connection refused, etc.)
+        console.error('AudioPanel - Fetch error (network/CORS):', fetchError)
+        const errorMessage = fetchError.message || 'Network error'
+        const isNetworkError = errorMessage.includes('network') || 
+                              errorMessage.includes('Failed to fetch') ||
+                              errorMessage.includes('CORS') ||
+                              fetchError.name === 'TypeError'
+        
+        if (isNetworkError) {
+          throw new Error(
+            `Network error connecting to voiceover stream. ` +
+            `Please check: 1) Backend is running and accessible, ` +
+            `2) CORS is configured correctly, ` +
+            `3) Network connectivity. ` +
+            `URL: ${streamUrl}. ` +
+            `Original error: ${errorMessage}`
+          )
+        }
+        throw fetchError
+      }
 
       console.log('AudioPanel - SSE stream response:', {
         status: response.status,
@@ -204,7 +228,18 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
       if (!response.ok) {
         const errorText = await response.text()
         console.error('AudioPanel - SSE stream failed:', response.status, errorText)
-        throw new Error(`Failed to stream voiceover progress: ${response.status} ${response.statusText}`)
+        let errorMessage = `Failed to stream voiceover progress: ${response.status} ${response.statusText}`
+        try {
+          const errorData = JSON.parse(errorText)
+          if (errorData.error || errorData.detail) {
+            errorMessage += ` - ${errorData.error || errorData.detail}`
+          }
+        } catch {
+          if (errorText) {
+            errorMessage += ` - ${errorText.substring(0, 200)}`
+          }
+        }
+        throw new Error(errorMessage)
       }
 
       const reader = response.body?.getReader()
@@ -335,7 +370,19 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         // Preserve progress and status for potential restart
       } else {
         console.error('AudioPanel - Streaming error:', err)
-        setVoiceoverError(err instanceof Error ? err.message : 'Failed to stream voiceover progress')
+        const errorMessage = err instanceof Error 
+          ? err.message 
+          : typeof err === 'string' 
+            ? err 
+            : 'Failed to stream voiceover progress'
+        
+        // Provide more helpful error messages
+        let displayError = errorMessage
+        if (errorMessage.includes('Network error') || errorMessage.includes('Failed to fetch')) {
+          displayError = `Cannot connect to voiceover service. Please check your connection and ensure the backend is running. ${errorMessage}`
+        }
+        
+        setVoiceoverError(displayError)
         setIsGeneratingVoiceover(false)
         setVoiceoverStatus('')
         setVoiceoverProgress(0)
