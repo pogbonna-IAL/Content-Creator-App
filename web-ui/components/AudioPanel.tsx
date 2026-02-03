@@ -157,14 +157,25 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         headers['Authorization'] = `Bearer ${token}`
       }
 
+      console.log('AudioPanel - Starting SSE stream for voiceover job:', voiceoverJobId, 'URL:', streamUrl)
+
       const response = await fetch(streamUrl, {
         method: 'GET',
         headers,
         credentials: 'include',
       })
 
+      console.log('AudioPanel - SSE stream response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries())
+      })
+
       if (!response.ok) {
-        throw new Error(`Failed to stream voiceover progress: ${response.statusText}`)
+        const errorText = await response.text()
+        console.error('AudioPanel - SSE stream failed:', response.status, errorText)
+        throw new Error(`Failed to stream voiceover progress: ${response.status} ${response.statusText}`)
       }
 
       const reader = response.body?.getReader()
@@ -174,59 +185,108 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
       const decoder = new TextDecoder()
       let buffer = ''
+      let eventCount = 0
+
+      console.log('AudioPanel - Starting to read SSE stream...')
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        
+        if (done) {
+          console.log('AudioPanel - SSE stream ended, total events received:', eventCount)
+          // If stream ended without completion, check if we should wait or error
+          if (isGeneratingVoiceover && voiceoverProgress < 100) {
+            console.warn('AudioPanel - Stream ended but voiceover not complete, progress:', voiceoverProgress)
+            // Don't error immediately - might be a keep-alive timeout
+          }
+          break
+        }
 
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n\n')
-        buffer = lines.pop() || ''
+        const chunk = decoder.decode(value, { stream: true })
+        buffer += chunk
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
+        // Process complete SSE messages (SSE format: "event: <type>\ndata: {...}\n\n")
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || '' // Keep incomplete message in buffer
+
+        for (const part of parts) {
+          if (!part.trim()) continue
+          
+          // Skip keep-alive messages
+          if (part.trim() === ': keep-alive' || part.trim().startsWith(': ')) {
+            continue
+          }
+
+          // Parse SSE message (can have multiple lines: event, id, data)
+          const lines = part.split('\n')
+          let eventType: string | null = null
+          let eventData: string | null = null
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim()
+            } else if (line.startsWith('data: ')) {
+              eventData = line.slice(6).trim()
+            }
+          }
+
+          if (eventData) {
             try {
-              const jsonStr = line.slice(6).trim()
-              if (!jsonStr) continue
-
-              const data = JSON.parse(jsonStr)
-              console.log('Voiceover SSE event:', data.type, data)
+              const data = JSON.parse(eventData)
+              eventCount++
+              console.log(`AudioPanel - SSE event #${eventCount}:`, {
+                event_type: eventType || 'default',
+                data_type: data.type,
+                full_data: data
+              })
 
               if (data.type === 'tts_started') {
                 setVoiceoverStatus('TTS generation started...')
                 setVoiceoverProgress(10)
               } else if (data.type === 'tts_progress') {
                 setVoiceoverStatus(data.message || 'Generating voiceover...')
-                setVoiceoverProgress(data.progress || 50)
+                setVoiceoverProgress(data.progress || Math.max(voiceoverProgress, 20))
               } else if (data.type === 'artifact_ready' && data.artifact_type === 'voiceover_audio') {
                 setVoiceoverStatus('Voiceover ready!')
                 setVoiceoverProgress(90)
-                if (data.metadata?.storage_url) {
-                  setAudioUrl(data.metadata.storage_url)
-                  setAudioMetadata(data.metadata)
+                // Check both metadata.storage_url and url fields
+                const audioUrl = data.metadata?.storage_url || data.metadata?.url || data.url
+                if (audioUrl) {
+                  console.log('AudioPanel - Setting audio URL:', audioUrl)
+                  setAudioUrl(audioUrl)
+                  setAudioMetadata(data.metadata || {})
+                } else {
+                  console.warn('AudioPanel - artifact_ready event missing audio URL:', data)
                 }
               } else if (data.type === 'tts_completed') {
                 setVoiceoverStatus('Voiceover generation complete!')
                 setVoiceoverProgress(100)
                 setIsGeneratingVoiceover(false)
-                if (data.storage_url) {
-                  setAudioUrl(data.storage_url)
+                const audioUrl = data.storage_url || data.url || data.metadata?.storage_url
+                if (audioUrl) {
+                  console.log('AudioPanel - Setting audio URL from tts_completed:', audioUrl)
+                  setAudioUrl(audioUrl)
                 }
               } else if (data.type === 'tts_failed') {
                 throw new Error(data.message || 'TTS generation failed')
               } else if (data.type === 'error') {
                 throw new Error(data.message || data.detail || 'Voiceover generation error')
+              } else {
+                // Log unhandled event types for debugging
+                console.log('AudioPanel - Unhandled SSE event type:', data.type, data)
               }
             } catch (e) {
-              console.error('Error parsing SSE data:', e)
+              console.error('AudioPanel - Error parsing SSE data:', e, 'Raw data:', eventData)
             }
           }
         }
       }
     } catch (err) {
-      console.error('Streaming error:', err)
+      console.error('AudioPanel - Streaming error:', err)
       setVoiceoverError(err instanceof Error ? err.message : 'Failed to stream voiceover progress')
       setIsGeneratingVoiceover(false)
+      setVoiceoverStatus('')
+      setVoiceoverProgress(0)
     }
   }
 
