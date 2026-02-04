@@ -1332,17 +1332,50 @@ async def stream_job_progress(
                                 # If we found a complete event in SSE store with content, use it instead of building from artifacts
                                 if complete_event_from_store:
                                     event_data = complete_event_from_store.get('data', {})
+                                    # Ensure event_data is a dict (it should be, but check to be safe)
+                                    if not isinstance(event_data, dict):
+                                        logger.warning(f"[STREAM_COMPLETE] Job {job_id}: event_data is not a dict, type={type(event_data)}")
+                                        event_data = {}
+                                    
                                     has_content = bool(event_data.get('audio_content') or event_data.get('content') or event_data.get('social_media_content') or event_data.get('video_content'))
+                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Checking complete event - has_content={has_content}, event_data keys={list(event_data.keys()) if isinstance(event_data, dict) else 'N/A'}")
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Checking complete event - has_content={has_content}, has audio={bool(event_data.get('audio_content'))}, has content={bool(event_data.get('content'))}, has social={bool(event_data.get('social_media_content'))}, has video={bool(event_data.get('video_content'))}", file=sys.stdout, flush=True)
+                                    
+                                    # Log actual content lengths for debugging
+                                    if event_data.get('content'):
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: event_data['content'] length={len(event_data['content'])}")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: event_data['content'] length={len(event_data['content'])}", file=sys.stdout, flush=True)
+                                    
                                     if has_content:
                                         logger.info(f"[STREAM_COMPLETE] Job {job_id}: Using complete event from SSE store (has content)")
                                         print(f"[RAILWAY_DEBUG] Job {job_id}: Using complete event from SSE store with content", file=sys.stdout, flush=True)
-                                        yield f"id: {complete_event_from_store.get('id')}\n"
-                                        yield f"event: complete\n"
-                                        yield f"data: {json.dumps(event_data)}\n\n"
-                                        flush_buffers()
-                                        last_sent_event_id = max(last_sent_event_id, complete_event_from_store.get('id', 0))
-                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event from SSE store")
+                                        try:
+                                            event_id = complete_event_from_store.get('id', 0)
+                                            content_preview = event_data.get('content', '')[:100] if event_data.get('content') else 'N/A'
+                                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: About to yield complete event, event_id={event_id}, content_preview={content_preview}")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: About to yield complete event, event_id={event_id}, content_length={len(event_data.get('content', '')) if event_data.get('content') else 0}", file=sys.stdout, flush=True)
+                                            
+                                            # Yield the complete event
+                                            yield f"id: {event_id}\n"
+                                            yield f"event: complete\n"
+                                            yield f"data: {json.dumps(event_data)}\n\n"
+                                            flush_buffers()
+                                            
+                                            last_sent_event_id = max(last_sent_event_id, event_id)
+                                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: ✓ Sent complete event from SSE store, event_id={event_id}, content_length={len(event_data.get('content', '')) if event_data.get('content') else 0}")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ✓ Sent complete event from SSE store, event_id={event_id}", file=sys.stdout, flush=True)
+                                        except Exception as yield_error:
+                                            logger.error(f"[STREAM_COMPLETE] Job {job_id}: Error yielding complete event: {yield_error}", exc_info=True)
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR yielding complete event: {type(yield_error).__name__} - {str(yield_error)}", file=sys.stderr, flush=True)
+                                            raise
+                                        
+                                        # CRITICAL: Break out of polling loop after sending complete event
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Breaking out of polling loop after sending complete event")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Breaking out of polling loop", file=sys.stdout, flush=True)
                                         break  # Exit polling loop
+                                    else:
+                                        logger.warning(f"[STREAM_COMPLETE] Job {job_id}: Complete event found but has no content, will build from artifacts")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Complete event found but has no content", file=sys.stdout, flush=True)
                             
                             # Send artifacts if completed (fallback if SSE store doesn't have complete event with content)
                             if job.status == JobStatus.COMPLETED.value:
