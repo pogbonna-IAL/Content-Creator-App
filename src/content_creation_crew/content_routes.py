@@ -3331,24 +3331,95 @@ async def run_generation_async(
                     logger.error(f"Job {job_id} not found during completion update")
                     break  # Continue anyway - we'll still send completion event
                 
+                # Ensure content_service exists and session is valid before updating status
+                if content_service is None or session is None or not session.is_active:
+                    logger.warning(f"[COMPLETION_RETRY] Job {job_id}: content_service or session invalid, recreating...")
+                    if session:
+                        try:
+                            session.close()
+                        except:
+                            pass
+                    session = SessionLocal()
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        logger.error(f"User {user_id} not found when recreating session for completion update")
+                        if session:
+                            session.close()
+                        break  # Continue anyway - we'll still send completion event
+                    content_service = ContentService(session, user)
+                    # Re-fetch job with new session
+                    try:
+                        job = content_service.get_job(job_id)
+                        if not job:
+                            logger.error(f"Job {job_id} not found after recreating session")
+                            break
+                    except Exception as refetch_error:
+                        logger.error(f"Failed to refetch job after recreating session: {refetch_error}")
+                        break
+                
                 # Job exists - update status
-                content_service.update_job_status(
-                    job_id,
-                    JobStatus.COMPLETED.value,
-                    finished_at=datetime.utcnow()
-                )
+                # Ensure content_service and session are valid before updating
+                if content_service is None:
+                    raise Exception(f"content_service is None for job {job_id}")
+                if session is None:
+                    raise Exception(f"session is None for job {job_id}")
+                if not hasattr(session, 'is_active') or not session.is_active:
+                    raise Exception(f"session is not active for job {job_id}")
+                
+                logger.info(f"[COMPLETION_UPDATE] Job {job_id}: Updating job status to COMPLETED")
+                try:
+                    content_service.update_job_status(
+                        job_id,
+                        JobStatus.COMPLETED.value,
+                        finished_at=datetime.utcnow()
+                    )
+                    logger.info(f"[COMPLETION_UPDATE] Job {job_id}: update_job_status completed successfully")
+                except Exception as update_error:
+                    error_type = type(update_error).__name__
+                    error_msg = str(update_error) if update_error else f"{error_type} occurred"
+                    logger.error(f"[COMPLETION_RETRY] Job {job_id}: update_job_status failed: {error_type} - {error_msg}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: update_job_status failed: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+                    raise  # Re-raise to trigger retry logic
+                
                 commit_start_time = time.time()
                 logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Starting commit for status update to COMPLETED")
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Starting commit for status update to COMPLETED at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(commit_start_time))}", file=sys.stdout, flush=True)
+                
+                # Ensure session is still valid before committing
+                if session is None:
+                    error_msg = f"session became None before commit for job {job_id}"
+                    logger.error(f"[COMPLETION_COMMIT] Job {job_id}: {error_msg}")
+                    raise Exception(error_msg)
+                
+                # Check session state
+                session_state = "unknown"
                 try:
+                    if hasattr(session, 'is_active'):
+                        session_state = f"is_active={session.is_active}"
+                    if hasattr(session, 'in_transaction'):
+                        session_state += f", in_transaction={session.in_transaction()}"
+                    logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Session state before commit: {session_state}")
+                except Exception as state_check_error:
+                    logger.warning(f"[COMPLETION_COMMIT] Job {job_id}: Could not check session state: {state_check_error}")
+                
+                try:
+                    # Verify job was actually updated before committing
+                    if not job:
+                        raise Exception(f"Job {job_id} object is None before commit")
+                    if job.status != JobStatus.COMPLETED.value:
+                        logger.warning(f"[COMPLETION_COMMIT] Job {job_id}: Job status is {job.status}, expected {JobStatus.COMPLETED.value}")
+                    
                     session.commit()
                     commit_duration = time.time() - commit_start_time
                     completion_updated = True
                     
                     # OPTIMIZATION #10: Record total generation time and all phase timings
                     phase_timings['total'] = time.time() - generation_start_time
-                    record_histogram("content_generation_total_seconds", phase_timings['total'],
-                                    labels={"content_type": content_type, "model": model_name})
+                    try:
+                        record_histogram("content_generation_total_seconds", phase_timings['total'],
+                                        labels={"content_type": content_type, "model": model_name})
+                    except Exception as metrics_error:
+                        logger.warning(f"[METRICS] Job {job_id}: Failed to record metrics: {metrics_error}")
                     
                     # Log phase timings for monitoring
                     logger.info(f"[METRICS] Job {job_id}: Phase timings - Cache: {phase_timings.get('cache_lookup', 0):.3f}s, "
@@ -3374,13 +3445,24 @@ async def run_generation_async(
                 except Exception as commit_error:
                     commit_duration = time.time() - commit_start_time
                     error_type = type(commit_error).__name__
-                    logger.error(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type} - {commit_error}", exc_info=True)
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type}", file=sys.stderr, flush=True)
+                    error_msg = str(commit_error) if commit_error else f"{error_type} occurred"
+                    error_traceback = None
+                    try:
+                        import traceback
+                        error_traceback = traceback.format_exc()
+                    except:
+                        pass
+                    
+                    logger.error(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type} - {error_msg}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+                    if error_traceback:
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Traceback:\n{error_traceback}", file=sys.stderr, flush=True)
+                    
                     if session:
                         try:
                             session.rollback()
-                        except:
-                            pass
+                        except Exception as rollback_error:
+                            logger.warning(f"[COMPLETION_COMMIT] Job {job_id}: Failed to rollback: {rollback_error}")
                     raise
                 break  # Success - exit retry loop
             except (OperationalError, DisconnectionError) as commit_error:
@@ -3427,40 +3509,52 @@ async def run_generation_async(
         
         # Get all artifacts for completion event - use retry logic for connection errors
         # OPTIMIZATION: Recreate session if needed (it may have been closed or failed)
-        if session is None or not session.is_active:
-            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for artifacts query")
-            session = SessionLocal()
-        
-        artifacts = []
-        max_artifacts_retries = 3
-        artifacts_retry_delay = 0.5
-        for artifacts_retry in range(max_artifacts_retries):
-            try:
-                artifacts = session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
-                break  # Success - exit retry loop
-            except (OperationalError, DisconnectionError) as query_error:
-                logger.warning(f"[ARTIFACTS_QUERY_RETRY] Job {job_id}: Failed to query artifacts on attempt {artifacts_retry + 1}/{max_artifacts_retries}: {query_error}")
-                if artifacts_retry < max_artifacts_retries - 1:
-                    await asyncio.sleep(artifacts_retry_delay)
-                    artifacts_retry_delay *= 2  # Exponential backoff
-                    # Use new session for retry
-                    try:
-                        if session:
-                            session.close()
-                    except:
-                        pass
-                    session = SessionLocal()
-                    continue
-                else:
-                    # All retries exhausted - use empty list
-                    logger.error(f"Job {job_id}: Failed to query artifacts after {max_artifacts_retries} retries: {query_error}")
+        artifacts_session = None
+        try:
+            if session is None or not session.is_active:
+                logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for artifacts query")
+                artifacts_session = SessionLocal()
+            else:
+                artifacts_session = session
+            
+            artifacts = []
+            max_artifacts_retries = 3
+            artifacts_retry_delay = 0.5
+            for artifacts_retry in range(max_artifacts_retries):
+                try:
+                    artifacts = artifacts_session.query(ContentArtifact).filter(ContentArtifact.job_id == job_id).all()
+                    break  # Success - exit retry loop
+                except (OperationalError, DisconnectionError) as query_error:
+                    logger.warning(f"[ARTIFACTS_QUERY_RETRY] Job {job_id}: Failed to query artifacts on attempt {artifacts_retry + 1}/{max_artifacts_retries}: {query_error}")
+                    if artifacts_retry < max_artifacts_retries - 1:
+                        await asyncio.sleep(artifacts_retry_delay)
+                        artifacts_retry_delay *= 2  # Exponential backoff
+                        # Use new session for retry
+                        try:
+                            if artifacts_session and artifacts_session != session:
+                                artifacts_session.close()
+                        except:
+                            pass
+                        artifacts_session = SessionLocal()
+                        continue
+                    else:
+                        # All retries exhausted - use empty list
+                        logger.error(f"Job {job_id}: Failed to query artifacts after {max_artifacts_retries} retries: {query_error}")
+                        artifacts = []
+                        break
+                except Exception as query_error:
+                    # Non-connection error - use empty list
+                    logger.warning(f"Job {job_id}: Failed to query artifacts: {query_error}")
                     artifacts = []
                     break
-            except Exception as query_error:
-                # Non-connection error - use empty list
-                logger.warning(f"Job {job_id}: Failed to query artifacts: {query_error}")
-                artifacts = []
-                break
+        finally:
+            # OPTIMIZATION: Always close artifacts_session if it's different from main session
+            if artifacts_session and artifacts_session != session:
+                try:
+                    artifacts_session.close()
+                    logger.info(f"[SESSION_MGMT] Job {job_id}: Artifacts session closed")
+                except Exception as close_error:
+                    logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing artifacts session: {close_error}")
         artifact_content = {}
         for artifact in artifacts:
             if artifact.content_text:
@@ -3482,19 +3576,33 @@ async def run_generation_async(
         })
         
         # Increment usage - recreate policy if needed (session was closed earlier)
-        if session is None or not session.is_active:
-            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for usage increment")
-            session = SessionLocal()
-            user = session.query(User).filter(User.id == user_id).first()
+        usage_session = None
+        try:
+            if session is None or not session.is_active:
+                logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for usage increment")
+                usage_session = SessionLocal()
+            else:
+                usage_session = session
+            
+            user = usage_session.query(User).filter(User.id == user_id).first()
             if user:
-                policy = PlanPolicy(session, user)
-        
-        if policy:
-            try:
-                for content_type in content_types:
-                    policy.increment_usage(content_type)
-            except Exception as usage_error:
-                logger.warning(f"Job {job_id}: Failed to increment usage: {usage_error}")
+                usage_policy = PlanPolicy(usage_session, user)
+                try:
+                    for content_type in content_types:
+                        usage_policy.increment_usage(content_type)
+                    logger.info(f"[USAGE] Job {job_id}: Usage incremented for {content_types}")
+                except Exception as usage_error:
+                    logger.warning(f"Job {job_id}: Failed to increment usage: {usage_error}")
+            else:
+                logger.warning(f"Job {job_id}: User {user_id} not found for usage increment")
+        finally:
+            # OPTIMIZATION: Always close usage_session if it's different from main session
+            if usage_session and usage_session != session:
+                try:
+                    usage_session.close()
+                    logger.info(f"[SESSION_MGMT] Job {job_id}: Usage session closed")
+                except Exception as close_error:
+                    logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing usage session: {close_error}")
         
         total_duration = time.time() - llm_start_time
         logger.info(f"[JOB_COMPLETE] Job {job_id}: Completed successfully in {total_duration:.2f}s")
