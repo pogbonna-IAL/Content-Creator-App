@@ -744,100 +744,193 @@ class GoogleTTSProvider(TTSProvider):
         Returns:
             Tuple of (audio_bytes, metadata_dict)
         """
+        import sys
+        
+        logger.info("[GTTS] Starting Google TTS synthesis")
+        print(f"[RAILWAY_DEBUG] [GTTS] Starting Google TTS synthesis", file=sys.stdout, flush=True)
+        
         if not self._available:
-            raise RuntimeError("Google TTS (gTTS) is not available. Install gTTS package.")
+            error_msg = "Google TTS (gTTS) is not available. Install gTTS package."
+            logger.error(f"[GTTS] {error_msg}")
+            print(f"[RAILWAY_DEBUG] [GTTS] ERROR: {error_msg}", file=sys.stderr, flush=True)
+            raise RuntimeError(error_msg)
+        
+        logger.info("[GTTS] gTTS package is available")
+        print(f"[RAILWAY_DEBUG] [GTTS] gTTS package is available", file=sys.stdout, flush=True)
         
         from gtts import gTTS
         import io
         import hashlib
         import tempfile
         
+        # Log input parameters
+        text_length = len(text)
+        text_preview = text[:100] + "..." if len(text) > 100 else text
+        logger.info(f"[GTTS] Input parameters - text_length: {text_length}, voice_id: {voice_id}, speed: {speed}, format: {format}")
+        print(f"[RAILWAY_DEBUG] [GTTS] Input parameters - text_length: {text_length}, voice_id: {voice_id}, speed: {speed}, format: {format}", file=sys.stdout, flush=True)
+        logger.debug(f"[GTTS] Text preview: {text_preview}")
+        print(f"[RAILWAY_DEBUG] [GTTS] Text preview: {text_preview}", file=sys.stdout, flush=True)
+        
         # Hash text for metadata
         text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        logger.info(f"[GTTS] Generated text hash: {text_hash}")
+        print(f"[RAILWAY_DEBUG] [GTTS] Generated text hash: {text_hash}", file=sys.stdout, flush=True)
         
         # Resolve language code
         lang = "en"  # Default to English
+        logger.info(f"[GTTS] Resolving language code from voice_id: {voice_id}")
+        print(f"[RAILWAY_DEBUG] [GTTS] Resolving language code from voice_id: {voice_id}", file=sys.stdout, flush=True)
+        
         if voice_id and voice_id != "default":
             # Extract language code from voice_id
             # Handle formats like "en", "en-us", "en_US", etc.
             lang = voice_id.lower().replace("_", "-").split("-")[0]
             # Validate it's a 2-letter code (gTTS requirement)
             if len(lang) != 2:
-                logger.warning(f"Invalid language code '{lang}', defaulting to 'en'")
+                logger.warning(f"[GTTS] Invalid language code '{lang}', defaulting to 'en'")
+                print(f"[RAILWAY_DEBUG] [GTTS] WARNING: Invalid language code '{lang}', defaulting to 'en'", file=sys.stderr, flush=True)
                 lang = "en"
+        
+        logger.info(f"[GTTS] Using language code: {lang}")
+        print(f"[RAILWAY_DEBUG] [GTTS] Using language code: {lang}", file=sys.stdout, flush=True)
         
         try:
             # Create gTTS object
+            logger.info("[GTTS] Creating gTTS object")
+            print(f"[RAILWAY_DEBUG] [GTTS] Creating gTTS object with lang={lang}, slow=False", file=sys.stdout, flush=True)
+            
             # Note: gTTS doesn't support speed control, so we ignore the speed parameter
             tts = gTTS(text=text, lang=lang, slow=False)
+            
+            logger.info("[GTTS] gTTS object created successfully")
+            print(f"[RAILWAY_DEBUG] [GTTS] gTTS object created successfully", file=sys.stdout, flush=True)
             
             # Generate audio to BytesIO buffer with timeout protection
             # Use threading to prevent blocking deployment/startup
             import threading
             import queue
+            import time
             
             audio_buffer = io.BytesIO()
             result_queue = queue.Queue()
             error_queue = queue.Queue()
+            start_time = time.time()
             
             def write_audio():
                 """Write audio in a separate thread to prevent blocking"""
+                thread_start_time = time.time()
                 try:
+                    logger.info("[GTTS] Thread: Starting write_to_fp operation")
+                    print(f"[RAILWAY_DEBUG] [GTTS] Thread: Starting write_to_fp operation", file=sys.stdout, flush=True)
+                    
                     tts.write_to_fp(audio_buffer)
+                    
+                    thread_elapsed = time.time() - thread_start_time
+                    logger.info(f"[GTTS] Thread: write_to_fp completed successfully in {thread_elapsed:.2f}s")
+                    print(f"[RAILWAY_DEBUG] [GTTS] Thread: write_to_fp completed successfully in {thread_elapsed:.2f}s", file=sys.stdout, flush=True)
+                    
                     result_queue.put(True)
                 except Exception as e:
+                    thread_elapsed = time.time() - thread_start_time
+                    logger.error(f"[GTTS] Thread: write_to_fp failed after {thread_elapsed:.2f}s: {e}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] [GTTS] Thread: write_to_fp failed after {thread_elapsed:.2f}s: {type(e).__name__} - {str(e)}", file=sys.stderr, flush=True)
                     error_queue.put(e)
             
             # Start write operation in a separate thread
+            logger.info("[GTTS] Starting audio generation thread")
+            print(f"[RAILWAY_DEBUG] [GTTS] Starting audio generation thread", file=sys.stdout, flush=True)
+            
             write_thread = threading.Thread(target=write_audio, daemon=True)
             write_thread.start()
+            
+            logger.info("[GTTS] Waiting for thread completion (timeout: 60s)")
+            print(f"[RAILWAY_DEBUG] [GTTS] Waiting for thread completion (timeout: 60s)", file=sys.stdout, flush=True)
             
             # Wait for completion with timeout (60 seconds)
             write_thread.join(timeout=60)
             
+            elapsed_time = time.time() - start_time
+            
             # Check for timeout
             if write_thread.is_alive():
-                logger.error("gTTS request timed out after 60 seconds. Check network connectivity.")
-                raise TimeoutError("gTTS request timed out after 60 seconds. Check network connectivity.")
+                error_msg = f"gTTS request timed out after 60 seconds. Check network connectivity."
+                logger.error(f"[GTTS] {error_msg}")
+                print(f"[RAILWAY_DEBUG] [GTTS] ERROR: {error_msg}", file=sys.stderr, flush=True)
+                raise TimeoutError(error_msg)
+            
+            logger.info(f"[GTTS] Thread completed in {elapsed_time:.2f}s")
+            print(f"[RAILWAY_DEBUG] [GTTS] Thread completed in {elapsed_time:.2f}s", file=sys.stdout, flush=True)
             
             # Check for errors
             if not error_queue.empty():
                 error = error_queue.get()
-                logger.error(f"gTTS write operation failed: {error}")
+                logger.error(f"[GTTS] Write operation failed: {error}")
+                print(f"[RAILWAY_DEBUG] [GTTS] ERROR: Write operation failed: {type(error).__name__} - {str(error)}", file=sys.stderr, flush=True)
                 raise error
             
             # Verify result was received
             if result_queue.empty():
-                raise RuntimeError("gTTS write operation failed - no result received")
+                error_msg = "gTTS write operation failed - no result received"
+                logger.error(f"[GTTS] {error_msg}")
+                print(f"[RAILWAY_DEBUG] [GTTS] ERROR: {error_msg}", file=sys.stderr, flush=True)
+                raise RuntimeError(error_msg)
+            
+            logger.info("[GTTS] Retrieving audio bytes from buffer")
+            print(f"[RAILWAY_DEBUG] [GTTS] Retrieving audio bytes from buffer", file=sys.stdout, flush=True)
             
             audio_bytes = audio_buffer.getvalue()
+            audio_size = len(audio_bytes)
+            
+            logger.info(f"[GTTS] Audio bytes retrieved: {audio_size} bytes")
+            print(f"[RAILWAY_DEBUG] [GTTS] Audio bytes retrieved: {audio_size} bytes", file=sys.stdout, flush=True)
             
             # gTTS outputs MP3 format
             # If WAV format is requested, convert using pydub (requires ffmpeg)
             output_format = "mp3"  # gTTS default output
             
             if format == "wav":
-                logger.info(f"gTTS outputs MP3 format. Converting to WAV...")
+                logger.info("[GTTS] WAV format requested, converting MP3 to WAV")
+                print(f"[RAILWAY_DEBUG] [GTTS] WAV format requested, converting MP3 to WAV", file=sys.stdout, flush=True)
+                
                 try:
                     from pydub import AudioSegment
+                    logger.info("[GTTS] pydub available, starting conversion")
+                    print(f"[RAILWAY_DEBUG] [GTTS] pydub available, starting conversion", file=sys.stdout, flush=True)
+                    
                     # Convert MP3 to WAV
+                    conversion_start = time.time()
                     audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+                    logger.info(f"[GTTS] AudioSegment created, duration: {len(audio_segment)}ms")
+                    print(f"[RAILWAY_DEBUG] [GTTS] AudioSegment created, duration: {len(audio_segment)}ms", file=sys.stdout, flush=True)
+                    
                     wav_buffer = io.BytesIO()
                     audio_segment.export(wav_buffer, format="wav")
                     audio_bytes = wav_buffer.getvalue()
                     output_format = "wav"
-                    logger.info("Successfully converted MP3 to WAV")
+                    
+                    conversion_time = time.time() - conversion_start
+                    new_size = len(audio_bytes)
+                    logger.info(f"[GTTS] Successfully converted MP3 to WAV in {conversion_time:.2f}s (size: {audio_size} -> {new_size} bytes)")
+                    print(f"[RAILWAY_DEBUG] [GTTS] Successfully converted MP3 to WAV in {conversion_time:.2f}s (size: {audio_size} -> {new_size} bytes)", file=sys.stdout, flush=True)
                 except ImportError:
-                    logger.warning("pydub not available, returning MP3 format instead of WAV")
+                    logger.warning("[GTTS] pydub not available, returning MP3 format instead of WAV")
+                    print(f"[RAILWAY_DEBUG] [GTTS] WARNING: pydub not available, returning MP3 format instead of WAV", file=sys.stderr, flush=True)
                     output_format = "mp3"
                 except Exception as conv_error:
-                    logger.warning(f"Failed to convert MP3 to WAV: {conv_error}. Returning MP3 format.")
+                    logger.warning(f"[GTTS] Failed to convert MP3 to WAV: {conv_error}. Returning MP3 format.")
+                    print(f"[RAILWAY_DEBUG] [GTTS] WARNING: Failed to convert MP3 to WAV: {type(conv_error).__name__} - {str(conv_error)}", file=sys.stderr, flush=True)
                     output_format = "mp3"
+            else:
+                logger.info(f"[GTTS] Output format: {output_format} (no conversion needed)")
+                print(f"[RAILWAY_DEBUG] [GTTS] Output format: {output_format} (no conversion needed)", file=sys.stdout, flush=True)
             
             # Estimate duration (rough calculation for MP3)
             # MP3 files: ~1KB per second at 128kbps
             # This is approximate
             estimated_duration = len(audio_bytes) / 16000.0  # Rough estimate
+            
+            logger.info(f"[GTTS] Estimated duration: {estimated_duration:.2f} seconds")
+            print(f"[RAILWAY_DEBUG] [GTTS] Estimated duration: {estimated_duration:.2f} seconds", file=sys.stdout, flush=True)
             
             metadata = {
                 "duration_sec": estimated_duration,
@@ -849,10 +942,16 @@ class GoogleTTSProvider(TTSProvider):
                 "provider": "gtts"
             }
             
+            total_time = time.time() - start_time
+            logger.info(f"[GTTS] Synthesis completed successfully in {total_time:.2f}s - audio_size: {len(audio_bytes)} bytes, format: {output_format}")
+            print(f"[RAILWAY_DEBUG] [GTTS] Synthesis completed successfully in {total_time:.2f}s - audio_size: {len(audio_bytes)} bytes, format: {output_format}", file=sys.stdout, flush=True)
+            
             return audio_bytes, metadata
             
         except Exception as e:
-            logger.error(f"Google TTS synthesis failed: {e}", exc_info=True)
+            total_time = time.time() - start_time if 'start_time' in locals() else 0
+            logger.error(f"[GTTS] Google TTS synthesis failed after {total_time:.2f}s: {e}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [GTTS] ERROR: Google TTS synthesis failed after {total_time:.2f}s: {type(e).__name__} - {str(e)}", file=sys.stderr, flush=True)
             raise RuntimeError(f"Failed to synthesize speech with Google TTS: {str(e)}")
 
 

@@ -3696,8 +3696,14 @@ async def _generate_voiceover_async(
             raise RuntimeError(error_msg)
         
         logger.info(f"[VOICEOVER_ASYNC] TTS provider is available, proceeding with synthesis")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS provider is available, proceeding with synthesis", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         # Send progress event
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (25%) - Synthesizing speech...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_progress event (25%) - Synthesizing speech...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         sse_store.add_event(
             job_id,
             'tts_progress',
@@ -3712,12 +3718,22 @@ async def _generate_voiceover_async(
         from .services.metrics import TTSMetrics
         provider_name = type(tts_provider).__name__.replace("Provider", "").lower()
         
+        logger.info(f"[VOICEOVER_ASYNC] Starting TTS synthesis with provider: {provider_name}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting TTS synthesis with provider: {provider_name}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         tts_start_time = time.time()
         tts_success = False
         try:
-            logger.info(f"[VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}")
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}", file=sys.stdout, flush=True)
+            logger.info(f"[VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}, format: {format}, speed: {speed}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to call synthesize for job {job_id}", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Parameters - voice_id: {voice_id}, format: {format}, speed: {speed}, text_length: {len(narration_text)}", file=sys.stdout, flush=True)
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS provider type: {type(tts_provider).__name__}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            
+            logger.info(f"[VOICEOVER_ASYNC] Calling tts_provider.synthesize()...")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Calling tts_provider.synthesize()...", file=sys.stdout, flush=True)
+            sys.stdout.flush()
             
             audio_bytes, metadata = tts_provider.synthesize(
                 text=narration_text,
@@ -3725,9 +3741,20 @@ async def _generate_voiceover_async(
                 speed=speed,
                 format=format
             )
+            
             tts_success = True
-            logger.info(f"[VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s, audio size: {len(audio_bytes)} bytes")
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS synthesis complete, audio size: {len(audio_bytes)} bytes", file=sys.stdout, flush=True)
+            tts_duration = time.time() - tts_start_time
+            
+            logger.info(f"[VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Synthesis took {tts_duration:.2f}s", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio size: {len(audio_bytes)} bytes", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio duration: {metadata.get('duration_sec', 'N/A')}s", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio format: {metadata.get('format', 'N/A')}", file=sys.stdout, flush=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sample rate: {metadata.get('sample_rate', 'N/A')}", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            
+            logger.info(f"[VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}, duration: {metadata.get('duration_sec')}s, audio size: {len(audio_bytes)} bytes, synthesis_time: {tts_duration:.2f}s")
         except FileNotFoundError as e:
             tts_success = False
             error_msg = f"TTS model file not found: {str(e)}. Please ensure Piper TTS models are installed or downloadable."
@@ -3755,6 +3782,10 @@ async def _generate_voiceover_async(
             TTSMetrics.record_synthesis(provider_name, tts_duration, success=tts_success)
         
         # Send progress event
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (75%) - Saving audio file...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_progress event (75%) - Saving audio file...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         sse_store.add_event(
             job_id,
             'tts_progress',
@@ -3766,12 +3797,22 @@ async def _generate_voiceover_async(
         )
         
         # OPTIMIZATION #8: Optimize audio file storage (async) - store in background and send URL immediately
+        logger.info(f"[VOICEOVER_ASYNC] Getting storage provider...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Getting storage provider...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         storage = get_storage_provider()
         storage_key = storage.generate_key('voiceovers', f'.{format}')
+        
+        logger.info(f"[VOICEOVER_ASYNC] Generated storage key: {storage_key}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Generated storage key: {storage_key}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         # Generate URL immediately (before storage completes)
         storage_url = storage.get_url(storage_key)
         logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL generated immediately: {storage_url}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio file URL generated: {storage_url}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         # Store audio with metrics (M7) - run in background executor for non-blocking storage
         from .services.metrics import StorageMetrics
@@ -3792,13 +3833,23 @@ async def _generate_voiceover_async(
                 # Don't raise - URL is already sent, storage failure is logged but doesn't block response
         
         # Store audio in background (non-blocking)
+        logger.info(f"[VOICEOVER_ASYNC] Starting async audio storage task...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting async audio storage task...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         asyncio.create_task(store_audio_async())
         
         # Send URL immediately (before storage completes) for faster UX
         logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Sending audio URL immediately (storage in progress)")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio storage started in background, URL ready: {storage_url}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         # Moderate output before saving artifact
+        moderation_start_time = time.time()
         if config.ENABLE_CONTENT_MODERATION:
+            logger.info(f"[VOICEOVER_ASYNC] Content moderation enabled, checking voiceover content...")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Content moderation enabled, checking voiceover content...", file=sys.stdout, flush=True)
+            sys.stdout.flush()
             from .services.moderation_service import get_moderation_service
             moderation_service = get_moderation_service()
             moderation_result = moderation_service.moderate_output(
@@ -3820,12 +3871,26 @@ async def _generate_voiceover_async(
                 raise RuntimeError(f"Content blocked by moderation: {moderation_result.reason_code}")
             else:
                 # Send moderation passed event
+                moderation_time = time.time() - moderation_start_time
+                logger.info(f"[VOICEOVER_ASYNC] Content moderation passed in {moderation_time:.2f}s")
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Content moderation passed in {moderation_time:.2f}s", file=sys.stdout, flush=True)
+                sys.stdout.flush()
+                
                 sse_store.add_event(job_id, 'moderation_passed', {
                     'job_id': job_id,
                     'artifact_type': 'voiceover_audio'
                 })
+        else:
+            moderation_time = time.time() - moderation_start_time
+            logger.info(f"[VOICEOVER_ASYNC] Content moderation disabled, skipping check")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Content moderation disabled, skipping check", file=sys.stdout, flush=True)
+            sys.stdout.flush()
         
         # Create voiceover_audio artifact
+        logger.info(f"[VOICEOVER_ASYNC] Creating voiceover_audio artifact...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Creating voiceover_audio artifact...", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
         user = db.query(User).filter(User.id == user_id).first()
         content_service = ContentService(db, user)
         

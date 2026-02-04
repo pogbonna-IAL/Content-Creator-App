@@ -1147,7 +1147,8 @@ export default function Home() {
             isLoading={isGenerating} 
             error={error} 
             status={status} 
-            progress={progress} 
+            progress={progress}
+            jobId={currentJobId}
           />
         )
       default:
