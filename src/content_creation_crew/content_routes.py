@@ -1348,8 +1348,9 @@ async def stream_job_progress(
                                         else:
                                             logger.warning(f"[STREAM_COMPLETE] Job {job_id}: Artifact type={artifact.type} has no content_text")
                                             print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Artifact type={artifact.type} has no content_text", file=sys.stdout, flush=True)
+                                        
                                         # Handle voiceover_audio artifacts (they have content_json, not content_text)
-                                        elif artifact.type == 'voiceover_audio' and artifact.content_json:
+                                        if artifact.type == 'voiceover_audio' and artifact.content_json:
                                             logger.info(f"[STREAM_COMPLETE] Job {job_id}: Including voiceover_audio artifact in complete event")
                                             print(f"[RAILWAY_DEBUG] Job {job_id}: Including voiceover_audio artifact (ID: {artifact.id}) in complete event", file=sys.stdout, flush=True)
                                             artifact_data['voiceover_audio'] = {
