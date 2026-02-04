@@ -3422,13 +3422,22 @@ async def run_generation_async(
                         logger.warning(f"[METRICS] Job {job_id}: Failed to record metrics: {metrics_error}")
                     
                     # Log phase timings for monitoring
-                    logger.info(f"[METRICS] Job {job_id}: Phase timings - Cache: {phase_timings.get('cache_lookup', 0):.3f}s, "
-                              f"Crew Init: {phase_timings.get('crew_init', 0):.3f}s, "
-                              f"LLM: {phase_timings.get('llm_execution', 0):.3f}s, "
-                              f"Extraction: {phase_timings.get('content_extraction', 0):.3f}s, "
-                              f"Validation: {phase_timings.get('validation', 0):.3f}s, "
-                              f"Artifact: {phase_timings.get('artifact_creation', 0):.3f}s, "
-                              f"Total: {phase_timings['total']:.3f}s")
+                    # Handle None values by converting to 0 before formatting
+                    cache_time = phase_timings.get('cache_lookup') or 0
+                    crew_init_time = phase_timings.get('crew_init') or 0
+                    llm_time = phase_timings.get('llm_execution') or 0
+                    extraction_time = phase_timings.get('content_extraction') or 0
+                    validation_time = phase_timings.get('validation') or 0
+                    artifact_time = phase_timings.get('artifact_creation') or 0
+                    total_time = phase_timings.get('total') or 0
+                    
+                    logger.info(f"[METRICS] Job {job_id}: Phase timings - Cache: {cache_time:.3f}s, "
+                              f"Crew Init: {crew_init_time:.3f}s, "
+                              f"LLM: {llm_time:.3f}s, "
+                              f"Extraction: {extraction_time:.3f}s, "
+                              f"Validation: {validation_time:.3f}s, "
+                              f"Artifact: {artifact_time:.3f}s, "
+                              f"Total: {total_time:.3f}s")
                     
                     logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s")
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s", file=sys.stdout, flush=True)
