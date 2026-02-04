@@ -1309,7 +1309,24 @@ async def stream_job_progress(
                                                 artifact_data['audio_content'] = artifact.content_text
                                             elif artifact.type == 'video':
                                                 artifact_data['video_content'] = artifact.content_text
-                                    if content_found_in_artifacts:
+                                        # Handle voiceover_audio artifacts (they have content_json, not content_text)
+                                        elif artifact.type == 'voiceover_audio' and artifact.content_json:
+                                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: Including voiceover_audio artifact in complete event")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: Including voiceover_audio artifact (ID: {artifact.id}) in complete event", file=sys.stdout, flush=True)
+                                            artifact_data['voiceover_audio'] = {
+                                                'url': None,
+                                                'metadata': artifact.content_json
+                                            }
+                                            # Get URL from storage if storage_key is available
+                                            if artifact.content_json.get('storage_key'):
+                                                try:
+                                                    storage = get_storage_provider()
+                                                    artifact_data['voiceover_audio']['url'] = storage.get_url(artifact.content_json['storage_key'])
+                                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Voiceover audio URL: {artifact_data['voiceover_audio']['url']}")
+                                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Voiceover audio URL: {artifact_data['voiceover_audio']['url']}", file=sys.stdout, flush=True)
+                                                except Exception as url_error:
+                                                    logger.warning(f"[STREAM_COMPLETE] Job {job_id}: Failed to get voiceover URL: {url_error}")
+                                    if content_found_in_artifacts or any(a.type == 'voiceover_audio' for a in artifacts):
                                         logger.info(f"[STREAM_COMPLETE] Job {job_id}: Prepared complete event with content from {len(artifacts)} artifacts")
                                 
                                 # Fallback: Always try to get content from SSE store events (in case artifacts query failed or content wasn't saved)
@@ -1501,13 +1518,15 @@ async def stream_job_progress(
                         new_artifacts = current_artifacts[last_artifact_count:]
                         
                         # Check if artifact_ready events were already sent via SSE store (to avoid duplicates)
+                        # BUT: For voiceover_audio, always send even if already sent (frontend needs URL)
                         artifact_types_already_sent = set()
                         try:
-                            recent_sse_events = sse_store.get_events_since(job_id, last_sent_event_id - 1000)  # Check last ~1 second of events
+                            # Check a wider range of events (last 5000 events) to catch voiceover_audio events
+                            recent_sse_events = sse_store.get_events_since(job_id, max(0, last_sent_event_id - 5000))
                             for event in recent_sse_events:
                                 if event.get('type') == 'artifact_ready':
                                     artifact_type = event.get('data', {}).get('artifact_type')
-                                    if artifact_type:
+                                    if artifact_type and artifact_type != 'voiceover_audio':  # Don't skip voiceover_audio
                                         artifact_types_already_sent.add(artifact_type)
                         except Exception:
                             pass  # If check fails, proceed with database artifacts
@@ -1516,9 +1535,12 @@ async def stream_job_progress(
                             # Skip if artifact_ready was already sent via SSE store
                             if artifact.type in artifact_types_already_sent:
                                 logger.info(f"[STREAM_ARTIFACT] Job {job_id}: Skipping {artifact.type} artifact_ready - already sent via SSE store")
-                                continue
-                                
-                            print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}", file=sys.stdout, flush=True)
+                                # BUT: For voiceover_audio, still send the artifact_ready event even if it was already sent
+                                # because the frontend needs the URL and metadata
+                                if artifact.type != 'voiceover_audio':
+                                    continue
+                            
+                            print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}, has_json={bool(artifact.content_json)}", file=sys.stdout, flush=True)
                             # Send artifact_ready event
                             event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
                             
@@ -1528,6 +1550,8 @@ async def stream_job_progress(
                                 if artifact.content_json.get('storage_key'):
                                     storage = get_storage_provider()
                                     event_data['url'] = storage.get_url(artifact.content_json['storage_key'])
+                                logger.info(f"[STREAM_ARTIFACT] Job {job_id}: Sending voiceover_audio artifact_ready with URL: {event_data.get('url', 'N/A')}")
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Sending voiceover_audio artifact_ready with URL: {event_data.get('url', 'N/A')}", file=sys.stdout, flush=True)
                             
                             event_id = sse_store.add_event(job_id, 'artifact_ready', event_data)
                             yield f"id: {event_id}\n"
@@ -1536,7 +1560,7 @@ async def stream_job_progress(
                             flush_buffers()  # Flush artifact events immediately
                             last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
                             
-                            # Send content event if artifact has text content
+                            # Send content event if artifact has text content (but NOT for voiceover_audio - it uses artifact_ready with URL)
                             if artifact.content_text and artifact.type in ['blog', 'social', 'audio', 'video']:
                                 content_field = {
                                     'blog': 'content',
