@@ -61,12 +61,13 @@ def extract_json_from_text(text: str) -> Optional[str]:
     return None
 
 
-def repair_json(json_str: str) -> Optional[str]:
+def repair_json(json_str: str, content_type: str = None) -> Optional[str]:
     """
     Attempt to repair common JSON issues
     
     Args:
         json_str: Potentially broken JSON string
+        content_type: Optional content type for type-specific repairs
     
     Returns:
         Repaired JSON string or None if repair not possible
@@ -97,11 +98,44 @@ def repair_json(json_str: str) -> Optional[str]:
     # Fix single quotes to double quotes (basic)
     repaired = re.sub(r"'([^']*)':", r'"\1":', repaired)
     
-    # Try to parse to verify repair worked
+    # Try to parse JSON
     try:
+        data = json.loads(repaired)
+        
+        # Type-specific repairs
+        if content_type == 'blog' and isinstance(data, dict) and 'sections' in data:
+            # Repair sections: convert dictionaries to strings
+            sections = data.get('sections', [])
+            repaired_sections = []
+            for section in sections:
+                if isinstance(section, dict):
+                    # Convert dict section to string format
+                    # Handle both 'heading' + 'content' and 'content' only formats
+                    if 'heading' in section and 'content' in section:
+                        # Format: "## Heading\n\nContent"
+                        section_str = f"## {section['heading']}\n\n{section['content']}"
+                    elif 'content' in section:
+                        section_str = section['content']
+                    elif 'text' in section:
+                        section_str = section['text']
+                    else:
+                        # Fallback: use first string value or stringify the dict
+                        section_str = str(section.get('heading', '') or section.get('content', '') or section.get('text', '') or section)
+                    repaired_sections.append(section_str)
+                elif isinstance(section, str):
+                    repaired_sections.append(section)
+                else:
+                    # Convert other types to string
+                    repaired_sections.append(str(section))
+            
+            data['sections'] = repaired_sections
+            repaired = json.dumps(data, ensure_ascii=False)
+        
+        # Verify repaired JSON is valid
         json.loads(repaired)
         return repaired
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        logger.debug(f"JSON repair failed: {e}")
         return None
 
 
@@ -137,7 +171,7 @@ def validate_and_repair_content(
     # If validation failed and repair is allowed, try repair
     if allow_repair and json_str:
         logger.warning(f"Validation failed for {content_type}, attempting repair...")
-        repaired_json = repair_json(json_str)
+        repaired_json = repair_json(json_str, content_type=content_type)
         
         if repaired_json:
             is_valid, model, error = validate_content_json(content_type, repaired_json, repair=False)
@@ -146,6 +180,7 @@ def validate_and_repair_content(
                 return True, model, model.to_text(), True
             else:
                 logger.warning(f"Repair attempt failed for {content_type}: {error}")
+                logger.debug(f"Repaired JSON preview: {repaired_json[:500]}")
         else:
             logger.warning(f"Could not repair JSON for {content_type}")
     

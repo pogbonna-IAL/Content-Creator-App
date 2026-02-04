@@ -1998,6 +1998,17 @@ async def run_generation_async(
                     commit_duration = time.time() - commit_start_time
                     logger.info(f"[STATUS_COMMIT] Job {job_id}: Status update commit SUCCESSFUL in {commit_duration:.3f}s")
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Status update commit SUCCESSFUL in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+                    
+                    # OPTIMIZATION: Close session immediately after commit to prevent idle-in-transaction timeout
+                    # Session will be recreated when needed for artifact creation
+                    try:
+                        session.close()
+                        logger.info(f"[SESSION_MGMT] Job {job_id}: Session closed after status update commit")
+                    except Exception as close_error:
+                        logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing session: {close_error}")
+                    session = None  # Mark as closed
+                    content_service = None  # Will be recreated with new session
+                    
                 except Exception as commit_error:
                     commit_duration = time.time() - commit_start_time
                     error_type = type(commit_error).__name__
@@ -2785,14 +2796,13 @@ async def run_generation_async(
                 logger.info(f"[PREVIEW] Job {job_id}: Sent content preview ({preview_length} chars) immediately after extraction")
             
             # Validate and create blog artifact
-            # OPTIMIZATION #2: Skip repair for blog content (only validate structure)
-            # Blog content from editing_task is typically well-formed, repair is rarely needed
-            # This reduces validation time from ~200-500ms to ~50-100ms
-            print(f"[RAILWAY_DEBUG] Job {job_id}: Starting blog content validation (repair disabled for speed)", file=sys.stdout, flush=True)
-            logger.info(f"[VALIDATION] Job {job_id}: Starting blog content validation (repair disabled for speed)")
+            # Enable repair for blog content to handle dictionary sections (with heading/content)
+            # Repair converts dict sections to string format expected by schema
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Starting blog content validation (repair enabled for section format conversion)", file=sys.stdout, flush=True)
+            logger.info(f"[VALIDATION] Job {job_id}: Starting blog content validation (repair enabled for section format conversion)")
             validation_start = time.time()
             is_valid, validated_model, content, was_repaired = validate_and_repair_content(
-                'blog', raw_content, model_name, allow_repair=False  # OPTIMIZATION: Skip repair for faster validation
+                'blog', raw_content, model_name, allow_repair=True  # Enable repair to handle dict sections
             )
             validation_duration = time.time() - validation_start
             # OPTIMIZATION #10: Record validation timing
@@ -2844,6 +2854,17 @@ async def run_generation_async(
                 
                 # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                 artifact_start = time.time()
+                
+                # OPTIMIZATION: Recreate session if it was closed (to prevent idle-in-transaction timeout)
+                if session is None or not session.is_active:
+                    logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for artifact creation")
+                    session = SessionLocal()
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        logger.error(f"User {user_id} not found when recreating session for artifact creation")
+                        session.close()
+                        raise Exception(f"User {user_id} not found")
+                    content_service = ContentService(session, user)
                 
                 # OPTIMIZATION #12: Calculate content quality metrics
                 word_count = len(content.split()) if content else 0
@@ -3071,6 +3092,18 @@ async def run_generation_async(
                         # OPTIMIZATION #4: Create artifact and commit immediately
                         # Blog artifacts are committed immediately (above), non-blog artifacts commit here
                         # Future optimization: Batch commit multiple non-blog artifacts together
+                        
+                        # OPTIMIZATION: Recreate session if it was closed (to prevent idle-in-transaction timeout)
+                        if session is None or not session.is_active:
+                            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for {content_type} artifact creation")
+                            session = SessionLocal()
+                            user = session.query(User).filter(User.id == user_id).first()
+                            if not user:
+                                logger.error(f"User {user_id} not found when recreating session for {content_type} artifact creation")
+                                session.close()
+                                raise Exception(f"User {user_id} not found")
+                            content_service = ContentService(session, user)
+                        
                         artifact_start = time.time()
                         artifact = content_service.create_artifact(
                             job_id,
