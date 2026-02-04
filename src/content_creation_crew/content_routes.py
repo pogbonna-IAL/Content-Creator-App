@@ -4,7 +4,6 @@ Jobs-first persistence with SSE streaming support
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
-from starlette.exceptions import ClientDisconnect
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError, DisconnectionError
 from sqlalchemy import text
@@ -1672,11 +1671,11 @@ async def stream_job_progress(
                         logger.warning(f"[STREAM_END] Job {job_id}: Job failed but no error event was sent, sending now")
             except Exception as final_check_error:
                 logger.error(f"[STREAM_ERROR] Job {job_id}: Error checking final job status: {type(final_check_error).__name__}: {str(final_check_error)}")
-        except (ClientDisconnect, ConnectionError, BrokenPipeError, OSError) as disconnect_error:
+        except (asyncio.CancelledError, ConnectionError, BrokenPipeError, OSError) as disconnect_error:
             # Client disconnected - this is normal, don't log as error
             error_msg = str(disconnect_error).lower()
             is_client_disconnect = (
-                isinstance(disconnect_error, ClientDisconnect) or
+                isinstance(disconnect_error, asyncio.CancelledError) or
                 'client disconnect' in error_msg or
                 'broken pipe' in error_msg or
                 'connection reset' in error_msg or
@@ -1710,7 +1709,7 @@ async def stream_job_progress(
                     yield f"event: error\n"
                     yield f"data: {json.dumps(error_data)}\n\n"
                     flush_buffers()  # Flush final error event
-                except (ClientDisconnect, ConnectionError, BrokenPipeError, OSError):
+                except (asyncio.CancelledError, ConnectionError, BrokenPipeError, OSError):
                     # Client disconnected while sending error - normal
                     logger.info(f"[STREAM_DISCONNECT] Job {job_id}: Client disconnected while sending final error")
                 except Exception:
