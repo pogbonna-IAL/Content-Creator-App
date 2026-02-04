@@ -4337,38 +4337,54 @@ async def _generate_voiceover_async(
         text_length = len(narration_text)
         
         # Send intermediate progress updates during synthesis (if text is long)
+        # FIX: Use a flag to cancel background progress updates when synthesis completes
+        synthesis_complete = asyncio.Event()
         if text_length > 500:
             # Send progress at 40% and 55% for longer texts
             async def send_intermediate_progress():
-                await asyncio.sleep(2)  # Wait 2 seconds
-                elapsed = time.time() - tts_start_time
-                if elapsed < 30:  # Only if still synthesizing (within 30s)
-                    sse_store.add_event(
-                        job_id,
-                        'tts_progress',
-                        {
-                            'type': 'tts_progress',
-                            'job_id': job_id,
-                            'message': 'Synthesizing speech...',
-                            'progress': 40
-                        }
-                    )
-                await asyncio.sleep(2)  # Wait another 2 seconds
-                elapsed = time.time() - tts_start_time
-                if elapsed < 30:  # Only if still synthesizing (within 30s)
-                    sse_store.add_event(
-                        job_id,
-                        'tts_progress',
-                        {
-                            'type': 'tts_progress',
-                            'job_id': job_id,
-                            'message': 'Synthesizing speech...',
-                            'progress': 55
-                        }
-                    )
+                try:
+                    await asyncio.sleep(2)  # Wait 2 seconds
+                    # Check if synthesis completed before sending progress
+                    if synthesis_complete.is_set():
+                        logger.info(f"[VOICEOVER_ASYNC] Skipping 40% progress - synthesis already completed")
+                        return
+                    elapsed = time.time() - tts_start_time
+                    if elapsed < 30:  # Only if still synthesizing (within 30s)
+                        sse_store.add_event(
+                            job_id,
+                            'tts_progress',
+                            {
+                                'type': 'tts_progress',
+                                'job_id': job_id,
+                                'message': 'Synthesizing speech...',
+                                'progress': 40
+                            }
+                        )
+                    
+                    await asyncio.sleep(2)  # Wait another 2 seconds
+                    # Check if synthesis completed before sending progress
+                    if synthesis_complete.is_set():
+                        logger.info(f"[VOICEOVER_ASYNC] Skipping 55% progress - synthesis already completed")
+                        return
+                    elapsed = time.time() - tts_start_time
+                    if elapsed < 30:  # Only if still synthesizing (within 30s)
+                        sse_store.add_event(
+                            job_id,
+                            'tts_progress',
+                            {
+                                'type': 'tts_progress',
+                                'job_id': job_id,
+                                'message': 'Synthesizing speech...',
+                                'progress': 55
+                            }
+                        )
+                except asyncio.CancelledError:
+                    logger.info(f"[VOICEOVER_ASYNC] Background progress task cancelled")
+                except Exception as progress_error:
+                    logger.warning(f"[VOICEOVER_ASYNC] Background progress task error: {progress_error}")
             
             # Start intermediate progress updates in background
-            asyncio.create_task(send_intermediate_progress())
+            progress_task = asyncio.create_task(send_intermediate_progress())
         
         try:
             logger.info(f"[VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}, format: {format}, speed: {speed}")
@@ -4390,6 +4406,15 @@ async def _generate_voiceover_async(
             
             tts_success = True
             tts_duration = time.time() - tts_start_time
+            
+            # FIX: Signal that synthesis is complete to cancel background progress updates
+            if 'synthesis_complete' in locals():
+                synthesis_complete.set()
+            if 'progress_task' in locals():
+                try:
+                    progress_task.cancel()
+                except:
+                    pass
             
             logger.info(f"[VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}")
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS synthesis complete for job {job_id}", file=sys.stdout, flush=True)
@@ -4426,6 +4451,15 @@ async def _generate_voiceover_async(
         finally:
             tts_duration = time.time() - tts_start_time
             TTSMetrics.record_synthesis(provider_name, tts_duration, success=tts_success)
+        
+        # FIX: Signal synthesis complete before sending progress events
+        if 'synthesis_complete' in locals():
+            synthesis_complete.set()
+        if 'progress_task' in locals():
+            try:
+                progress_task.cancel()
+            except:
+                pass
         
         # Send progress event after synthesis completes
         logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (70%) - Processing audio...")

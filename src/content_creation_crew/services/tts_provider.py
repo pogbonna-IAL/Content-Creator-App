@@ -897,16 +897,34 @@ class GoogleTTSProvider(TTSProvider):
                     logger.info("[GTTS] pydub available, starting conversion")
                     print(f"[RAILWAY_DEBUG] [GTTS] pydub available, starting conversion", file=sys.stdout, flush=True)
                     
-                    # Convert MP3 to WAV
+                    # Convert MP3 to WAV with browser-compatible format
                     conversion_start = time.time()
                     audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
                     logger.info(f"[GTTS] AudioSegment created, duration: {len(audio_segment)}ms")
                     print(f"[RAILWAY_DEBUG] [GTTS] AudioSegment created, duration: {len(audio_segment)}ms", file=sys.stdout, flush=True)
                     
+                    # Export to WAV with browser-compatible format
+                    # Ensure standard PCM format that browsers can decode
+                    # Convert to mono and standardize sample rate for browser compatibility
                     wav_buffer = io.BytesIO()
-                    audio_segment.export(wav_buffer, format="wav")
+                    
+                    # Normalize audio segment for browser compatibility
+                    # Set to mono (1 channel) and 44.1kHz sample rate (standard for web)
+                    normalized_audio = audio_segment.set_channels(1).set_frame_rate(44100)
+                    
+                    # Export as WAV (PCM format) - browsers support this format
+                    normalized_audio.export(wav_buffer, format="wav")
                     audio_bytes = wav_buffer.getvalue()
                     output_format = "wav"
+                    
+                    # Verify WAV file is valid by checking header
+                    if len(audio_bytes) < 44:  # WAV header is at least 44 bytes
+                        raise ValueError("Generated WAV file is too small (invalid)")
+                    if not (audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE'):
+                        raise ValueError("Generated WAV file has invalid header")
+                    
+                    logger.info(f"[GTTS] WAV file validated - header OK, size: {len(audio_bytes)} bytes")
+                    print(f"[RAILWAY_DEBUG] [GTTS] WAV file validated - header OK, size: {len(audio_bytes)} bytes", file=sys.stdout, flush=True)
                     
                     conversion_time = time.time() - conversion_start
                     new_size = len(audio_bytes)
@@ -924,18 +942,30 @@ class GoogleTTSProvider(TTSProvider):
                 logger.info(f"[GTTS] Output format: {output_format} (no conversion needed)")
                 print(f"[RAILWAY_DEBUG] [GTTS] Output format: {output_format} (no conversion needed)", file=sys.stdout, flush=True)
             
-            # Estimate duration (rough calculation for MP3)
-            # MP3 files: ~1KB per second at 128kbps
-            # This is approximate
-            estimated_duration = len(audio_bytes) / 16000.0  # Rough estimate
+            # Calculate actual duration from audio segment if available
+            actual_sample_rate = 44100  # Default for normalized WAV
+            if format == "wav" and 'normalized_audio' in locals():
+                # Use actual duration from normalized audio segment (more accurate)
+                estimated_duration = len(normalized_audio) / 1000.0  # pydub returns milliseconds
+                actual_sample_rate = normalized_audio.frame_rate
+            elif format == "wav" and 'audio_segment' in locals():
+                # Use actual duration from audio segment (more accurate)
+                estimated_duration = len(audio_segment) / 1000.0  # pydub returns milliseconds
+                actual_sample_rate = audio_segment.frame_rate
+            else:
+                # Estimate duration (rough calculation for MP3)
+                # MP3 files: ~1KB per second at 128kbps
+                # This is approximate
+                estimated_duration = len(audio_bytes) / 16000.0  # Rough estimate
+                actual_sample_rate = 22050  # gTTS default for MP3
             
-            logger.info(f"[GTTS] Estimated duration: {estimated_duration:.2f} seconds")
-            print(f"[RAILWAY_DEBUG] [GTTS] Estimated duration: {estimated_duration:.2f} seconds", file=sys.stdout, flush=True)
+            logger.info(f"[GTTS] Estimated duration: {estimated_duration:.2f} seconds, sample_rate: {actual_sample_rate}")
+            print(f"[RAILWAY_DEBUG] [GTTS] Estimated duration: {estimated_duration:.2f} seconds, sample_rate: {actual_sample_rate}", file=sys.stdout, flush=True)
             
             metadata = {
                 "duration_sec": estimated_duration,
                 "format": output_format,
-                "sample_rate": 22050 if output_format == "mp3" else 22050,  # gTTS default
+                "sample_rate": actual_sample_rate,
                 "voice_id": voice_id,
                 "language": lang,
                 "text_hash": text_hash,

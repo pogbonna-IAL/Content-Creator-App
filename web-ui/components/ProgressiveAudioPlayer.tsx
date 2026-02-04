@@ -123,8 +123,32 @@ export default function ProgressiveAudioPlayer({
       audio.addEventListener('ended', () => setIsPlaying(false))
       
       audio.addEventListener('error', (e) => {
-        const errorMsg = `Audio playback error: ${audio.error?.message || 'Unknown error'}`
-        console.error('Audio error:', errorMsg, audio.error)
+        let errorMsg = 'Audio playback error: '
+        if (audio.error) {
+          switch (audio.error.code) {
+            case MediaError.MEDIA_ERR_ABORTED:
+              errorMsg += 'Playback aborted'
+              break
+            case MediaError.MEDIA_ERR_NETWORK:
+              errorMsg += 'Network error loading audio'
+              break
+            case MediaError.MEDIA_ERR_DECODE:
+              errorMsg += 'Format error - audio file cannot be decoded. The file may be corrupted or in an unsupported format.'
+              break
+            case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+              errorMsg += 'Format not supported - browser cannot play this audio format. Try downloading the file instead.'
+              break
+            default:
+              errorMsg += audio.error.message || 'Unknown error'
+          }
+        } else {
+          errorMsg += 'Unknown error'
+        }
+        console.error('Audio error:', errorMsg, audio.error, {
+          code: audio.error?.code,
+          url: url,
+          errorType: audio.error ? 'MediaError' : 'Unknown'
+        })
         setError(errorMsg)
         setIsBuffering(false)
         onError?.(errorMsg)

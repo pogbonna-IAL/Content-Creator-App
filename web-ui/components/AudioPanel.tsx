@@ -375,7 +375,9 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                 setVoiceoverProgress(10)
               } else if (data.type === 'tts_progress' || eventType === 'tts_progress') {
                 setVoiceoverStatus(data.message || 'Generating voiceover...')
-                setVoiceoverProgress(data.progress || Math.max(voiceoverProgress, 20))
+                // FIX: Only update progress if new progress is higher than current (prevent backward jumps)
+                const newProgress = data.progress || 20
+                setVoiceoverProgress(prevProgress => Math.max(prevProgress, newProgress))
               } else if (data.type === 'artifact_ready' && data.artifact_type === 'voiceover_audio') {
                 setVoiceoverStatus('Voiceover ready!')
                 setVoiceoverProgress(90)
