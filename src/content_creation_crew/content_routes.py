@@ -1294,11 +1294,51 @@ async def stream_job_progress(
                             except:
                                 pass
                     
+                    # FIX 2: Check SSE store events FIRST to ensure proper ordering
+                    # This prevents database artifact_ready events from skipping earlier SSE store events
+                    try:
+                        sse_store_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                        if sse_store_events:
+                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(sse_store_events)} SSE store events before artifact check, last_sent_event_id={last_sent_event_id}")
+                            for event in sse_store_events:
+                                event_id = event.get('id', 0)
+                                event_type = event.get('type', 'unknown')
+                                if event_id > last_sent_event_id:
+                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: {event_type}\n"
+                                    yield f"data: {json.dumps(event.get('data', {}))}\n\n"
+                                    flush_buffers()
+                                    last_sent_event_id = event_id
+                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
+                                else:
+                                    logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping SSE store event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
+                    except Exception as sse_event_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE store events before artifact check: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
+                    
                     if current_artifacts and len(current_artifacts) > last_artifact_count:
                         # New artifacts created
                         print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
                         new_artifacts = current_artifacts[last_artifact_count:]
+                        
+                        # Check if artifact_ready events were already sent via SSE store (to avoid duplicates)
+                        artifact_types_already_sent = set()
+                        try:
+                            recent_sse_events = sse_store.get_events_since(job_id, last_sent_event_id - 1000)  # Check last ~1 second of events
+                            for event in recent_sse_events:
+                                if event.get('type') == 'artifact_ready':
+                                    artifact_type = event.get('data', {}).get('artifact_type')
+                                    if artifact_type:
+                                        artifact_types_already_sent.add(artifact_type)
+                        except Exception:
+                            pass  # If check fails, proceed with database artifacts
+                        
                         for artifact in new_artifacts:
+                            # Skip if artifact_ready was already sent via SSE store
+                            if artifact.type in artifact_types_already_sent:
+                                logger.info(f"[STREAM_ARTIFACT] Job {job_id}: Skipping {artifact.type} artifact_ready - already sent via SSE store")
+                                continue
+                                
                             print(f"[RAILWAY_DEBUG] Job {job_id}: Processing artifact type={artifact.type}, has_content={bool(artifact.content_text)}", file=sys.stdout, flush=True)
                             # Send artifact_ready event
                             event_data = {'type': 'artifact_ready', 'job_id': job_id, 'artifact_type': artifact.type}
@@ -3501,24 +3541,6 @@ async def _generate_voiceover_async(
             # OPTIMIZATION: Get storage URL immediately after file is stored
             storage_url = storage.get_url(storage_key)
             logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL ready: {storage_url}")
-            
-            # OPTIMIZATION: Send audio URL to frontend IMMEDIATELY (before moderation/DB commit) for faster UX
-            # Users can start downloading/playing audio while moderation and DB operations complete
-            logger.info(f"[VOICEOVER_ASYNC] Sending audio URL immediately for job {job_id}")
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending audio URL immediately for job {job_id}", file=sys.stdout, flush=True)
-            sse_store.add_event(
-                job_id,
-                'tts_completed',
-                {
-                    'type': 'tts_completed',  # Add type field for frontend compatibility
-                    'job_id': job_id,
-                    'duration_sec': metadata.get('duration_sec'),
-                    'storage_url': storage_url,
-                    'url': storage_url,  # Also include 'url' field for frontend compatibility
-                    'pending_save': True  # Indicate artifact is being saved
-                }
-            )
-            logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio URL sent to frontend before moderation/DB commit")
         except Exception as e:
             StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
             raise
@@ -3592,7 +3614,7 @@ async def _generate_voiceover_async(
         logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
         
         # Send artifact ready event
-        sse_store.add_event(
+        artifact_ready_event_id = sse_store.add_event(
             job_id,
             'artifact_ready',
             {
@@ -3602,10 +3624,11 @@ async def _generate_voiceover_async(
                 'metadata': artifact_metadata
             }
         )
+        logger.info(f"[VOICEOVER_ASYNC] artifact_ready event sent with ID {artifact_ready_event_id} for job {job_id}")
         
-        # Update tts_completed event with artifact_id and mark as saved (URL was already sent above)
-        logger.info(f"[VOICEOVER_ASYNC] Updating tts_completed event with artifact_id for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Updating tts_completed event for job {job_id}", file=sys.stdout, flush=True)
+        # Send tts_completed event ONCE with all data (after artifact is saved)
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         tts_completed_event_id = sse_store.add_event(
@@ -3622,8 +3645,8 @@ async def _generate_voiceover_async(
             }
         )
         
-        logger.info(f"[VOICEOVER_ASYNC] tts_completed event updated in SSE store with ID {tts_completed_event_id} for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event updated in SSE store with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
+        logger.info(f"[VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id} (after artifact_ready ID {artifact_ready_event_id})")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         logger.info(f"[VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}")

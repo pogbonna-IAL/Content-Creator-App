@@ -27,6 +27,9 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
   // Track voiceover stream resources for cancellation
   const [voiceoverReaderRef, setVoiceoverReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
   const [voiceoverAbortControllerRef, setVoiceoverAbortControllerRef] = useState<AbortController | null>(null)
+  
+  // FIX 3: Track timeout for fallback completion
+  const artifactReadyTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Function to generate voiceover
   const handleGenerateVoiceover = async () => {
@@ -334,10 +337,33 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                   console.log('AudioPanel - Setting audio URL:', audioUrl)
                   setAudioUrl(audioUrl)
                   setAudioMetadata(data.metadata || {})
+                  
+                  // FIX 3: Set timeout fallback to complete progress if tts_completed doesn't arrive
+                  // Clear any existing timeout
+                  if (artifactReadyTimeoutRef.current) {
+                    clearTimeout(artifactReadyTimeoutRef.current)
+                  }
+                  // Set new timeout (2 seconds)
+                  artifactReadyTimeoutRef.current = setTimeout(() => {
+                    // Only complete if still at 90% and still generating
+                    if (voiceoverProgress === 90 && isGeneratingVoiceover) {
+                      console.warn('AudioPanel - tts_completed event not received within 2s, completing progress automatically')
+                      setVoiceoverStatus('Voiceover generation complete!')
+                      setVoiceoverProgress(100)
+                      setIsGeneratingVoiceover(false)
+                    }
+                    artifactReadyTimeoutRef.current = null
+                  }, 2000)
                 } else {
                   console.warn('AudioPanel - artifact_ready event missing audio URL:', data)
                 }
               } else if (data.type === 'tts_completed') {
+                // FIX 3: Clear timeout since tts_completed arrived
+                if (artifactReadyTimeoutRef.current) {
+                  clearTimeout(artifactReadyTimeoutRef.current)
+                  artifactReadyTimeoutRef.current = null
+                }
+                
                 setVoiceoverStatus('Voiceover generation complete!')
                 setVoiceoverProgress(100)
                 setIsGeneratingVoiceover(false)
@@ -388,6 +414,12 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
         setVoiceoverProgress(0)
       }
     } finally {
+      // FIX 3: Clean up timeout on stream end
+      if (artifactReadyTimeoutRef.current) {
+        clearTimeout(artifactReadyTimeoutRef.current)
+        artifactReadyTimeoutRef.current = null
+      }
+      
       // Clean up references
       setVoiceoverReaderRef(null)
       setVoiceoverAbortControllerRef(null)
