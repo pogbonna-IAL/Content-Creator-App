@@ -1205,23 +1205,41 @@ async def stream_job_progress(
                                     logger.info(f"[STREAM_FALLBACK] Job {job_id}: Checking SSE store - found {len(content_events)} content events")
                                     
                                     # Accumulate content from all content events (in case multiple events exist for same type)
+                                    # IMPORTANT: For chunked content (blog), accumulate all chunks
+                                    accumulated_chunks = {
+                                        'blog': [],
+                                        'social': [],
+                                        'audio': [],
+                                        'video': []
+                                    }
+                                    
                                     for content_event in content_events:
                                         event_data = content_event.get('data', {})
                                         chunk = event_data.get('chunk', '')
                                         artifact_type = event_data.get('artifact_type', '')
                                         
                                         if chunk and artifact_type:
-                                            logger.info(f"[STREAM_FALLBACK] Job {job_id}: Found content in SSE store - type={artifact_type}, length={len(chunk)}")
+                                            logger.info(f"[STREAM_FALLBACK] Job {job_id}: Found content chunk in SSE store - type={artifact_type}, length={len(chunk)}, partial={event_data.get('partial', False)}")
+                                            
+                                            # Accumulate chunks for each artifact type
+                                            if artifact_type in accumulated_chunks:
+                                                accumulated_chunks[artifact_type].append(chunk)
+                                    
+                                    # Combine accumulated chunks for each artifact type
+                                    for artifact_type, chunks in accumulated_chunks.items():
+                                        if chunks:
+                                            combined_content = ''.join(chunks)
+                                            logger.info(f"[STREAM_FALLBACK] Job {job_id}: Combined {len(chunks)} chunks for {artifact_type}, total length={len(combined_content)}")
                                             
                                             # Only set if not already set from artifacts, or if artifacts didn't have content
                                             if artifact_type == 'blog' and not artifact_data.get('content'):
-                                                artifact_data['content'] = chunk
+                                                artifact_data['content'] = combined_content
                                             elif artifact_type == 'social' and not artifact_data.get('social_media_content'):
-                                                artifact_data['social_media_content'] = chunk
+                                                artifact_data['social_media_content'] = combined_content
                                             elif artifact_type == 'audio' and not artifact_data.get('audio_content'):
-                                                artifact_data['audio_content'] = chunk
+                                                artifact_data['audio_content'] = combined_content
                                             elif artifact_type == 'video' and not artifact_data.get('video_content'):
-                                                artifact_data['video_content'] = chunk
+                                                artifact_data['video_content'] = combined_content
                                     
                                     # Log final content status
                                     has_any_content = any(key in artifact_data for key in ['content', 'audio_content', 'social_media_content', 'video_content'])
@@ -1237,7 +1255,40 @@ async def stream_job_progress(
                                             content_sources.append(f"video({len(artifact_data['video_content'])})")
                                         logger.info(f"[STREAM_COMPLETE] Job {job_id}: Complete event will include content from: {', '.join(content_sources)}")
                                     else:
-                                        logger.warning(f"[STREAM_WARN] Job {job_id}: No content found in artifacts or SSE store - sending complete event without content")
+                                        # CRITICAL FIX: Don't send complete event without content - wait a bit more or retry
+                                        logger.warning(f"[STREAM_WARN] Job {job_id}: No content found in artifacts or SSE store - retrying artifact query before sending complete event")
+                                        # Retry artifact query one more time with a short delay
+                                        try:
+                                            await asyncio.sleep(0.5)  # Give time for any pending commits
+                                            retry_artifacts_session = SessionLocal()
+                                            try:
+                                                retry_artifacts = retry_artifacts_session.query(ContentArtifact).filter(
+                                                    ContentArtifact.job_id == job_id
+                                                ).all()
+                                                # Try to get content from retry query
+                                                for retry_artifact in retry_artifacts:
+                                                    if retry_artifact.content_text:
+                                                        if retry_artifact.type == 'blog' and not artifact_data.get('content'):
+                                                            artifact_data['content'] = retry_artifact.content_text
+                                                        elif retry_artifact.type == 'social' and not artifact_data.get('social_media_content'):
+                                                            artifact_data['social_media_content'] = retry_artifact.content_text
+                                                        elif retry_artifact.type == 'audio' and not artifact_data.get('audio_content'):
+                                                            artifact_data['audio_content'] = retry_artifact.content_text
+                                                        elif retry_artifact.type == 'video' and not artifact_data.get('video_content'):
+                                                            artifact_data['video_content'] = retry_artifact.content_text
+                                                logger.info(f"[STREAM_RETRY] Job {job_id}: Retry query found {len(retry_artifacts)} artifacts")
+                                            finally:
+                                                retry_artifacts_session.close()
+                                        except Exception as retry_error:
+                                            logger.error(f"[STREAM_ERROR] Job {job_id}: Retry artifact query failed: {retry_error}")
+                                        
+                                        # Check again after retry
+                                        has_any_content_after_retry = any(key in artifact_data for key in ['content', 'audio_content', 'social_media_content', 'video_content'])
+                                        if not has_any_content_after_retry:
+                                            logger.error(f"[STREAM_ERROR] Job {job_id}: CRITICAL - No content found after all retries. Job may have failed silently or content was never generated.")
+                                            # Still send complete event but with a warning message
+                                            artifact_data['warning'] = 'Content was generated but could not be retrieved. Please check backend logs.'
+                                            artifact_data['message'] = 'Content generation completed but content retrieval failed'
                                 except Exception as sse_fallback_error:
                                     logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get content from SSE store: {sse_fallback_error}", exc_info=True)
                                     if not content_found_in_artifacts:
@@ -1399,12 +1450,17 @@ async def stream_job_progress(
                         
                         last_artifact_count = len(current_artifacts)
                     
-                    # FIX 4: Check for new SSE events (like tts_completed, tts_started, tts_progress, etc.) that were added directly to store
+                    # FIX 2 & 4: Check for new SSE events (like tts_completed, tts_started, tts_progress, etc.) that were added directly to store
                     # This ensures voiceover progress events are delivered immediately
+                    # FIX #2: This check happens frequently (every poll cycle) to catch events as soon as they're added
                     try:
                         new_events = sse_store.get_events_since(job_id, last_sent_event_id)
                         if new_events:
-                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(new_events)} new SSE events, last_sent_event_id={last_sent_event_id}")
+                            event_types = [e.get('type', 'unknown') for e in new_events]
+                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(new_events)} new SSE events (types: {event_types}), last_sent_event_id={last_sent_event_id}")
+                            # FIX #2: Log that we're immediately processing these events
+                            if any(e.get('type') in ['tts_completed', 'tts_started', 'tts_progress'] for e in new_events):
+                                logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Voiceover events detected - processing immediately")
                         for event in new_events:
                             # Skip events we've already sent (shouldn't happen, but safety check)
                             event_id = event.get('id', 0)
@@ -1423,8 +1479,13 @@ async def stream_job_progress(
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE events: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
                     
                     # OPTIMIZATION #11: Adaptive polling interval based on job stage
-                    def get_poll_interval(job_status: str, elapsed_time: float) -> float:
+                    # FIX #1 & #4: Reduced polling interval for completed jobs and added fast polling for voiceover jobs
+                    def get_poll_interval(job_status: str, elapsed_time: float, has_voiceover: bool = False) -> float:
                         """Get optimal polling interval based on job stage"""
+                        # FIX #4: Use very fast polling for voiceover jobs to catch tts_completed events quickly
+                        if has_voiceover and job_status in ['running', 'completed']:
+                            return 0.2  # Very fast polling for voiceover jobs (200ms)
+                        
                         if job_status == 'pending':
                             return 1.0  # Slower polling for pending jobs
                         elif job_status == 'running':
@@ -1435,11 +1496,37 @@ async def stream_job_progress(
                             else:
                                 return 1.0  # Slower polling for long-running jobs
                         else:
-                            return 2.0  # Slow polling for completed/failed jobs
+                            # FIX #1: Use faster polling for completed/failed jobs to catch final events
+                            # Audio artifacts may be created just before job completion
+                            # Reduced from 2.0s to 0.5s to reduce timeout race conditions
+                            return 0.5  # Faster polling for completed/failed jobs (was 2.0)
                     
                     elapsed_time = time.time() - stream_start_time if 'stream_start_time' in locals() else 0
                     job_status = job.status if job else 'unknown'
-                    poll_interval = get_poll_interval(job_status, elapsed_time)
+                    
+                    # FIX #4: Detect if this is a voiceover job by checking for voiceover_audio artifacts or SSE events
+                    has_voiceover = False
+                    try:
+                        # Check if job has voiceover_audio artifacts
+                        if current_artifacts:
+                            has_voiceover = any(a.type == 'voiceover_audio' for a in current_artifacts)
+                        
+                        # Also check SSE store for voiceover-related events (tts_started, tts_progress, tts_completed)
+                        # Use a wider range to catch events even if last_sent_event_id is high
+                        # Check last 500 events to ensure we catch voiceover events even if they were added earlier
+                        if not has_voiceover:
+                            recent_events = sse_store.get_events_since(job_id, max(0, last_sent_event_id - 500))
+                            has_voiceover = any(
+                                e.get('type') in ['tts_started', 'tts_progress', 'tts_completed', 'artifact_ready'] and
+                                e.get('data', {}).get('artifact_type') == 'voiceover_audio'
+                                for e in recent_events
+                            )
+                    except Exception:
+                        pass  # If check fails, proceed without voiceover detection
+                    
+                    poll_interval = get_poll_interval(job_status, elapsed_time, has_voiceover)
+                    if has_voiceover:
+                        logger.debug(f"[STREAM_POLL] Job {job_id}: Using fast polling (0.2s) for voiceover job")
                     await asyncio.sleep(poll_interval)
                 except Exception as poll_error:
                     # Handle errors during polling
@@ -3762,23 +3849,11 @@ async def _generate_voiceover_async(
             model_used=metadata.get('provider', 'piper')
         )
         
-        # Increment voiceover usage counter
-        plan_policy = PlanPolicy(db, User(id=user_id))
-        plan_policy.increment_usage('voiceover_audio')
-        
-        # Commit transaction before closing session
-        db.commit()
-        
-        # Track TTS job success metric
-        try:
-            from .services.metrics import increment_counter
-            increment_counter("tts_jobs_total", labels={"status": "success", "voice_id": voice_id})
-        except ImportError:
-            pass
-        
+        # FIX #3: Add SSE store events BEFORE database commit to prevent race conditions
+        # This ensures events are available when polling detects database artifacts
         logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
         
-        # Send artifact ready event
+        # Send artifact ready event BEFORE commit
         artifact_ready_event_id = sse_store.add_event(
             job_id,
             'artifact_ready',
@@ -3789,11 +3864,11 @@ async def _generate_voiceover_async(
                 'metadata': artifact_metadata
             }
         )
-        logger.info(f"[VOICEOVER_ASYNC] artifact_ready event sent with ID {artifact_ready_event_id} for job {job_id}")
+        logger.info(f"[VOICEOVER_ASYNC] artifact_ready event sent with ID {artifact_ready_event_id} for job {job_id} (BEFORE commit)")
         
-        # Send tts_completed event ONCE with all data (after artifact is saved)
-        logger.info(f"[VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}", file=sys.stdout, flush=True)
+        # Send tts_completed event BEFORE commit to ensure it's available immediately
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_completed event for job {job_id} (BEFORE commit)")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id} (BEFORE commit)", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         tts_completed_event_id = sse_store.add_event(
@@ -3810,7 +3885,30 @@ async def _generate_voiceover_async(
             }
         )
         
-        logger.info(f"[VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id} (after artifact_ready ID {artifact_ready_event_id})")
+        logger.info(f"[VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id} (BEFORE commit, after artifact_ready ID {artifact_ready_event_id})")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        # FIX #2: Immediate Event Notification - Ensure events are ready for polling
+        # Log that events are now available in SSE store and ready for immediate polling
+        logger.info(f"[VOICEOVER_ASYNC] Events added to SSE store for job {job_id}: artifact_ready (ID: {artifact_ready_event_id}), tts_completed (ID: {tts_completed_event_id}). Ready for polling.")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Events ready in SSE store for job {job_id} - polling loop can detect immediately", file=sys.stdout, flush=True)
+        sys.stdout.flush()
+        
+        # Increment voiceover usage counter
+        plan_policy = PlanPolicy(db, User(id=user_id))
+        plan_policy.increment_usage('voiceover_audio')
+        
+        # Commit transaction AFTER events are added to SSE store
+        db.commit()
+        logger.info(f"[VOICEOVER_ASYNC] Database commit completed for job {job_id} (events already in SSE store)")
+        
+        # Track TTS job success metric
+        try:
+            from .services.metrics import increment_counter
+            increment_counter("tts_jobs_total", labels={"status": "success", "voice_id": voice_id})
+        except ImportError:
+            pass
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
