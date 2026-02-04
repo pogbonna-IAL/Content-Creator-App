@@ -30,6 +30,7 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
   
   // FIX 3: Track timeout for fallback completion
   const artifactReadyTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const progressTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Function to generate voiceover
   const handleGenerateVoiceover = async () => {
@@ -259,6 +260,20 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
       console.log('AudioPanel - Starting to read SSE stream...')
 
+      // FIX 3: Set timeout fallback to advance progress if no events received within 2 seconds
+      // This prevents progress from being stuck at 5% if events are delayed
+      if (progressTimeoutRef.current) {
+        clearTimeout(progressTimeoutRef.current)
+      }
+      progressTimeoutRef.current = setTimeout(() => {
+        if (voiceoverProgress === 5 && isGeneratingVoiceover) {
+          console.warn('AudioPanel - No progress events received within 2s, advancing to 10%')
+          setVoiceoverStatus('Connecting to voiceover service...')
+          setVoiceoverProgress(10)
+        }
+        progressTimeoutRef.current = null
+      }, 2000)
+
       while (true) {
         // Check if we should stop (abort signal)
         if (abortController.signal.aborted) {
@@ -322,10 +337,23 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                 full_data: data
               })
 
-              if (data.type === 'tts_started') {
+              // FIX 3: Clear progress timeout when events are received
+              if (progressTimeoutRef.current) {
+                clearTimeout(progressTimeoutRef.current)
+                progressTimeoutRef.current = null
+              }
+
+              // FIX 3: Clear progress timeout when events are received
+              if (progressTimeoutRef.current) {
+                clearTimeout(progressTimeoutRef.current)
+                progressTimeoutRef.current = null
+              }
+
+              // Handle events by both data.type and eventType (SSE event line)
+              if (data.type === 'tts_started' || eventType === 'tts_started') {
                 setVoiceoverStatus('TTS generation started...')
                 setVoiceoverProgress(10)
-              } else if (data.type === 'tts_progress') {
+              } else if (data.type === 'tts_progress' || eventType === 'tts_progress') {
                 setVoiceoverStatus(data.message || 'Generating voiceover...')
                 setVoiceoverProgress(data.progress || Math.max(voiceoverProgress, 20))
               } else if (data.type === 'artifact_ready' && data.artifact_type === 'voiceover_audio') {
@@ -385,6 +413,12 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
             }
           }
         }
+      }
+      
+      // FIX 3: Clean up progress timeout when stream ends
+      if (progressTimeoutRef.current) {
+        clearTimeout(progressTimeoutRef.current)
+        progressTimeoutRef.current = null
       }
     } catch (err) {
       // Handle abort errors gracefully (user cancelled)

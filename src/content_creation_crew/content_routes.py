@@ -1306,27 +1306,28 @@ async def stream_job_progress(
                             except:
                                 pass
                     
-                    # FIX 2: Check SSE store events FIRST to ensure proper ordering
-                    # This prevents database artifact_ready events from skipping earlier SSE store events
-                    try:
-                        sse_store_events = sse_store.get_events_since(job_id, last_sent_event_id)
-                        if sse_store_events:
-                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(sse_store_events)} SSE store events before artifact check, last_sent_event_id={last_sent_event_id}")
-                            for event in sse_store_events:
-                                event_id = event.get('id', 0)
-                                event_type = event.get('type', 'unknown')
-                                if event_id > last_sent_event_id:
-                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
-                                    yield f"id: {event_id}\n"
-                                    yield f"event: {event_type}\n"
-                                    yield f"data: {json.dumps(event.get('data', {}))}\n\n"
-                                    flush_buffers()
-                                    last_sent_event_id = event_id
-                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
-                                else:
-                                    logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping SSE store event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
-                    except Exception as sse_event_error:
-                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE store events before artifact check: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
+            # FIX 4: Check SSE store events FIRST and MORE FREQUENTLY to ensure immediate event delivery
+            # This prevents database artifact_ready events from skipping earlier SSE store events
+            # Also ensures tts_started and tts_progress events are delivered immediately
+            try:
+                sse_store_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                if sse_store_events:
+                    logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(sse_store_events)} SSE store events before artifact check, last_sent_event_id={last_sent_event_id}")
+                    for event in sse_store_events:
+                        event_id = event.get('id', 0)
+                        event_type = event.get('type', 'unknown')
+                        if event_id > last_sent_event_id:
+                            logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
+                            yield f"id: {event_id}\n"
+                            yield f"event: {event_type}\n"
+                            yield f"data: {json.dumps(event.get('data', {}))}\n\n"
+                            flush_buffers()
+                            last_sent_event_id = event_id
+                            logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
+                        else:
+                            logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping SSE store event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
+            except Exception as sse_event_error:
+                logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE store events before artifact check: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
                     
                     if current_artifacts and len(current_artifacts) > last_artifact_count:
                         # New artifacts created
@@ -3284,6 +3285,7 @@ async def create_voiceover(
         # Determine narration text source
         narration_text = None
         job_id = request.job_id
+        temp_job_id = None  # Track if we need to create a job
     
         if job_id:
             # Get job and find audio_script artifact
@@ -3309,6 +3311,33 @@ async def create_voiceover(
             
             narration_text = audio_script_artifact.content_text
             logger.info(f"Using audio script from job {job_id} for voiceover")
+            
+            # FIX 1 & 2: Send initial progress and tts_started events IMMEDIATELY for existing job
+            # Send initial progress update (matches frontend's initial 5%)
+            sse_store.add_event(
+                job_id,
+                'tts_progress',
+                {
+                    'type': 'tts_progress',
+                    'job_id': job_id,
+                    'message': 'Initializing voiceover generation...',
+                    'progress': 5
+                }
+            )
+            logger.info(f"[VOICEOVER_ENDPOINT] Sent initial progress event (5%) for existing job {job_id}")
+            
+            # Send tts_started event IMMEDIATELY (before async task starts)
+            sse_store.add_event(
+                job_id,
+                'tts_started',
+                {
+                    'type': 'tts_started',
+                    'job_id': job_id,
+                    'voice_id': request.voice_id,
+                    'text_length': len(narration_text) if narration_text else 0
+                }
+            )
+            logger.info(f"[VOICEOVER_ENDPOINT] Sent tts_started event for existing job {job_id} before async task")
         
         elif request.narration_text:
             narration_text = request.narration_text.strip()
@@ -3356,6 +3385,34 @@ async def create_voiceover(
             )
             job_id = job.id
             logger.info(f"Created new job {job_id} for standalone voiceover")
+            
+            # FIX 1 & 2: Send initial progress and tts_started events IMMEDIATELY before starting async task
+            # This ensures frontend receives progress updates right away, preventing stuck progress
+            # Send initial progress update (matches frontend's initial 5%)
+            sse_store.add_event(
+                job_id,
+                'tts_progress',
+                {
+                    'type': 'tts_progress',
+                    'job_id': job_id,
+                    'message': 'Initializing voiceover generation...',
+                    'progress': 5
+                }
+            )
+            logger.info(f"[VOICEOVER_ENDPOINT] Sent initial progress event (5%) for new job {job_id}")
+            
+            # Send tts_started event IMMEDIATELY (before async task starts)
+            sse_store.add_event(
+                job_id,
+                'tts_started',
+                {
+                    'type': 'tts_started',
+                    'job_id': job_id,
+                    'voice_id': request.voice_id,
+                    'text_length': len(narration_text) if narration_text else 0
+                }
+            )
+            logger.info(f"[VOICEOVER_ENDPOINT] Sent tts_started event for new job {job_id} before async task")
         
         else:
             raise HTTPException(
@@ -3504,32 +3561,12 @@ async def _generate_voiceover_async(
     sse_store = get_sse_store()
     
     try:
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to send tts_started event for job {job_id}", file=sys.stdout, flush=True)
+        # NOTE: tts_started event is now sent synchronously in the endpoint handler (FIX 2)
+        # This ensures it's sent before the frontend starts streaming, preventing stuck progress
+        # We skip sending it here to avoid duplicates
+        logger.info(f"[VOICEOVER_ASYNC] Starting voiceover generation for job {job_id} (tts_started event already sent by endpoint)")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting voiceover generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}", file=sys.stdout, flush=True)
         sys.stdout.flush()
-        logger.info(f"[VOICEOVER_ASYNC] About to send tts_started event for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to send tts_started event for job {job_id}", file=sys.stdout, flush=True)
-        sys.stdout.flush()
-        
-        # Send TTS started event
-        try:
-            sse_store.add_event(
-                job_id,
-                'tts_started',
-                {
-                    'type': 'tts_started',  # Add type field for frontend compatibility
-                    'job_id': job_id,
-                    'voice_id': voice_id,
-                    'text_length': len(narration_text)
-                }
-            )
-            logger.info(f"[VOICEOVER_ASYNC] tts_started event sent successfully for job {job_id}")
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_started event sent successfully for job {job_id}", file=sys.stdout, flush=True)
-            sys.stdout.flush()
-        except Exception as sse_error:
-            logger.error(f"[VOICEOVER_ASYNC] Failed to send tts_started event: {sse_error}", exc_info=True)
-            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Failed to send tts_started event: {sse_error}", file=sys.stderr, flush=True)
-            sys.stderr.flush()
-            raise
         
         logger.info(f"Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting TTS generation for job {job_id}, voice: {voice_id}, text length: {len(narration_text)}", file=sys.stdout, flush=True)
