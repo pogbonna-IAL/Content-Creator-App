@@ -32,6 +32,8 @@ export default function Home() {
   const [status, setStatus] = useState<string>('')
   const [progress, setProgress] = useState<number>(0)
   const [currentJobId, setCurrentJobId] = useState<number | null>(null) // Track current job ID for voiceover generation
+  // OPTIMIZATION #12: Quality metrics state for blog content
+  const [qualityMetrics, setQualityMetrics] = useState<{word_count?: number, char_count?: number, reading_time_minutes?: number, estimated_reading_time?: string} | undefined>(undefined)
 
   // Track reader and job ID for cancellation - MUST be declared before any conditional returns
   const [readerRef, setReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
@@ -640,6 +642,27 @@ export default function Home() {
                   } else if (data.message) {
                     setStatus(data.message)
                   }
+                } else if (data.type === 'content_preview') {
+                  // OPTIMIZATION #8: Handle content preview events for optimistic updates
+                  // Display preview immediately after extraction (before validation)
+                  if (data.preview) {
+                    const previewContent = data.preview
+                    const artifactType = data.artifact_type || 'blog'
+                    
+                    if (artifactType === 'blog') {
+                      // Show preview immediately, will be replaced with full content later
+                      setOutput(previewContent + '...')
+                      setStatus(data.message || 'Content extracted, validating...')
+                      setProgress(85) // Preview is at ~85% progress
+                      console.log(`✓ Content preview received (${previewContent.length} chars), total expected: ${data.total_length || 'unknown'}`)
+                    }
+                  }
+                } else if (data.type === 'artifact_ready') {
+                  // OPTIMIZATION #12: Capture quality metrics from artifact_ready events
+                  if (data.artifact_type === 'blog' && data.quality_metrics && isMounted) {
+                    setQualityMetrics(data.quality_metrics)
+                    console.log('✓ Quality metrics received:', data.quality_metrics)
+                  }
                 } else if (data.type === 'content') {
                   // Append chunk to accumulated content based on content type
                   if (data.chunk) {
@@ -1127,7 +1150,8 @@ export default function Home() {
             isLoading={isGenerating} 
             error={error} 
             status={status} 
-            progress={progress} 
+            progress={progress}
+            qualityMetrics={qualityMetrics}
           />
         )
       case 'social':
@@ -1169,7 +1193,8 @@ export default function Home() {
             isLoading={isGenerating} 
             error={error} 
             status={status} 
-            progress={progress} 
+            progress={progress}
+            qualityMetrics={qualityMetrics}
           />
         )
     }

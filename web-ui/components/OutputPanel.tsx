@@ -3,15 +3,23 @@
 import { useEffect } from 'react'
 import { formatBlogContent, isBlogContent } from '@/utils/blogFormatter'
 
+interface QualityMetrics {
+  word_count?: number
+  char_count?: number
+  reading_time_minutes?: number
+  estimated_reading_time?: string
+}
+
 interface OutputPanelProps {
   output: string
   isLoading: boolean
   error: string | null
   status?: string
   progress?: number
+  qualityMetrics?: QualityMetrics
 }
 
-export default function OutputPanel({ output, isLoading, error, status, progress }: OutputPanelProps) {
+export default function OutputPanel({ output, isLoading, error, status, progress, qualityMetrics }: OutputPanelProps) {
   // Debug logging
   useEffect(() => {
     if (output) {
@@ -93,9 +101,35 @@ export default function OutputPanel({ output, isLoading, error, status, progress
                   {output}
                 </div>
               )}
-              {output.length > 0 && (
-                <div className="mt-2 text-xs text-gray-300">
-                  Content length: {output.length} characters
+              {/* OPTIMIZATION #12: Display content quality indicators */}
+              {(output.length > 0 || qualityMetrics) && (
+                <div className="mt-4 pt-4 border-t border-dark-border">
+                  <div className="flex flex-wrap gap-4 text-xs text-gray-400">
+                    {qualityMetrics?.word_count && (
+                      <div className="flex items-center gap-1">
+                        <span className="text-neon-cyan">📝</span>
+                        <span>{qualityMetrics.word_count.toLocaleString()} words</span>
+                      </div>
+                    )}
+                    {qualityMetrics?.char_count && (
+                      <div className="flex items-center gap-1">
+                        <span className="text-neon-purple">🔤</span>
+                        <span>{qualityMetrics.char_count.toLocaleString()} characters</span>
+                      </div>
+                    )}
+                    {qualityMetrics?.estimated_reading_time && (
+                      <div className="flex items-center gap-1">
+                        <span className="text-neon-cyan">⏱️</span>
+                        <span>{qualityMetrics.estimated_reading_time}</span>
+                      </div>
+                    )}
+                    {!qualityMetrics && output.length > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-400">📏</span>
+                        <span>{output.length.toLocaleString()} characters</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

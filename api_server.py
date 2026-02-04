@@ -285,6 +285,29 @@ async def lifespan(app):
     # Pre-warm TTS models in background (non-blocking)
     asyncio.create_task(prewarm_tts_models())
     
+    # OPTIMIZATION #7: Cache warming for popular topics
+    async def warm_cache_for_popular_topics():
+        """Pre-generate content for popular/trending topics to improve response times"""
+        try:
+            from content_creation_crew.services.content_cache import get_cache
+            cache = get_cache()
+            
+            # Get popular topics from cache access statistics
+            popular_keys = cache.get_popular_topics(limit=10)
+            
+            if popular_keys:
+                logger.info(f"Cache warming: Found {len(popular_keys)} popular topics to warm")
+                # Note: Actual warming would require topic extraction from cache keys
+                # This is a placeholder for future implementation
+                # For now, we just log that we're tracking popular topics
+            else:
+                logger.info("Cache warming: No popular topics found yet (cache is new)")
+        except Exception as e:
+            logger.warning(f"Cache warming failed: {e}")
+    
+    # Start cache warming in background (non-blocking, low priority)
+    asyncio.create_task(warm_cache_for_popular_topics())
+    
     # Yield immediately - app can now respond to health checks
     yield  # Application runs here
     
