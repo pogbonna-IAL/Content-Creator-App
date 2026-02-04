@@ -2165,8 +2165,8 @@ async def run_generation_async(
         
         try:
             wait_loop_count = 0
-            # Use shorter wait interval (5 seconds instead of 10) for faster response
-            wait_interval = 5.0
+            # OPTIMIZATION: Use shorter wait interval (3 seconds instead of 5) for more responsive progress updates
+            wait_interval = 3.0
             while not executor_done:
                 wait_loop_count += 1
                 # Wait for either executor completion or wait_interval seconds (whichever comes first)
@@ -2319,6 +2319,7 @@ async def run_generation_async(
         # Skip content types that were already processed from cache
         cached_content_types_set = locals().get('cached_content_types_set', set())
         
+        # OPTIMIZATION: Process blog content first (it's the foundation for other content types)
         # Extract and validate blog content (only if blog is requested)
         if 'blog' in content_types and 'blog' not in cached_content_types_set:
             print(f"[RAILWAY_DEBUG] Job {job_id}: Starting blog content extraction from CrewAI result, result type={type(result)}, result={str(result)[:200] if result else 'None'}", file=sys.stdout, flush=True)
@@ -2346,6 +2347,17 @@ async def run_generation_async(
                 logger.debug(f"[VALIDATION] Job {job_id}: Cleaned content length={len(content) if content else 0}")
             
             if content and len(content.strip()) > 10:
+                # OPTIMIZATION: Send blog content to frontend IMMEDIATELY (before DB commit) for faster UX
+                # Users see content while it's being saved, reducing perceived latency
+                sse_store.add_event(job_id, 'content', {
+                    'job_id': job_id,
+                    'chunk': content,  # Send full content as a single chunk
+                    'progress': 95,  # Almost complete (will be 100 after DB commit)
+                    'artifact_type': 'blog',
+                    'pending_save': True  # Indicate it's being saved
+                })
+                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Blog content sent to frontend before DB commit")
+                
                 # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                 artifact_start = time.time()
                 artifact = content_service.create_artifact(
@@ -2386,22 +2398,24 @@ async def run_generation_async(
                         raise
                 artifact_duration = time.time() - artifact_start
                 
-                # Send content immediately (early streaming optimization)
-                print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact created, sending SSE events immediately", file=sys.stdout, flush=True)
+                # Send artifact_ready event and update progress to 100% (content already sent above)
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact created, sending artifact_ready event", file=sys.stdout, flush=True)
                 sse_store.add_event(job_id, 'artifact_ready', {
                     'job_id': job_id,
                     'artifact_type': 'blog',
                     'message': 'Blog content generated'
                 })
-                # Send content event with the actual blog content (early streaming)
+                # Update progress to 100% (content was already sent before DB commit)
                 sse_store.add_event(job_id, 'content', {
                     'job_id': job_id,
-                    'chunk': content,  # Send full content as a single chunk
-                    'progress': 100,  # Blog is complete
-                    'artifact_type': 'blog'
+                    'chunk': '',  # Empty chunk - just update progress
+                    'progress': 100,  # Blog is complete and saved
+                    'artifact_type': 'blog',
+                    'saved': True  # Indicate it's now saved
                 })
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Blog artifact SSE events added to store, content_length={len(content)}", file=sys.stdout, flush=True)
                 logger.info(f"[ARTIFACT] Job {job_id}: Blog artifact created in {artifact_duration:.3f}s, content_length={len(content)}")
+                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Blog content sent early, then saved to DB")
                 
                 # OPTIMIZATION (Phase 3): Run moderation in background (non-blocking)
                 if config.ENABLE_CONTENT_MODERATION:
@@ -2425,6 +2439,13 @@ async def run_generation_async(
             print(f"[RAILWAY_DEBUG] Job {job_id}: Processing {content_type} content extraction", file=sys.stdout, flush=True)
             logger.info(f"[EXTRACTION] Job {job_id}: Processing {content_type} content extraction")
             
+            # Send progress update immediately for better UX
+            sse_store.add_event(job_id, 'agent_progress', {
+                'job_id': job_id,
+                'message': f'Extracting {content_type} content...',
+                'step': f'{content_type}_extraction'
+            })
+            
             raw_content_func = {
                 'social': api_server_module.extract_social_media_content_async,
                 'audio': api_server_module.extract_audio_content_async,
@@ -2439,10 +2460,18 @@ async def run_generation_async(
                 print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
                 logger.info(f"[EXTRACTION] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, content length={len(raw_content) if raw_content else 0}")
                 if raw_content:
+                    # Send validation progress update
+                    sse_store.add_event(job_id, 'agent_progress', {
+                        'job_id': job_id,
+                        'message': f'Validating {content_type} content...',
+                        'step': f'{content_type}_validation'
+                    })
+                    
                     validation_start = time.time()
-                    # OPTIMIZATION: Social media uses simpler JSON, fail fast without repair
-                    # Blog content may need repair due to complexity
-                    allow_repair = content_type != 'social'
+                    # OPTIMIZATION: Skip repair for non-blog content (faster processing)
+                    # Only blog content needs repair due to complexity
+                    # Social/audio/video use simpler JSON structures
+                    allow_repair = content_type == 'blog'  # Only repair blog content
                     is_valid, validated_model, validated_content, was_repaired = validate_and_repair_content(
                         content_type, raw_content, model_name, allow_repair=allow_repair
                     )
@@ -2458,6 +2487,24 @@ async def run_generation_async(
                     
                     # Final check - ensure we have valid content before proceeding
                     if validated_content and len(validated_content.strip()) > 10:
+                        # OPTIMIZATION: Send content to frontend IMMEDIATELY (before DB commit) for faster UX
+                        # Users see content while it's being saved, reducing perceived latency
+                        content_field = {
+                            'social': 'social_media_content',
+                            'audio': 'audio_content',
+                            'video': 'video_content'
+                        }.get(content_type, 'content')
+                        
+                        sse_store.add_event(job_id, 'content', {
+                            'job_id': job_id,
+                            'chunk': validated_content,  # Send full content as a single chunk
+                            'progress': 95,  # Almost complete (will be 100 after DB commit)
+                            'artifact_type': content_type,
+                            'content_field': content_field,
+                            'pending_save': True  # Indicate it's being saved
+                        })
+                        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: {content_type} content sent to frontend before DB commit")
+                        
                         # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                         artifact_start = time.time()
                         artifact = content_service.create_artifact(
@@ -2519,29 +2566,25 @@ async def run_generation_async(
                             raise Exception(f"Failed to create {content_type} artifact after retries")
                         artifact_duration = time.time() - artifact_start
                         
-                        # Send content immediately (early streaming optimization)
-                        print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact created, sending SSE events immediately", file=sys.stdout, flush=True)
+                        # Send artifact_ready event and update progress to 100% (content already sent above)
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact created, sending artifact_ready event", file=sys.stdout, flush=True)
                         sse_store.add_event(job_id, 'artifact_ready', {
                             'job_id': job_id,
                             'artifact_type': content_type,
                             'message': f'{content_type.capitalize()} content generated'
                         })
-                        # Send content event with the actual content (early streaming)
-                        content_field = {
-                            'social': 'social_media_content',
-                            'audio': 'audio_content',
-                            'video': 'video_content'
-                        }.get(content_type, 'content')
+                        # Update progress to 100% (content was already sent before DB commit)
                         sse_store.add_event(job_id, 'content', {
                             'job_id': job_id,
-                            'chunk': validated_content,  # Send full content as a single chunk
-                            'progress': 100,  # Content is complete
+                            'chunk': '',  # Empty chunk - just update progress
+                            'progress': 100,  # Content is complete and saved
                             'artifact_type': content_type,
-                            'content_field': content_field  # Help frontend identify which field to use
+                            'content_field': content_field,
+                            'saved': True  # Indicate it's now saved
                         })
                         print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} artifact SSE events added to store, content_length={len(validated_content)}", file=sys.stdout, flush=True)
                         logger.info(f"[ARTIFACT] Job {job_id}: {content_type} artifact created in {artifact_duration:.3f}s, content_length={len(validated_content)}")
-                        logger.info(f"Job {job_id}: {content_type} content event sent (early streaming)")
+                        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: {content_type} content sent early, then saved to DB")
                         
                         # OPTIMIZATION (Phase 3): Run moderation in background (non-blocking)
                         # Note: Artifact is already created above (line 1773), so we just need to handle moderation
@@ -3454,13 +3497,31 @@ async def _generate_voiceover_async(
             storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
             StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
             logger.info(f"Audio file stored: {storage_key} for job {job_id}")
+            
+            # OPTIMIZATION: Get storage URL immediately after file is stored
+            storage_url = storage.get_url(storage_key)
+            logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL ready: {storage_url}")
+            
+            # OPTIMIZATION: Send audio URL to frontend IMMEDIATELY (before moderation/DB commit) for faster UX
+            # Users can start downloading/playing audio while moderation and DB operations complete
+            logger.info(f"[VOICEOVER_ASYNC] Sending audio URL immediately for job {job_id}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending audio URL immediately for job {job_id}", file=sys.stdout, flush=True)
+            sse_store.add_event(
+                job_id,
+                'tts_completed',
+                {
+                    'type': 'tts_completed',  # Add type field for frontend compatibility
+                    'job_id': job_id,
+                    'duration_sec': metadata.get('duration_sec'),
+                    'storage_url': storage_url,
+                    'url': storage_url,  # Also include 'url' field for frontend compatibility
+                    'pending_save': True  # Indicate artifact is being saved
+                }
+            )
+            logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio URL sent to frontend before moderation/DB commit")
         except Exception as e:
             StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
             raise
-        
-        # Get the public URL for the stored file (matches FastAPI static mount)
-        storage_url = storage.get_url(storage_key)
-        logger.info(f"Generated storage URL: {storage_url} for storage_key: {storage_key}")
         
         # Moderate output before saving artifact
         if config.ENABLE_CONTENT_MODERATION:
@@ -3542,9 +3603,9 @@ async def _generate_voiceover_async(
             }
         )
         
-        # Send TTS completed event
-        logger.info(f"[VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}", file=sys.stdout, flush=True)
+        # Update tts_completed event with artifact_id and mark as saved (URL was already sent above)
+        logger.info(f"[VOICEOVER_ASYNC] Updating tts_completed event with artifact_id for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Updating tts_completed event for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         tts_completed_event_id = sse_store.add_event(
@@ -3556,12 +3617,13 @@ async def _generate_voiceover_async(
                 'artifact_id': artifact.id,
                 'duration_sec': metadata.get('duration_sec'),
                 'storage_url': storage_url,
-                'url': storage_url  # Also include 'url' field for frontend compatibility
+                'url': storage_url,  # Also include 'url' field for frontend compatibility
+                'saved': True  # Indicate it's now saved
             }
         )
         
-        logger.info(f"[VOICEOVER_ASYNC] tts_completed event added to SSE store with ID {tts_completed_event_id} for job {job_id}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event added to SSE store with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
+        logger.info(f"[VOICEOVER_ASYNC] tts_completed event updated in SSE store with ID {tts_completed_event_id} for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event updated in SSE store with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         logger.info(f"[VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}")
