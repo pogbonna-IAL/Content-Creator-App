@@ -41,16 +41,6 @@ export default function Footer() {
                   User Guide
                 </a>
               </li>
-              <li>
-                <a 
-                  href="https://docs.crewai.com" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="hover:text-neon-cyan transition-colors"
-                >
-                  CrewAI Docs
-                </a>
-              </li>
             </ul>
           </div>
           <div>

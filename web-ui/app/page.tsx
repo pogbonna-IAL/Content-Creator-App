@@ -478,11 +478,22 @@ export default function Home() {
                     } else if (data.type === 'content' && data.chunk) {
                       // Process content chunks in final buffer
                       bufferProcessed = true
-                      const contentType = data.artifact_type || 
-                                        (data.content_field === 'audio_content' ? 'audio' :
-                                         data.content_field === 'social_media_content' ? 'social' :
-                                         data.content_field === 'video_content' ? 'video' :
-                                         data.content_type) || 'blog'
+                      // Enhanced content type detection with audio-specific checks
+                      let contentType = data.artifact_type || 
+                                      (data.content_field === 'audio_content' ? 'audio' :
+                                       data.content_field === 'social_media_content' ? 'social' :
+                                       data.content_field === 'video_content' ? 'video' :
+                                       data.content_type) || 'blog'
+                      
+                      // Additional check: detect audio content by structure (intro_hook, main_sections)
+                      if (contentType === 'blog' && data.chunk) {
+                        const chunkStr = String(data.chunk).toLowerCase()
+                        if ((chunkStr.includes('intro_hook') || chunkStr.includes('main_sections') || 
+                             chunkStr.includes('pacing_notes')) && 
+                            (chunkStr.includes('audio') || chunkStr.includes('podcast') || chunkStr.includes('narration'))) {
+                          contentType = 'audio'
+                        }
+                      }
                       
                       if (contentType === 'audio') {
                         accumulatedAudioContent += data.chunk

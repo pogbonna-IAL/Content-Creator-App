@@ -56,6 +56,17 @@ audio_content_task:
     - editing_task
   output_file: 'audio_output.md'
 
+audio_content_standalone_task:
+  description: >
+    Create audio script about {topic}. Transform to conversational podcast script.
+    Include: intro hook (30-60 sec), main sections with transitions, conclusion with CTA. Output ONLY JSON:
+    {{"intro_hook": "...", "main_sections": ["...", "..."], "conclusion": "...", "pacing_notes": "..."}}
+    No markdown. JSON only.
+  expected_output: >
+    Audio script in JSON format. Intro hook, main sections, conclusion with CTA. Ready for narration.
+  agent: audio_content_specialist
+  output_file: 'audio_output.md'
+
 video_content_task:
   description: >
     Create video script about {topic} from blog post. Transform to YouTube/educational video script.

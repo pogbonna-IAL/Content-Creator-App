@@ -2981,12 +2981,26 @@ async def run_generation_async(
                     error_msg = f"Failed to extract {content_type} content from CrewAI result"
                     logger.error(f"Job {job_id}: {error_msg}")
                     print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR - {error_msg}, raw_content length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
+                    
+                    # Provide more specific error for audio
+                    if content_type == 'audio':
+                        hint = (
+                            "Audio content extraction failed. This may occur if: "
+                            "1) The audio task didn't complete successfully, "
+                            "2) The result format is unexpected, "
+                            "3) The audio_output.md file wasn't created, "
+                            "4) The audio_content_task or audio_content_standalone_task failed. "
+                            "Check backend logs for audio_content_task execution and extraction details."
+                        )
+                    else:
+                        hint = f'Check backend logs for {content_type} extraction details. The CrewAI result may not contain the expected content.'
+                    
                     sse_store.add_event(job_id, 'error', {
                         'job_id': job_id,
                         'message': error_msg,
                         'error_type': 'extraction_failed',
                         'artifact_type': content_type,
-                        'hint': f'Check backend logs for {content_type} extraction details. The CrewAI result may not contain the expected content.'
+                        'hint': hint
                     })
         
         # Update job status to completed - commit immediately with retry logic

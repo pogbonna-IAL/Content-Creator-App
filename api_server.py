@@ -1596,30 +1596,79 @@ async def extract_social_media_content_async(result, topic: str, logger) -> str:
 
 
 async def extract_audio_content_async(result, topic: str, logger) -> str:
-    """Extract audio content from result asynchronously - optimized"""
+    """Extract audio content from result asynchronously - optimized with improved error handling"""
+    logger.info(f"[AUDIO_EXTRACTION] Starting audio extraction for topic: {topic}")
+    content = None
+    
     # First try direct extraction from result object
-    content = extract_content_from_result(result, 'audio')
+    try:
+        content = extract_content_from_result(result, 'audio')
+        if content and len(content.strip()) > 10:
+            logger.info(f"[AUDIO_EXTRACTION] Successfully extracted audio content from result object, length: {len(content)}")
+            return content
+    except Exception as e:
+        logger.warning(f"[AUDIO_EXTRACTION] Error in direct extraction: {e}")
+    
+    # Try alternative extraction methods from result object
+    # Check for audio_content_task output in result
+    try:
+        if hasattr(result, 'tasks_output'):
+            logger.info(f"[AUDIO_EXTRACTION] Checking tasks_output for audio content, found {len(result.tasks_output)} tasks")
+            for idx, task_output in enumerate(result.tasks_output):
+                task_name = getattr(task_output, 'task', None)
+                task_str = str(task_name).lower() if task_name else ''
+                
+                # Check if this is an audio-related task
+                if 'audio' in task_str or 'audio_content' in task_str:
+                    logger.info(f"[AUDIO_EXTRACTION] Found audio task at index {idx}: {task_str}")
+                    
+                    # Try extracting from raw output
+                    if hasattr(task_output, 'raw') and task_output.raw:
+                        raw_content = str(task_output.raw)
+                        if len(raw_content.strip()) > 10:
+                            logger.info(f"[AUDIO_EXTRACTION] Extracted from task_output.raw, length: {len(raw_content)}")
+                            content = raw_content
+                            break
+                    
+                    # Try extracting from output attribute
+                    if hasattr(task_output, 'output') and task_output.output:
+                        output_content = str(task_output.output)
+                        if len(output_content.strip()) > 10:
+                            logger.info(f"[AUDIO_EXTRACTION] Extracted from task_output.output, length: {len(output_content)}")
+                            content = output_content
+                            break
+                    
+                    # Try extracting from result attribute
+                    if hasattr(task_output, 'result') and task_output.result:
+                        result_content = str(task_output.result)
+                        if len(result_content.strip()) > 10:
+                            logger.info(f"[AUDIO_EXTRACTION] Extracted from task_output.result, length: {len(result_content)}")
+                            content = result_content
+                            break
+    except Exception as e:
+        logger.warning(f"[AUDIO_EXTRACTION] Error checking tasks_output: {e}")
     
     if content and len(content.strip()) > 10:
-        logger.info(f"Successfully extracted audio content from result object, length: {len(content)}")
+        logger.info(f"[AUDIO_EXTRACTION] Successfully extracted audio content from tasks_output, length: {len(content)}")
         return content
     
     # Fallback to file-based extraction (removed 1s delay for faster extraction)
     # Try reading the audio output file
     output_file = Path("audio_output.md")
+    logger.info(f"[AUDIO_EXTRACTION] Attempting file-based extraction from {output_file}")
     for attempt in range(3):  # Reduced from 10 to 3 attempts for faster failure
         if output_file.exists():
             try:
                 file_content = output_file.read_text(encoding='utf-8')
                 if file_content and len(file_content.strip()) > 10:
-                    logger.info(f"Audio file read attempt {attempt + 1}, file length: {len(file_content)}")
+                    logger.info(f"[AUDIO_EXTRACTION] Audio file read attempt {attempt + 1}, file length: {len(file_content)}")
                     
                     # First try: look for separator
                     if "---" in file_content:
                         parts = file_content.split("---", 1)
                         if len(parts) > 1:
                             content = parts[1].strip()
-                            logger.info(f"Extracted audio from file after separator, length: {len(content)}")
+                            logger.info(f"[AUDIO_EXTRACTION] Extracted audio from file after separator, length: {len(content)}")
                             if len(content) > 10:
                                 break
                     
@@ -1658,30 +1707,38 @@ async def extract_audio_content_async(result, topic: str, logger) -> str:
                     
                     if content_lines:
                         content = '\n'.join(content_lines).strip()
-                        logger.info(f"Extracted audio from file (skipping metadata), length: {len(content)}")
+                        logger.info(f"[AUDIO_EXTRACTION] Extracted audio from file (skipping metadata), length: {len(content)}")
                         if len(content) > 10:
                             break
                     
                     # Fallback: use entire file if it's substantial
                     if len(file_content.strip()) > 50:
                         content = file_content.strip()
-                        logger.info(f"Using entire audio file content, length: {len(content)}")
+                        logger.info(f"[AUDIO_EXTRACTION] Using entire audio file content, length: {len(content)}")
                         break
                         
             except Exception as e:
-                logger.warning(f"Error reading audio file (attempt {attempt + 1}): {e}")
+                logger.warning(f"[AUDIO_EXTRACTION] Error reading audio file (attempt {attempt + 1}): {e}")
+        else:
+            logger.debug(f"[AUDIO_EXTRACTION] Audio file does not exist (attempt {attempt + 1})")
+        
         # Removed sleep delay - check immediately for faster failure
         if attempt < 2:  # Only wait between attempts, not after last attempt
             await asyncio.sleep(0.05)  # OPTIMIZATION: Reduced from 0.2s to 0.05s for faster retries (75% reduction)
     
-    # Final fallback: extract from result object
+    # Final fallback: extract from result object again
     if not content or len(content.strip()) < 10:
-        logger.info("Audio file content empty, using result object extraction")
-        content = extract_content_from_result(result, 'audio')
+        logger.info("[AUDIO_EXTRACTION] Audio file content empty, retrying result object extraction")
+        try:
+            content = extract_content_from_result(result, 'audio')
+        except Exception as e:
+            logger.warning(f"[AUDIO_EXTRACTION] Final extraction attempt failed: {e}")
     
-    logger.info(f"Final extracted audio content length: {len(content) if content else 0}")
-    if content:
-        logger.info(f"Audio content preview: {content[:200]}")
+    logger.info(f"[AUDIO_EXTRACTION] Final extracted audio content length: {len(content) if content else 0}")
+    if content and len(content.strip()) > 10:
+        logger.info(f"[AUDIO_EXTRACTION] Audio content preview: {content[:200]}")
+    else:
+        logger.warning(f"[AUDIO_EXTRACTION] Audio content extraction failed - no valid content found")
     
     return content
 

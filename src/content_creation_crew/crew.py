@@ -335,6 +335,16 @@ class ContentCreationCrew():
             context=[self.editing_task()],  # Branch from editing task
             output_file='audio_output.md'  # Save audio content to separate file
         )
+    
+    @task
+    def audio_content_standalone_task(self) -> Task:
+        """Standalone audio task that generates directly from topic (no blog dependency)"""
+        return Task(
+            config=self.tasks_config['audio_content_standalone_task'],
+            agent=self.audio_content_specialist(),
+            # No context dependency - generates directly from topic
+            output_file='audio_output.md'
+        )
 
     @task
     def video_content_task(self) -> Task:
@@ -363,8 +373,9 @@ class ContentCreationCrew():
             tier_config = self.tier_config.get(self.tier, {})
             content_types = tier_config.get('content_types', ['blog'])
         
-        # OPTIMIZATION: Check if this is standalone social media generation (no blog needed)
+        # OPTIMIZATION: Check if this is standalone social media or audio generation (no blog needed)
         is_standalone_social = len(content_types) == 1 and content_types[0] == 'social'
+        is_standalone_audio = len(content_types) == 1 and content_types[0] == 'audio'
         
         # Collect agents manually (since we're not using @crew decorator)
         # CrewBase creates agents from @agent decorated methods
@@ -373,6 +384,11 @@ class ContentCreationCrew():
             agents = [self.social_media_specialist()]
             tasks = [self.social_media_standalone_task()]
             logger.info(f"[CREW_BUILD] Using standalone social media flow (no blog pipeline)")
+        elif is_standalone_audio:
+            # Standalone audio: only need audio specialist
+            agents = [self.audio_content_specialist()]
+            tasks = [self.audio_content_standalone_task()]
+            logger.info(f"[CREW_BUILD] Using standalone audio flow (no blog pipeline)")
         else:
             # Standard flow: include core blog pipeline
             agents = [
