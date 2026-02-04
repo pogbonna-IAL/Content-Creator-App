@@ -167,4 +167,57 @@
       font-size: 0.9375rem; /* 15px on mobile */
     }
   }
+  
+  /* Social Media Platform-Specific Formatting */
+  .linkedin-content {
+    @apply text-gray-200;
+  }
+  
+  .linkedin-content p {
+    @apply mb-3 leading-relaxed;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  
+  .linkedin-content strong {
+    @apply text-white font-semibold;
+  }
+  
+  .twitter-content {
+    @apply text-gray-200;
+  }
+  
+  .twitter-content p {
+    @apply mb-2 leading-snug;
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  
+  .facebook-content {
+    @apply text-gray-200;
+  }
+  
+  .facebook-content p {
+    @apply mb-2 leading-relaxed;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  
+  .instagram-content {
+    @apply text-gray-200;
+  }
+  
+  .instagram-content p {
+    @apply mb-3 leading-relaxed;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  
+  .cta-professional {
+    @apply border-blue-500/30;
+  }
+  
+  .cta-casual {
+    @apply border-gray-700;
+  }
 }
