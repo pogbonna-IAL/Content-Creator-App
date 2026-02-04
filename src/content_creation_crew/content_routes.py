@@ -1181,9 +1181,11 @@ async def stream_job_progress(
                                 }
                                 
                                 # Include full content from each artifact type
+                                content_found_in_artifacts = False
                                 if artifacts:
                                     for artifact in artifacts:
                                         if artifact.content_text:
+                                            content_found_in_artifacts = True
                                             if artifact.type == 'blog':
                                                 artifact_data['content'] = artifact.content_text
                                             elif artifact.type == 'social':
@@ -1192,33 +1194,53 @@ async def stream_job_progress(
                                                 artifact_data['audio_content'] = artifact.content_text
                                             elif artifact.type == 'video':
                                                 artifact_data['video_content'] = artifact.content_text
-                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Prepared complete event with content from {len(artifacts)} artifacts")
-                                else:
-                                    # Fallback: Try to get content from SSE store events that were already sent
-                                    logger.warning(f"[STREAM_WARN] Job {job_id}: No artifacts found - checking SSE store for content events")
-                                    try:
-                                        all_events = sse_store.get_events_since(job_id, 0)
-                                        content_events = [e for e in all_events if e.get('type') == 'content']
-                                        for content_event in content_events:
-                                            event_data = content_event.get('data', {})
-                                            chunk = event_data.get('chunk', '')
-                                            artifact_type = event_data.get('artifact_type', '')
-                                            if chunk and artifact_type:
-                                                if artifact_type == 'blog':
-                                                    artifact_data['content'] = chunk
-                                                elif artifact_type == 'social':
-                                                    artifact_data['social_media_content'] = chunk
-                                                elif artifact_type == 'audio':
-                                                    artifact_data['audio_content'] = chunk
-                                                elif artifact_type == 'video':
-                                                    artifact_data['video_content'] = chunk
+                                    if content_found_in_artifacts:
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Prepared complete event with content from {len(artifacts)} artifacts")
+                                
+                                # Fallback: Always try to get content from SSE store events (in case artifacts query failed or content wasn't saved)
+                                # This ensures we always include content in the complete event if it was generated
+                                try:
+                                    all_events = sse_store.get_events_since(job_id, 0)
+                                    content_events = [e for e in all_events if e.get('type') == 'content']
+                                    logger.info(f"[STREAM_FALLBACK] Job {job_id}: Checking SSE store - found {len(content_events)} content events")
+                                    
+                                    # Accumulate content from all content events (in case multiple events exist for same type)
+                                    for content_event in content_events:
+                                        event_data = content_event.get('data', {})
+                                        chunk = event_data.get('chunk', '')
+                                        artifact_type = event_data.get('artifact_type', '')
                                         
-                                        if any(key in artifact_data for key in ['content', 'audio_content', 'social_media_content', 'video_content']):
-                                            logger.info(f"[STREAM_COMPLETE] Job {job_id}: Found content in SSE store events, including in complete event")
-                                        else:
-                                            logger.warning(f"[STREAM_WARN] Job {job_id}: No content found in artifacts or SSE store - sending complete event without content")
-                                    except Exception as sse_fallback_error:
-                                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get content from SSE store: {sse_fallback_error}")
+                                        if chunk and artifact_type:
+                                            logger.info(f"[STREAM_FALLBACK] Job {job_id}: Found content in SSE store - type={artifact_type}, length={len(chunk)}")
+                                            
+                                            # Only set if not already set from artifacts, or if artifacts didn't have content
+                                            if artifact_type == 'blog' and not artifact_data.get('content'):
+                                                artifact_data['content'] = chunk
+                                            elif artifact_type == 'social' and not artifact_data.get('social_media_content'):
+                                                artifact_data['social_media_content'] = chunk
+                                            elif artifact_type == 'audio' and not artifact_data.get('audio_content'):
+                                                artifact_data['audio_content'] = chunk
+                                            elif artifact_type == 'video' and not artifact_data.get('video_content'):
+                                                artifact_data['video_content'] = chunk
+                                    
+                                    # Log final content status
+                                    has_any_content = any(key in artifact_data for key in ['content', 'audio_content', 'social_media_content', 'video_content'])
+                                    if has_any_content:
+                                        content_sources = []
+                                        if artifact_data.get('content'):
+                                            content_sources.append(f"blog({len(artifact_data['content'])})")
+                                        if artifact_data.get('social_media_content'):
+                                            content_sources.append(f"social({len(artifact_data['social_media_content'])})")
+                                        if artifact_data.get('audio_content'):
+                                            content_sources.append(f"audio({len(artifact_data['audio_content'])})")
+                                        if artifact_data.get('video_content'):
+                                            content_sources.append(f"video({len(artifact_data['video_content'])})")
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Complete event will include content from: {', '.join(content_sources)}")
+                                    else:
+                                        logger.warning(f"[STREAM_WARN] Job {job_id}: No content found in artifacts or SSE store - sending complete event without content")
+                                except Exception as sse_fallback_error:
+                                    logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to get content from SSE store: {sse_fallback_error}", exc_info=True)
+                                    if not content_found_in_artifacts:
                                         logger.warning(f"[STREAM_WARN] Job {job_id}: Sending complete event without artifact content")
                                 
                                 # Send complete event
@@ -2722,12 +2744,32 @@ async def run_generation_async(
                 if session:
                     # Try to refresh session - if connection is broken, this will fail
                     session.rollback()
-                    # Test if session is still valid by querying user
-                    user = session.query(User).filter(User.id == user_id).first()
+                    # Test if session is still valid by querying user with retry
+                    user = None
+                    for user_retry in range(3):
+                        try:
+                            user = session.query(User).filter(User.id == user_id).first()
+                            break  # Success
+                        except (OperationalError, DisconnectionError) as user_query_error:
+                            logger.warning(f"Job {job_id}: User query failed on attempt {user_retry + 1}/3: {user_query_error}")
+                            session.rollback()
+                            if user_retry < 2:
+                                await asyncio.sleep(0.3 * (user_retry + 1))
+                                continue
+                            raise  # Re-raise if all retries fail
+                    
                     if user:
                         content_service = ContentService(session, user)
                         # update_job_status calls get_job() which can fail - wrap in try/except
                         try:
+                            # Verify job exists before updating (get_job can fail with connection error)
+                            job = content_service.get_job(job_id)
+                            if not job:
+                                logger.warning(f"Job {job_id}: Job not found during error status update")
+                                error_update_success = False
+                                break  # Exit retry loop, will send error event below
+                            
+                            # Job exists - update status
                             content_service.update_job_status(
                                 job_id,
                                 JobStatus.FAILED.value,
@@ -2737,7 +2779,8 @@ async def run_generation_async(
                             error_update_success = True
                             break  # Success - exit retry loop
                         except (OperationalError, DisconnectionError) as update_inner_error:
-                            # get_job() failed - this will be caught by outer retry loop
+                            # get_job() or update_job_status() failed - this will be caught by outer retry loop
+                            logger.warning(f"Job {job_id}: get_job or update_job_status failed with connection error: {update_inner_error}")
                             raise
                         except Exception as update_inner_error:
                             # Non-connection error from update_job_status (e.g., job not found)
@@ -2777,22 +2820,42 @@ async def run_generation_async(
                             pass
                     error_session = SessionLocal()
                     try:
-                        error_user = error_session.query(User).filter(User.id == user_id).first()
+                        # Query user with retry logic
+                        error_user = None
+                        for user_retry in range(3):
+                            try:
+                                error_user = error_session.query(User).filter(User.id == user_id).first()
+                                break  # Success
+                            except (OperationalError, DisconnectionError) as user_query_error:
+                                logger.warning(f"Job {job_id}: User query failed in final attempt, retry {user_retry + 1}/3: {user_query_error}")
+                                error_session.rollback()
+                                if user_retry < 2:
+                                    await asyncio.sleep(0.3 * (user_retry + 1))
+                                    continue
+                                raise  # Re-raise if all retries fail
+                        
                         if error_user:
                             error_content_service = ContentService(error_session, error_user)
                             # update_job_status calls get_job() which can fail - wrap in try/except
                             try:
-                                error_content_service.update_job_status(
-                                    job_id,
-                                    JobStatus.FAILED.value,
-                                    finished_at=datetime.utcnow()
-                                )
-                                error_session.commit()
-                                error_update_success = True
-                                logger.info(f"Job {job_id}: Successfully updated job status with new session")
+                                # Verify job exists before updating (get_job can fail with connection error)
+                                error_job = error_content_service.get_job(job_id)
+                                if not error_job:
+                                    logger.warning(f"Job {job_id}: Job not found during final error status update")
+                                    error_update_success = False
+                                else:
+                                    # Job exists - update status
+                                    error_content_service.update_job_status(
+                                        job_id,
+                                        JobStatus.FAILED.value,
+                                        finished_at=datetime.utcnow()
+                                    )
+                                    error_session.commit()
+                                    error_update_success = True
+                                    logger.info(f"Job {job_id}: Successfully updated job status with new session")
                             except (OperationalError, DisconnectionError) as final_update_error:
-                                # get_job() failed even in final attempt - log and continue
-                                logger.error(f"Job {job_id}: Final update_job_status attempt failed: {final_update_error}")
+                                # get_job() or update_job_status() failed even in final attempt - log and continue
+                                logger.error(f"Job {job_id}: Final update_job_status attempt failed with connection error: {final_update_error}")
                                 error_update_success = False
                             except Exception as final_update_error:
                                 # Non-connection error (e.g., job not found)
