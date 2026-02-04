@@ -166,10 +166,11 @@ class LocalDiskStorageProvider(StorageProvider):
             return False
     
     def get_url(self, key: str) -> str:
-        """Get local file URL (returns path that matches FastAPI static mount)"""
-        # FastAPI mounts storage at /v1/storage, so return URL matching that mount
+        """Get local file URL (returns path that matches Next.js API proxy route)"""
+        # Use Next.js API proxy route /api/storage/* which proxies to backend /v1/storage/*
+        # This allows the frontend to access storage files through the same domain
         safe_key = key.lstrip('/').replace('..', '').replace('/', '/')
-        return f"/v1/storage/{safe_key}"
+        return f"/api/storage/{safe_key}"
     
     def generate_key(self, prefix: str, extension: str = "") -> str:
         """
