@@ -1911,7 +1911,20 @@ async def run_generation_async(
                     JobStatus.RUNNING.value,
                     started_at=datetime.utcnow()
                 )
-                session.commit()
+                commit_start_time = time.time()
+                logger.info(f"[STATUS_COMMIT] Job {job_id}: Starting commit for status update to RUNNING")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Starting commit for status update to RUNNING at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(commit_start_time))}", file=sys.stdout, flush=True)
+                try:
+                    session.commit()
+                    commit_duration = time.time() - commit_start_time
+                    logger.info(f"[STATUS_COMMIT] Job {job_id}: Status update commit SUCCESSFUL in {commit_duration:.3f}s")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Status update commit SUCCESSFUL in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+                except Exception as commit_error:
+                    commit_duration = time.time() - commit_start_time
+                    error_type = type(commit_error).__name__
+                    logger.error(f"[STATUS_COMMIT] Job {job_id}: Status update commit FAILED after {commit_duration:.3f}s: {error_type} - {commit_error}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Status update commit FAILED after {commit_duration:.3f}s: {error_type}", file=sys.stderr, flush=True)
+                    raise
                 break  # Success - exit retry loop
             except (OperationalError, DisconnectionError) as status_error:
                 logger.warning(f"[STATUS_RETRY] Job {job_id}: Status update failed on attempt {status_retry + 1}/{max_status_retries}: {status_error}")
@@ -2884,12 +2897,46 @@ async def run_generation_async(
                         max_artifact_retries = 3
                         artifact_retry_delay = 0.5
                         artifact_created = False
+                        artifact_id = artifact.id if hasattr(artifact, 'id') else None
+                        
                         for artifact_retry in range(max_artifact_retries):
+                            commit_start_time = time.time()
+                            logger.info(f"[ARTIFACT_COMMIT] Job {job_id}: Starting commit attempt {artifact_retry + 1}/{max_artifact_retries} for {content_type} artifact (artifact_id: {artifact_id})")
+                            print(f"[RAILWAY_DEBUG] Job {job_id}: Starting commit attempt {artifact_retry + 1}/{max_artifact_retries} for {content_type} artifact at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(commit_start_time))}", file=sys.stdout, flush=True)
+                            
                             try:
                                 session.commit()
+                                commit_duration = time.time() - commit_start_time
                                 artifact_created = True
+                                logger.info(f"[ARTIFACT_COMMIT] Job {job_id}: Commit attempt {artifact_retry + 1} SUCCESSFUL for {content_type} artifact (artifact_id: {artifact_id}) in {commit_duration:.3f}s")
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Commit attempt {artifact_retry + 1} SUCCESSFUL for {content_type} artifact in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+                                
+                                # Verify commit by checking if artifact exists
+                                try:
+                                    verify_session = SessionLocal()
+                                    try:
+                                        verify_artifact = verify_session.query(ContentArtifact).filter(
+                                            ContentArtifact.id == artifact_id
+                                        ).first()
+                                        if verify_artifact:
+                                            logger.info(f"[ARTIFACT_COMMIT] Job {job_id}: Commit verification PASSED - {content_type} artifact {artifact_id} confirmed in database")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: Commit verification PASSED - artifact {artifact_id} confirmed", file=sys.stdout, flush=True)
+                                        else:
+                                            logger.warning(f"[ARTIFACT_COMMIT] Job {job_id}: Commit verification FAILED - {content_type} artifact {artifact_id} NOT found in database")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Commit verification FAILED - artifact not found", file=sys.stderr, flush=True)
+                                    finally:
+                                        verify_session.close()
+                                except Exception as verify_error:
+                                    logger.warning(f"[ARTIFACT_COMMIT] Job {job_id}: Commit verification error: {verify_error}")
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Commit verification error: {verify_error}", file=sys.stderr, flush=True)
+                                
                                 break  # Success - exit retry loop
                             except (OperationalError, DisconnectionError) as commit_error:
+                                commit_duration = time.time() - commit_start_time
+                                error_type = type(commit_error).__name__
+                                error_msg = str(commit_error)
+                                logger.warning(f"[ARTIFACT_COMMIT] Job {job_id}: Commit attempt {artifact_retry + 1}/{max_artifact_retries} FAILED for {content_type} artifact after {commit_duration:.3f}s: {error_type} - {error_msg}")
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Commit attempt {artifact_retry + 1} FAILED after {commit_duration:.3f}s: {error_type}", file=sys.stderr, flush=True)
                                 logger.warning(f"[ARTIFACT_RETRY] Job {job_id}: Failed to commit {content_type} artifact on attempt {artifact_retry + 1}/{max_artifact_retries}: {commit_error}")
                                 session.rollback()
                                 if artifact_retry < max_artifact_retries - 1:
@@ -3034,8 +3081,21 @@ async def run_generation_async(
                     JobStatus.COMPLETED.value,
                     finished_at=datetime.utcnow()
                 )
-                session.commit()
-                completion_updated = True
+                commit_start_time = time.time()
+                logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Starting commit for status update to COMPLETED")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Starting commit for status update to COMPLETED at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(commit_start_time))}", file=sys.stdout, flush=True)
+                try:
+                    session.commit()
+                    commit_duration = time.time() - commit_start_time
+                    completion_updated = True
+                    logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+                except Exception as commit_error:
+                    commit_duration = time.time() - commit_start_time
+                    error_type = type(commit_error).__name__
+                    logger.error(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type} - {commit_error}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type}", file=sys.stderr, flush=True)
+                    raise
                 break  # Success - exit retry loop
             except (OperationalError, DisconnectionError) as commit_error:
                 logger.warning(f"[COMPLETION_RETRY] Job {job_id}: Failed to commit job completion on attempt {completion_retry + 1}/{max_completion_retries}: {commit_error}")
@@ -4101,8 +4161,53 @@ async def _generate_voiceover_async(
         plan_policy.increment_usage('voiceover_audio')
         
         # Commit transaction AFTER events are added to SSE store
-        db.commit()
-        logger.info(f"[VOICEOVER_ASYNC] Database commit completed for job {job_id} (events already in SSE store)")
+        commit_start_time = time.time()
+        logger.info(f"[VOICEOVER_ASYNC] Starting database commit for job {job_id} (artifact_id: {artifact.id if hasattr(artifact, 'id') else 'unknown'})")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting database commit for job {job_id} at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(commit_start_time))}", file=sys.stdout, flush=True)
+        
+        try:
+            db.commit()
+            commit_duration = time.time() - commit_start_time
+            logger.info(f"[VOICEOVER_ASYNC] Database commit completed successfully for job {job_id} in {commit_duration:.3f}s (artifact_id: {artifact.id if hasattr(artifact, 'id') else 'unknown'})")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Database commit completed successfully for job {job_id} in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+            
+            # Verify commit by checking if artifact exists in database
+            try:
+                verify_session = SessionLocal()
+                try:
+                    verify_artifact = verify_session.query(ContentArtifact).filter(
+                        ContentArtifact.id == artifact.id
+                    ).first()
+                    if verify_artifact:
+                        logger.info(f"[VOICEOVER_ASYNC] Commit verification: Artifact {artifact.id} confirmed in database for job {job_id}")
+                        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Commit verification: Artifact {artifact.id} confirmed in database", file=sys.stdout, flush=True)
+                    else:
+                        logger.warning(f"[VOICEOVER_ASYNC] Commit verification: Artifact {artifact.id} NOT found in database for job {job_id} - commit may have failed")
+                        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: Commit verification failed - artifact not found", file=sys.stderr, flush=True)
+                finally:
+                    verify_session.close()
+            except Exception as verify_error:
+                logger.warning(f"[VOICEOVER_ASYNC] Commit verification failed: {verify_error}")
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Commit verification error: {verify_error}", file=sys.stderr, flush=True)
+                
+        except Exception as commit_error:
+            commit_duration = time.time() - commit_start_time
+            error_type = type(commit_error).__name__
+            error_msg = str(commit_error)
+            logger.error(f"[VOICEOVER_ASYNC] Database commit FAILED for job {job_id} after {commit_duration:.3f}s: {error_type} - {error_msg}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Database commit FAILED for job {job_id} after {commit_duration:.3f}s: {error_type} - {error_msg}", file=sys.stderr, flush=True)
+            
+            # Try to rollback
+            try:
+                db.rollback()
+                logger.info(f"[VOICEOVER_ASYNC] Rollback completed for job {job_id} after commit failure")
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Rollback completed after commit failure", file=sys.stdout, flush=True)
+            except Exception as rollback_error:
+                logger.error(f"[VOICEOVER_ASYNC] Rollback also failed for job {job_id}: {rollback_error}", exc_info=True)
+                print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Rollback failed: {rollback_error}", file=sys.stderr, flush=True)
+            
+            # Re-raise to be caught by outer exception handler
+            raise
         
         # Track TTS job success metric
         try:
