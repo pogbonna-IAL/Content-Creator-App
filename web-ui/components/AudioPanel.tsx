@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { getApiUrl } from '@/lib/env'
+import ProgressiveAudioPlayer from './ProgressiveAudioPlayer'
 
 interface AudioPanelProps {
   output: string
@@ -706,13 +707,15 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                 
                 {audioUrl && !isGeneratingVoiceover && (
                   <div className="space-y-3">
-                    <audio 
-                      controls 
+                    {/* Progressive audio player with buffering support */}
+                    <ProgressiveAudioPlayer 
+                      audioUrl={audioUrl}
+                      onError={(error) => {
+                        console.error('ProgressiveAudioPlayer error:', error)
+                        setVoiceoverError(error)
+                      }}
                       className="w-full"
-                      src={audioUrl}
-                    >
-                      Your browser does not support the audio element.
-                    </audio>
+                    />
                     {audioMetadata && (
                       <div className="text-xs text-gray-400 space-y-1">
                         {audioMetadata.duration_sec && (
