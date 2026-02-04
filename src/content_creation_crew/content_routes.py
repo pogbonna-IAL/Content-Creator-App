@@ -4,6 +4,7 @@ Jobs-first persistence with SSE streaming support
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
+from starlette.exceptions import ClientDisconnect
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError, DisconnectionError
 from sqlalchemy import text
@@ -1006,13 +1007,6 @@ async def stream_job_progress(
                                 # Wait longer before next poll attempt
                                 await asyncio.sleep(2.0)  # Wait 2 seconds before next poll
                                 break  # Exit retry loop, continue while loop
-                        finally:
-                            # Ensure session is always closed
-                            if poll_session:
-                                try:
-                                    poll_session.close()
-                                except:
-                                    pass
                         except Exception as db_error:
                             # Check if this is actually a connection error that wasn't caught above
                             error_msg = str(db_error)
@@ -1678,20 +1672,50 @@ async def stream_job_progress(
                         logger.warning(f"[STREAM_END] Job {job_id}: Job failed but no error event was sent, sending now")
             except Exception as final_check_error:
                 logger.error(f"[STREAM_ERROR] Job {job_id}: Error checking final job status: {type(final_check_error).__name__}: {str(final_check_error)}")
+        except (ClientDisconnect, ConnectionError, BrokenPipeError, OSError) as disconnect_error:
+            # Client disconnected - this is normal, don't log as error
+            error_msg = str(disconnect_error).lower()
+            is_client_disconnect = (
+                isinstance(disconnect_error, ClientDisconnect) or
+                'client disconnect' in error_msg or
+                'broken pipe' in error_msg or
+                'connection reset' in error_msg or
+                'bodystreambuffer was aborted' in error_msg or
+                'body stream buffer was aborted' in error_msg
+            )
+            if is_client_disconnect:
+                logger.info(f"[STREAM_DISCONNECT] Job {job_id}: Client disconnected during stream (normal)")
+            else:
+                logger.warning(f"[STREAM_DISCONNECT] Job {job_id}: Connection error in stream generator: {type(disconnect_error).__name__}")
         except Exception as stream_error:
             # Handle errors in the stream generator itself
-            logger.error(f"[STREAM_ERROR] Job {job_id}: Fatal error in stream generator: {type(stream_error).__name__}: {str(stream_error)}", exc_info=True)
-            # Try to send a final error event
-            try:
-                error_data = {'type': 'error', 'job_id': job_id, 'message': f'Stream error: {str(stream_error)}'}
-                event_id = sse_store.add_event(job_id, 'error', error_data)
-                yield f"id: {event_id}\n"
-                yield f"event: error\n"
-                yield f"data: {json.dumps(error_data)}\n\n"
-                flush_buffers()  # Flush final error event
-            except Exception:
-                # Can't send error - connection is broken
-                pass
+            error_msg = str(stream_error).lower()
+            is_client_disconnect = (
+                'client disconnect' in error_msg or
+                'broken pipe' in error_msg or
+                'connection reset' in error_msg or
+                'bodystreambuffer was aborted' in error_msg or
+                'body stream buffer was aborted' in error_msg
+            )
+            
+            if is_client_disconnect:
+                logger.info(f"[STREAM_DISCONNECT] Job {job_id}: Client disconnected (detected in stream_error)")
+            else:
+                logger.error(f"[STREAM_ERROR] Job {job_id}: Fatal error in stream generator: {type(stream_error).__name__}: {str(stream_error)}", exc_info=True)
+                # Try to send a final error event
+                try:
+                    error_data = {'type': 'error', 'job_id': job_id, 'message': f'Stream error: {str(stream_error)}'}
+                    event_id = sse_store.add_event(job_id, 'error', error_data)
+                    yield f"id: {event_id}\n"
+                    yield f"event: error\n"
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    flush_buffers()  # Flush final error event
+                except (ClientDisconnect, ConnectionError, BrokenPipeError, OSError):
+                    # Client disconnected while sending error - normal
+                    logger.info(f"[STREAM_DISCONNECT] Job {job_id}: Client disconnected while sending final error")
+                except Exception:
+                    # Can't send error - connection is broken
+                    pass
     
     return StreamingResponse(
         generate_stream(),
