@@ -1960,6 +1960,14 @@ async def run_generation_async(
         content_service = ContentService(session, user)
         policy = PlanPolicy(session, user)
         
+        # Get model name, plan, and org_id BEFORE closing session (these are needed later)
+        # Get the single content type being generated
+        content_type = content_types[0] if content_types else 'blog'
+        primary_content_type = content_type
+        model_name = policy.get_model_name(content_type=primary_content_type) if primary_content_type else policy.get_model_name()
+        plan = policy.get_plan()
+        org_id = policy._get_user_org_id()  # Get org_id for logging before session closure
+        
         # Update job status to running with retry logic
         max_status_retries = 3
         status_retry_delay = 0.5
@@ -2001,13 +2009,16 @@ async def run_generation_async(
                     
                     # OPTIMIZATION: Close session immediately after commit to prevent idle-in-transaction timeout
                     # Session will be recreated when needed for artifact creation
+                    # This prevents idle-in-transaction timeout during long CrewAI execution
                     try:
                         session.close()
-                        logger.info(f"[SESSION_MGMT] Job {job_id}: Session closed after status update commit")
+                        logger.info(f"[SESSION_MGMT] Job {job_id}: Session closed after status update commit (before CrewAI execution)")
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Session closed after status update commit", file=sys.stdout, flush=True)
                     except Exception as close_error:
                         logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing session: {close_error}")
                     session = None  # Mark as closed
                     content_service = None  # Will be recreated with new session
+                    # Note: policy, model_name, and plan are already retrieved above, so we don't need to recreate policy
                     
                 except Exception as commit_error:
                     commit_duration = time.time() - commit_start_time
@@ -2069,7 +2080,7 @@ async def run_generation_async(
                 raise
         
         # Get the single content type being generated (enforced at function start)
-        content_type = content_types[0] if content_types else 'blog'
+        # Note: content_type, model_name, and plan are already retrieved above before session closure
         content_type_display = {
             'blog': 'Blog Post',
             'social': 'Social Media Content',
@@ -2097,16 +2108,13 @@ async def run_generation_async(
         logger.info(f"Job {job_id}: Notified user - generating {content_type_display}")
         print(f"[RAILWAY_DEBUG] Job {job_id}: Notified user - generating {content_type_display}", file=sys.stdout, flush=True)
         
-        # Get model name - check for user-specific preference for the content type
-        primary_content_type = content_type
-        model_name = policy.get_model_name(content_type=primary_content_type) if primary_content_type else policy.get_model_name()
-        plan = policy.get_plan()
+        # Note: model_name and plan are already retrieved above before session closure
         # Use print() for critical messages as logger might be buffered
         print(f"[RAILWAY_DEBUG] Job {job_id}: Model='{model_name}' (for {primary_content_type or 'default'}), Timeout={timeout_seconds}s, Content types={content_types}", file=sys.stdout, flush=True)
         logger.info(f"[JOB_START] Job {job_id}: Starting content generation")
         logger.info(f"[JOB_START] Job {job_id}: Topic='{topic}', Plan='{plan}', Model='{model_name}', Timeout={timeout_seconds}s")
         logger.info(f"[JOB_START] Job {job_id}: Content types requested: {content_types}")
-        logger.debug(f"[JOB_START] Job {job_id}: User ID={user_id}, Organization ID={policy._get_user_org_id()}")
+        logger.debug(f"[JOB_START] Job {job_id}: User ID={user_id}, Organization ID={org_id}")
         sys.stdout.flush()
         sys.stderr.flush()
         
