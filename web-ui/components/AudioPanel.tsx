@@ -181,11 +181,15 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
     setVoiceoverAbortControllerRef(abortController)
 
     try {
-      // Use getApiUrl helper to properly handle relative URLs and API URL configuration
-      const streamUrl = getApiUrl(`v1/content/jobs/${voiceoverJobId}/stream`)
+      // Use Next.js API proxy route instead of direct backend connection
+      // This avoids CORS issues and provides better error handling
+      const streamUrl = `/api/jobs/${voiceoverJobId}/stream`
 
       const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
-      const headers: HeadersInit = {}
+      const headers: HeadersInit = {
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      }
       if (token) {
         headers['Authorization'] = `Bearer ${token}`
       }
@@ -194,30 +198,44 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
       let response: Response
       try {
+        // Add connection timeout (10 seconds) to detect connection issues early
+        const connectionTimeoutId = setTimeout(() => {
+          if (!response) {
+            console.error('AudioPanel - Connection timeout after 10s, aborting fetch')
+            abortController.abort()
+          }
+        }, 10000)
+
         response = await fetch(streamUrl, {
           method: 'GET',
           headers,
           credentials: 'include',
           signal: abortController.signal,
         })
+        
+        clearTimeout(connectionTimeoutId)
       } catch (fetchError: any) {
-        // Handle network errors (CORS, connection refused, etc.)
-        console.error('AudioPanel - Fetch error (network/CORS):', fetchError)
+        // Handle network errors (CORS, connection refused, timeout, etc.)
+        console.error('AudioPanel - Fetch error (network/CORS/timeout):', fetchError)
         const errorMessage = fetchError.message || 'Network error'
         const isNetworkError = errorMessage.includes('network') || 
                               errorMessage.includes('Failed to fetch') ||
                               errorMessage.includes('CORS') ||
-                              fetchError.name === 'TypeError'
+                              errorMessage.includes('timeout') ||
+                              errorMessage.includes('aborted') ||
+                              fetchError.name === 'TypeError' ||
+                              fetchError.name === 'AbortError'
         
         if (isNetworkError) {
-          throw new Error(
-            `Network error connecting to voiceover stream. ` +
-            `Please check: 1) Backend is running and accessible, ` +
-            `2) CORS is configured correctly, ` +
-            `3) Network connectivity. ` +
-            `URL: ${streamUrl}. ` +
-            `Original error: ${errorMessage}`
-          )
+          const detailedError = errorMessage.includes('timeout') || errorMessage.includes('aborted')
+            ? `Connection timeout or aborted. The voiceover service may be slow to respond. Please try again.`
+            : `Network error connecting to voiceover stream. ` +
+              `Please check: 1) Backend is running and accessible, ` +
+              `2) Network connectivity, ` +
+              `3) Try refreshing the page. ` +
+              `URL: ${streamUrl}. ` +
+              `Original error: ${errorMessage}`
+          throw new Error(detailedError)
         }
         throw fetchError
       }
@@ -260,19 +278,20 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
 
       console.log('AudioPanel - Starting to read SSE stream...')
 
-      // FIX 3: Set timeout fallback to advance progress if no events received within 2 seconds
+      // FIX 3: Set timeout fallback to advance progress if no events received within 3 seconds
+      // Increased timeout to account for proxy route connection time
       // This prevents progress from being stuck at 5% if events are delayed
       if (progressTimeoutRef.current) {
         clearTimeout(progressTimeoutRef.current)
       }
       progressTimeoutRef.current = setTimeout(() => {
         if (voiceoverProgress === 5 && isGeneratingVoiceover) {
-          console.warn('AudioPanel - No progress events received within 2s, advancing to 10%')
+          console.warn('AudioPanel - No progress events received within 3s, advancing to 10%')
           setVoiceoverStatus('Connecting to voiceover service...')
           setVoiceoverProgress(10)
         }
         progressTimeoutRef.current = null
-      }, 2000)
+      }, 3000) // Increased from 2s to 3s to account for proxy connection time
 
       while (true) {
         // Check if we should stop (abort signal)

@@ -858,6 +858,29 @@ async def stream_job_progress(
                 logger.info(f"[STREAM_GENERATOR] Sent initial job_started event for job {job_id}, status={job.status}")
                 last_sent_event_id = event_id
                 
+                # CRITICAL FIX: Immediately check for and send any existing SSE store events
+                # This ensures voiceover tts_started/tts_progress events are sent immediately
+                # instead of waiting for the polling loop to detect them
+                try:
+                    existing_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                    if existing_events:
+                        logger.info(f"[STREAM_GENERATOR] Found {len(existing_events)} existing SSE store events for job {job_id}, sending immediately")
+                        print(f"[RAILWAY_DEBUG] [STREAM_GENERATOR] Found {len(existing_events)} existing SSE store events, sending immediately", file=sys.stdout, flush=True)
+                        for event in existing_events:
+                            event_id = event.get('id', 0)
+                            event_type = event.get('type', 'unknown')
+                            if event_id > last_sent_event_id:
+                                yield f"id: {event_id}\n"
+                                yield f"event: {event_type}\n"
+                                yield f"data: {json.dumps(event.get('data', {}))}\n\n"
+                                flush_buffers()  # Flush each event immediately
+                                last_sent_event_id = event_id
+                                logger.info(f"[STREAM_GENERATOR] Sent existing SSE store event {event_type} (id: {event_id}) immediately on connection")
+                                print(f"[RAILWAY_DEBUG] [STREAM_GENERATOR] Sent existing event {event_type} (id: {event_id})", file=sys.stdout, flush=True)
+                except Exception as existing_event_error:
+                    logger.warning(f"[STREAM_GENERATOR] Error checking existing SSE store events: {existing_event_error}")
+                    print(f"[RAILWAY_DEBUG] [STREAM_GENERATOR] Error checking existing events: {existing_event_error}", file=sys.stderr, flush=True)
+                
                 # If job is already failed, check for error events and send them
                 if job.status == JobStatus.FAILED.value:
                     logger.warning(f"[STREAM_GENERATOR] Job {job_id} is already failed, checking for error events")
