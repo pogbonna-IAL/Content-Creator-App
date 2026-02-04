@@ -4668,7 +4668,15 @@ async def _generate_voiceover_async(
             logger.info(f"[VOICEOVER_ASYNC] Database commit completed successfully for job {job_id} in {commit_duration:.3f}s (artifact_id: {artifact.id if hasattr(artifact, 'id') else 'unknown'})")
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Database commit completed successfully for job {job_id} in {commit_duration:.3f}s", file=sys.stdout, flush=True)
             
-            # Verify commit by checking if artifact exists in database
+            # OPTIMIZATION: Close session immediately after commit to prevent idle-in-transaction timeout
+            try:
+                db.close()
+                logger.info(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Database session closed after commit for job {job_id}")
+                db = None  # Mark as closed to prevent reuse
+            except Exception as close_error:
+                logger.warning(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Error closing session after commit: {close_error}")
+            
+            # Verify commit by checking if artifact exists in database (using new session)
             try:
                 verify_session = SessionLocal()
                 try:
@@ -4747,15 +4755,23 @@ async def _generate_voiceover_async(
             }
         )
     finally:
+        # OPTIMIZATION: Only close session if it wasn't already closed after successful commit
         if db:
             try:
-                db.rollback()  # Rollback any uncommitted transactions before closing
+                # Only rollback if session is still active (commit may have failed)
+                if hasattr(db, 'is_active') and db.is_active:
+                    try:
+                        db.rollback()  # Rollback any uncommitted transactions before closing
+                        logger.info(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Rolled back uncommitted transaction for job {job_id}")
+                    except Exception as rollback_error:
+                        logger.warning(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Rollback failed (may already be closed): {rollback_error}")
             except Exception:
-                pass  # Ignore rollback errors if session is already closed/invalid
+                pass  # Ignore errors checking session state
             try:
                 db.close()
+                logger.info(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Database session closed in finally block for job {job_id}")
             except Exception as close_error:
-                logger.warning(f"Error closing database session for voiceover job {job_id}: {close_error}")
+                logger.warning(f"[SESSION_MGMT] [VOICEOVER_ASYNC] Error closing database session in finally block for job {job_id}: {close_error}")
 
 
 class VideoRenderRequest(BaseModel):
