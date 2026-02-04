@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect } from 'react'
+import { formatBlogContent, isBlogContent } from '@/utils/blogFormatter'
 
 interface OutputPanelProps {
   output: string
@@ -83,9 +84,15 @@ export default function OutputPanel({ output, isLoading, error, status, progress
         ) : output && output.trim() ? (
           <div className="prose prose-invert max-w-none">
             <div className="bg-dark-card rounded-lg p-4 sm:p-6 border border-dark-border mb-4 max-h-[600px] overflow-y-auto touch-pan-y overscroll-contain">
-              <div className="text-sm sm:text-base text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
-                {output}
-              </div>
+              {isBlogContent(output) ? (
+                <div className="blog-content-wrapper">
+                  {formatBlogContent(output)}
+                </div>
+              ) : (
+                <div className="text-sm sm:text-base text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
+                  {output}
+                </div>
+              )}
               {output.length > 0 && (
                 <div className="mt-2 text-xs text-gray-300">
                   Content length: {output.length} characters

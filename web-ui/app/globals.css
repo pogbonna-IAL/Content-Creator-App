@@ -57,3 +57,114 @@
   }
 }
 
+/* Word Document Style Blog Formatting */
+@layer components {
+  .blog-content-wrapper {
+    @apply max-w-full;
+  }
+  
+  .blog-content {
+    @apply max-w-full;
+  }
+  
+  /* Title Style - Large, Bold, Centered (Word Title Style) */
+  .blog-title {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 2.25rem; /* 36px */
+    font-weight: 700;
+    line-height: 1.2;
+    color: #ffffff;
+    margin-top: 2rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+    letter-spacing: -0.02em;
+  }
+  
+  .blog-title:first-child {
+    margin-top: 0;
+  }
+  
+  /* Heading Style - H2 (Word Heading 1 Style) */
+  .blog-heading {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 1.875rem; /* 30px */
+    font-weight: 600;
+    line-height: 1.3;
+    color: #ffffff;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    letter-spacing: -0.01em;
+    border-bottom: 2px solid rgba(0, 240, 255, 0.3);
+    padding-bottom: 0.5rem;
+  }
+  
+  /* Subheading Style - H3 (Word Heading 2 Style) */
+  .blog-subheading {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 1.5rem; /* 24px */
+    font-weight: 600;
+    line-height: 1.4;
+    color: #e5e7eb;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    letter-spacing: -0.01em;
+  }
+  
+  /* Paragraph Style - Justified Text (Word Normal Style) */
+  .blog-paragraph {
+    font-family: 'Calibri', 'Arial', sans-serif;
+    font-size: 1rem; /* 16px */
+    line-height: 1.75;
+    color: #d1d5db;
+    margin-bottom: 1rem;
+    text-align: justify;
+    text-justify: inter-word;
+    hyphens: auto;
+  }
+  
+  /* List Style - Bulleted Lists (Word List Style) */
+  .blog-list {
+    font-family: 'Calibri', 'Arial', sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: #d1d5db;
+    margin-bottom: 1rem;
+    margin-left: 1.5rem;
+    padding-left: 0.5rem;
+  }
+  
+  .blog-list li {
+    margin-bottom: 0.5rem;
+    padding-left: 0.5rem;
+  }
+  
+  /* Text Style - Default text */
+  .blog-text {
+    font-family: 'Calibri', 'Arial', sans-serif;
+    font-size: 1rem;
+    line-height: 1.75;
+    color: #d1d5db;
+    margin-bottom: 1rem;
+  }
+  
+  /* Responsive adjustments */
+  @media (max-width: 640px) {
+    .blog-title {
+      font-size: 1.875rem; /* 30px on mobile */
+    }
+    
+    .blog-heading {
+      font-size: 1.5rem; /* 24px on mobile */
+    }
+    
+    .blog-subheading {
+      font-size: 1.25rem; /* 20px on mobile */
+    }
+    
+    .blog-paragraph,
+    .blog-list,
+    .blog-text {
+      font-size: 0.9375rem; /* 15px on mobile */
+    }
+  }
+}
