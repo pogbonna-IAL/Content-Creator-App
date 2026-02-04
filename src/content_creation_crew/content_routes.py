@@ -1349,15 +1349,22 @@ async def stream_job_progress(
                     # Check for new SSE events (like tts_completed, tts_started, etc.) that were added directly to store
                     try:
                         new_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                        if new_events:
+                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(new_events)} new SSE events, last_sent_event_id={last_sent_event_id}")
                         for event in new_events:
                             # Skip events we've already sent (shouldn't happen, but safety check)
-                            if event['id'] > last_sent_event_id:
-                                yield f"id: {event['id']}\n"
-                                yield f"event: {event['type']}\n"
-                                yield f"data: {json.dumps(event['data'])}\n\n"
+                            event_id = event.get('id', 0)
+                            event_type = event.get('type', 'unknown')
+                            if event_id > last_sent_event_id:
+                                logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
+                                yield f"id: {event_id}\n"
+                                yield f"event: {event_type}\n"
+                                yield f"data: {json.dumps(event.get('data', {}))}\n\n"
                                 flush_buffers()
-                                last_sent_event_id = event['id']
-                                logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event['type']} (id: {event['id']})")
+                                last_sent_event_id = event_id
+                                logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
+                            else:
+                                logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
                     except Exception as sse_event_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE events: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
                     
@@ -1599,6 +1606,26 @@ async def run_generation_async(
         status_retry_delay = 0.5
         for status_retry in range(max_status_retries):
             try:
+                # update_job_status calls get_job() internally - add retry logic for get_job
+                # First verify job exists with retry logic
+                job = None
+                for get_job_retry in range(3):
+                    try:
+                        job = content_service.get_job(job_id)
+                        break  # Success
+                    except (OperationalError, DisconnectionError) as get_job_error:
+                        logger.warning(f"[STATUS_RETRY] Job {job_id}: get_job failed on attempt {get_job_retry + 1}/3: {get_job_error}")
+                        session.rollback()
+                        if get_job_retry < 2:
+                            await asyncio.sleep(0.3 * (get_job_retry + 1))
+                            continue
+                        raise  # Re-raise if all retries fail
+                
+                if not job:
+                    logger.error(f"Job {job_id} not found during RUNNING status update")
+                    break  # Continue anyway - generation will proceed
+                
+                # Job exists - update status
                 content_service.update_job_status(
                     job_id,
                     JobStatus.RUNNING.value,
@@ -2561,6 +2588,26 @@ async def run_generation_async(
         completion_updated = False
         for completion_retry in range(max_completion_retries):
             try:
+                # update_job_status calls get_job() internally - add retry logic for get_job
+                # First verify job exists with retry logic
+                job = None
+                for get_job_retry in range(3):
+                    try:
+                        job = content_service.get_job(job_id)
+                        break  # Success
+                    except (OperationalError, DisconnectionError) as get_job_error:
+                        logger.warning(f"[COMPLETION_RETRY] Job {job_id}: get_job failed on attempt {get_job_retry + 1}/3: {get_job_error}")
+                        session.rollback()
+                        if get_job_retry < 2:
+                            await asyncio.sleep(0.3 * (get_job_retry + 1))
+                            continue
+                        raise  # Re-raise if all retries fail
+                
+                if not job:
+                    logger.error(f"Job {job_id} not found during completion update")
+                    break  # Continue anyway - we'll still send completion event
+                
+                # Job exists - update status
                 content_service.update_job_status(
                     job_id,
                     JobStatus.COMPLETED.value,
@@ -2581,7 +2628,20 @@ async def run_generation_async(
                     except:
                         pass
                     session = SessionLocal()
-                    user = session.query(User).filter(User.id == user_id).first()
+                    # Retry user query with retry logic
+                    user = None
+                    for user_retry in range(3):
+                        try:
+                            user = session.query(User).filter(User.id == user_id).first()
+                            break  # Success
+                        except (OperationalError, DisconnectionError) as user_query_error:
+                            logger.warning(f"[COMPLETION_RETRY] Job {job_id}: User query failed on retry {user_retry + 1}/3: {user_query_error}")
+                            session.rollback()
+                            if user_retry < 2:
+                                await asyncio.sleep(0.3 * (user_retry + 1))
+                                continue
+                            raise  # Re-raise if all retries fail
+                    
                     if not user:
                         logger.error(f"User {user_id} not found during completion retry")
                         session.close()
@@ -2760,10 +2820,23 @@ async def run_generation_async(
                     
                     if user:
                         content_service = ContentService(session, user)
-                        # update_job_status calls get_job() which can fail - wrap in try/except
+                        # update_job_status calls get_job() which can fail - wrap in try/except with retry
                         try:
                             # Verify job exists before updating (get_job can fail with connection error)
-                            job = content_service.get_job(job_id)
+                            # Add retry logic for get_job call
+                            job = None
+                            for get_job_retry in range(3):
+                                try:
+                                    job = content_service.get_job(job_id)
+                                    break  # Success
+                                except (OperationalError, DisconnectionError) as get_job_error:
+                                    logger.warning(f"Job {job_id}: get_job failed on attempt {get_job_retry + 1}/3: {get_job_error}")
+                                    session.rollback()
+                                    if get_job_retry < 2:
+                                        await asyncio.sleep(0.3 * (get_job_retry + 1))
+                                        continue
+                                    raise  # Re-raise if all retries fail
+                            
                             if not job:
                                 logger.warning(f"Job {job_id}: Job not found during error status update")
                                 error_update_success = False
@@ -2836,10 +2909,23 @@ async def run_generation_async(
                         
                         if error_user:
                             error_content_service = ContentService(error_session, error_user)
-                            # update_job_status calls get_job() which can fail - wrap in try/except
+                            # update_job_status calls get_job() which can fail - wrap in try/except with retry
                             try:
                                 # Verify job exists before updating (get_job can fail with connection error)
-                                error_job = error_content_service.get_job(job_id)
+                                # Add retry logic for get_job call
+                                error_job = None
+                                for get_job_retry in range(3):
+                                    try:
+                                        error_job = error_content_service.get_job(job_id)
+                                        break  # Success
+                                    except (OperationalError, DisconnectionError) as get_job_error:
+                                        logger.warning(f"Job {job_id}: get_job failed in final attempt, retry {get_job_retry + 1}/3: {get_job_error}")
+                                        error_session.rollback()
+                                        if get_job_retry < 2:
+                                            await asyncio.sleep(0.3 * (get_job_retry + 1))
+                                            continue
+                                        raise  # Re-raise if all retries fail
+                                
                                 if not error_job:
                                     logger.warning(f"Job {job_id}: Job not found during final error status update")
                                     error_update_success = False
@@ -3461,7 +3547,7 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
-        sse_store.add_event(
+        tts_completed_event_id = sse_store.add_event(
             job_id,
             'tts_completed',
             {
@@ -3473,6 +3559,10 @@ async def _generate_voiceover_async(
                 'url': storage_url  # Also include 'url' field for frontend compatibility
             }
         )
+        
+        logger.info(f"[VOICEOVER_ASYNC] tts_completed event added to SSE store with ID {tts_completed_event_id} for job {job_id}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event added to SSE store with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
+        sys.stdout.flush()
         
         logger.info(f"[VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Voiceover generation completed successfully for job {job_id}", file=sys.stdout, flush=True)
