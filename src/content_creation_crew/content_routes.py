@@ -4098,7 +4098,7 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] TTS provider is available, proceeding with synthesis", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
-        # Send progress event
+        # Send progress event with type field for frontend compatibility
         logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (25%) - Synthesizing speech...")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_progress event (25%) - Synthesizing speech...", file=sys.stdout, flush=True)
         sys.stdout.flush()
@@ -4107,6 +4107,7 @@ async def _generate_voiceover_async(
             job_id,
             'tts_progress',
             {
+                'type': 'tts_progress',
                 'job_id': job_id,
                 'message': 'Synthesizing speech...',
                 'progress': 25
@@ -4123,6 +4124,44 @@ async def _generate_voiceover_async(
         
         tts_start_time = time.time()
         tts_success = False
+        
+        # Estimate text length for progress updates
+        text_length = len(narration_text)
+        
+        # Send intermediate progress updates during synthesis (if text is long)
+        if text_length > 500:
+            # Send progress at 40% and 55% for longer texts
+            async def send_intermediate_progress():
+                await asyncio.sleep(2)  # Wait 2 seconds
+                elapsed = time.time() - tts_start_time
+                if elapsed < 30:  # Only if still synthesizing (within 30s)
+                    sse_store.add_event(
+                        job_id,
+                        'tts_progress',
+                        {
+                            'type': 'tts_progress',
+                            'job_id': job_id,
+                            'message': 'Synthesizing speech...',
+                            'progress': 40
+                        }
+                    )
+                await asyncio.sleep(2)  # Wait another 2 seconds
+                elapsed = time.time() - tts_start_time
+                if elapsed < 30:  # Only if still synthesizing (within 30s)
+                    sse_store.add_event(
+                        job_id,
+                        'tts_progress',
+                        {
+                            'type': 'tts_progress',
+                            'job_id': job_id,
+                            'message': 'Synthesizing speech...',
+                            'progress': 55
+                        }
+                    )
+            
+            # Start intermediate progress updates in background
+            asyncio.create_task(send_intermediate_progress())
+        
         try:
             logger.info(f"[VOICEOVER_ASYNC] About to call synthesize for job {job_id}, voice_id: {voice_id}, format: {format}, speed: {speed}")
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] About to call synthesize for job {job_id}", file=sys.stdout, flush=True)
@@ -4180,22 +4219,24 @@ async def _generate_voiceover_async(
             tts_duration = time.time() - tts_start_time
             TTSMetrics.record_synthesis(provider_name, tts_duration, success=tts_success)
         
-        # Send progress event
-        logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (75%) - Saving audio file...")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_progress event (75%) - Saving audio file...", file=sys.stdout, flush=True)
+        # Send progress event after synthesis completes
+        logger.info(f"[VOICEOVER_ASYNC] Sending tts_progress event (70%) - Processing audio...")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_progress event (70%) - Processing audio...", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         sse_store.add_event(
             job_id,
             'tts_progress',
             {
+                'type': 'tts_progress',
                 'job_id': job_id,
-                'message': 'Saving audio file...',
-                'progress': 75
+                'message': 'Processing audio...',
+                'progress': 70
             }
         )
         
-        # OPTIMIZATION #8: Optimize audio file storage (async) - store in background and send URL immediately
+        # OPTIMIZATION: Store audio file synchronously to ensure it exists before sending URL
+        # This prevents 404 errors when frontend tries to access the file
         logger.info(f"[VOICEOVER_ASYNC] Getting storage provider...")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Getting storage provider...", file=sys.stdout, flush=True)
         sys.stdout.flush()
@@ -4207,40 +4248,70 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Generated storage key: {storage_key}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
-        # Generate URL immediately (before storage completes)
-        storage_url = storage.get_url(storage_key)
-        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL generated immediately: {storage_url}")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio file URL generated: {storage_url}", file=sys.stdout, flush=True)
-        sys.stdout.flush()
+        # Send progress event before storage
+        sse_store.add_event(
+            job_id,
+            'tts_progress',
+            {
+                'type': 'tts_progress',
+                'job_id': job_id,
+                'message': 'Saving audio file...',
+                'progress': 80
+            }
+        )
         
-        # Store audio with metrics (M7) - run in background executor for non-blocking storage
+        # Store audio file synchronously to ensure it exists before sending URL
+        # This prevents frontend from getting 404 errors
         from .services.metrics import StorageMetrics
+        storage_start_time = time.time()
         
-        async def store_audio_async():
-            """Store audio file asynchronously"""
+        try:
+            logger.info(f"[VOICEOVER_ASYNC] Storing audio file synchronously: {storage_key} ({len(audio_bytes)} bytes)")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Storing audio file: {storage_key} ({len(audio_bytes)} bytes)", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            
+            # Store in executor to avoid blocking event loop, but wait for completion
             loop = asyncio.get_event_loop()
-            try:
-                await loop.run_in_executor(
-                    None,
-                    lambda: storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
-                )
-                StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
-                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file stored asynchronously: {storage_key}")
-            except Exception as e:
-                StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
-                logger.error(f"[STREAM_OPTIMIZATION] Job {job_id}: Failed to store audio file: {e}", exc_info=True)
-                # Don't raise - URL is already sent, storage failure is logged but doesn't block response
+            await loop.run_in_executor(
+                None,
+                lambda: storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
+            )
+            
+            storage_duration = time.time() - storage_start_time
+            StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
+            logger.info(f"[VOICEOVER_ASYNC] Audio file stored successfully in {storage_duration:.3f}s: {storage_key}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio file stored successfully in {storage_duration:.3f}s", file=sys.stdout, flush=True)
+            sys.stdout.flush()
+            
+            # Verify file exists (for local storage) - use same path logic as LocalDiskStorageProvider
+            if hasattr(storage, 'base_path'):
+                from pathlib import Path
+                # Use same sanitization logic as LocalDiskStorageProvider.put()
+                # storage_key format: "voiceovers/20240112_123456_abc123.wav"
+                safe_key = storage_key.lstrip('/').replace('..', '')
+                # Path.joinpath handles forward slashes correctly on all platforms
+                file_path = Path(storage.base_path) / safe_key
+                if file_path.exists():
+                    file_size = file_path.stat().st_size
+                    logger.info(f"[VOICEOVER_ASYNC] Storage verification: File exists at {file_path} ({file_size} bytes)")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Storage verification: File exists ({file_size} bytes)", file=sys.stdout, flush=True)
+                else:
+                    logger.warning(f"[VOICEOVER_ASYNC] Storage verification: File not found at {file_path}")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: Storage verification failed - file not found", file=sys.stderr, flush=True)
+            
+        except Exception as storage_error:
+            storage_duration = time.time() - storage_start_time
+            StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
+            error_msg = f"Failed to store audio file after {storage_duration:.3f}s: {str(storage_error)}"
+            logger.error(f"[VOICEOVER_ASYNC] {error_msg}", exc_info=True)
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] ERROR: {error_msg}", file=sys.stderr, flush=True)
+            sys.stderr.flush()
+            raise RuntimeError(error_msg)
         
-        # Store audio in background (non-blocking)
-        logger.info(f"[VOICEOVER_ASYNC] Starting async audio storage task...")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Starting async audio storage task...", file=sys.stdout, flush=True)
-        sys.stdout.flush()
-        
-        asyncio.create_task(store_audio_async())
-        
-        # Send URL immediately (before storage completes) for faster UX
-        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Sending audio URL immediately (storage in progress)")
-        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio storage started in background, URL ready: {storage_url}", file=sys.stdout, flush=True)
+        # Generate URL after storage completes (ensures file exists)
+        storage_url = storage.get_url(storage_key)
+        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL generated after storage: {storage_url}")
+        print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio file stored and URL ready: {storage_url}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
         # Moderate output before saving artifact
@@ -4285,6 +4356,18 @@ async def _generate_voiceover_async(
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Content moderation disabled, skipping check", file=sys.stdout, flush=True)
             sys.stdout.flush()
         
+        # Send progress event before artifact creation
+        sse_store.add_event(
+            job_id,
+            'tts_progress',
+            {
+                'type': 'tts_progress',
+                'job_id': job_id,
+                'message': 'Finalizing voiceover...',
+                'progress': 90
+            }
+        )
+        
         # Create voiceover_audio artifact
         logger.info(f"[VOICEOVER_ASYNC] Creating voiceover_audio artifact...")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Creating voiceover_audio artifact...", file=sys.stdout, flush=True)
@@ -4313,19 +4396,22 @@ async def _generate_voiceover_async(
             model_used=metadata.get('provider', 'piper')
         )
         
-        # FIX #3: Add SSE store events BEFORE database commit to prevent race conditions
+        # OPTIMIZATION: Add SSE store events BEFORE database commit to prevent race conditions
         # This ensures events are available when polling detects database artifacts
         logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
         
-        # Send artifact ready event BEFORE commit
+        # Send artifact ready event BEFORE commit with complete metadata
         artifact_ready_event_id = sse_store.add_event(
             job_id,
             'artifact_ready',
             {
+                'type': 'artifact_ready',
                 'job_id': job_id,
                 'artifact_type': 'voiceover_audio',
                 'artifact_id': artifact.id,
-                'metadata': artifact_metadata
+                'metadata': artifact_metadata,
+                'url': storage_url,  # Include URL for frontend compatibility
+                'storage_url': storage_url
             }
         )
         logger.info(f"[VOICEOVER_ASYNC] artifact_ready event sent with ID {artifact_ready_event_id} for job {job_id} (BEFORE commit)")
@@ -4353,7 +4439,7 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] tts_completed event sent with ID {tts_completed_event_id} for job {job_id}", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
-        # FIX #2: Immediate Event Notification - Ensure events are ready for polling
+        # OPTIMIZATION: Immediate Event Notification - Ensure events are ready for polling
         # Log that events are now available in SSE store and ready for immediate polling
         logger.info(f"[VOICEOVER_ASYNC] Events added to SSE store for job {job_id}: artifact_ready (ID: {artifact_ready_event_id}), tts_completed (ID: {tts_completed_event_id}). Ready for polling.")
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Events ready in SSE store for job {job_id} - polling loop can detect immediately", file=sys.stdout, flush=True)
