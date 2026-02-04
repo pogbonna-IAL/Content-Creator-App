@@ -7,9 +7,28 @@ export const maxDuration = 600
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { jobId: string } }
+  context: { params: Promise<{ jobId: string }> }
 ) {
-  const jobId = params.jobId
+  // Safely await params promise (Next.js 15+ requirement)
+  let jobId: string | undefined
+  try {
+    const params = await context.params
+    jobId = params?.jobId
+  } catch (paramsError) {
+    console.error('[SSE Proxy] Error reading params:', paramsError)
+    return new Response(
+      JSON.stringify({ error: 'Invalid request parameters', detail: 'Failed to read route parameters' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+
+  if (!jobId || jobId === 'undefined' || jobId === 'null') {
+    return new Response(
+      JSON.stringify({ error: 'Invalid job ID', detail: `Job ID is required. Received: ${jobId || 'undefined'}` }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+
   const backendStreamUrl = getApiUrl(`v1/content/jobs/${jobId}/stream`)
 
   console.log(`[SSE Proxy] Proxying SSE stream for job ${jobId} to ${backendStreamUrl}`)
