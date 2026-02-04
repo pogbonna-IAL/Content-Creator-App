@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, B
 from fastapi import Request as FastAPIRequest
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError, DisconnectionError
+from sqlalchemy import text
 import psycopg2
 import psycopg2.extensions
 from pydantic import BaseModel, Field
@@ -17,7 +18,7 @@ import logging
 import time
 import sys
 
-from .database import User, get_db, ContentJob, ContentArtifact, JobStatus
+from .database import User, get_db, ContentJob, ContentArtifact, JobStatus, SessionLocal
 from .auth import get_current_user
 from .services.content_service import ContentService
 from .services.plan_policy import PlanPolicy
@@ -749,6 +750,75 @@ async def stream_job_progress(
     # Import flush utilities for immediate data delivery
     from content_creation_crew.streaming_utils import flush_buffers
     
+    # Helper function to get polling session with retry and connection invalidation
+    async def get_poll_session_with_retry(max_retries: int = 3, retry_delay: float = 0.5):
+        """
+        Get a fresh session for polling, with automatic retry and connection invalidation.
+        Invalidates dead connections on SSL/connection errors.
+        
+        Args:
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Initial retry delay in seconds (default: 0.5)
+        
+        Returns:
+            Database session or None if all retries fail
+        """
+        for attempt in range(max_retries):
+            session = SessionLocal()
+            try:
+                # Test connection immediately with a simple query
+                session.execute(text("SELECT 1"))
+                return session
+            except (OperationalError, DisconnectionError) as e:
+                error_msg = str(e)
+                is_ssl_error = (
+                    'SSL' in error_msg or
+                    'connection has been closed' in error_msg.lower() or
+                    'connection reset' in error_msg.lower() or
+                    'EOF' in error_msg or
+                    (hasattr(e, 'orig') and isinstance(e.orig, (psycopg2.OperationalError, psycopg2.InterfaceError)))
+                )
+                
+                # Invalidate the broken connection
+                try:
+                    if hasattr(session, 'connection'):
+                        session.connection().invalidate()
+                    session.close()
+                except:
+                    pass
+                
+                if attempt < max_retries - 1 and is_ssl_error:
+                    logger.warning(
+                        f"[POLL_SESSION] SSL connection error (attempt {attempt + 1}/{max_retries}), "
+                        f"invalidating and retrying: {error_msg}"
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    session.close()
+                    raise
+            except Exception as e:
+                try:
+                    session.close()
+                except:
+                    pass
+                if attempt < max_retries - 1:
+                    error_msg = str(e)
+                    is_connection_error = (
+                        'connection' in error_msg.lower() or
+                        'SSL' in error_msg or
+                        'closed' in error_msg.lower()
+                    )
+                    if is_connection_error:
+                        logger.warning(
+                            f"[POLL_SESSION] Connection error (attempt {attempt + 1}/{max_retries}): {error_msg}. Retrying..."
+                        )
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                raise
+        
+        return None  # Should never reach here
+    
     # Log stream start
     client_host = request.client.host if request.client else 'unknown'
     logger.info(f"[STREAM_START] Starting SSE stream for job {job_id}, client={client_host}, user_id={current_user.id}")
@@ -841,9 +911,19 @@ async def stream_job_progress(
                     query_failed = False
                     
                     for retry_attempt in range(max_retries):
-                        poll_session = SessionLocal()
+                        poll_session = None
                         try:
-                            fresh_job = poll_session.query(ContentJob).filter(ContentJob.id == job_id).first()
+                            # Use helper function to get session with retry and connection invalidation
+                            poll_session = await get_poll_session_with_retry(max_retries=1, retry_delay=0.1)
+                            if not poll_session:
+                                raise OperationalError("Failed to get database session", None, None)
+                            
+                            # OPTIMIZATION: Use joinedload to fetch job with artifacts in one query
+                            fresh_job = poll_session.query(ContentJob)\
+                                .options(joinedload(ContentJob.artifacts))\
+                                .filter(ContentJob.id == job_id)\
+                                .first()
+                            
                             if fresh_job:
                                 job = fresh_job
                                 consecutive_failures = 0  # Reset failure counter on success
@@ -868,9 +948,15 @@ async def stream_job_progress(
                             if is_connection_error:
                                 logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error on attempt {retry_attempt + 1}/{max_retries}: {error_msg}")
                             
-                            # Close the broken session
+                            # Invalidate and close the broken session
                             try:
-                                poll_session.close()
+                                if poll_session and hasattr(poll_session, 'connection'):
+                                    try:
+                                        poll_session.connection().invalidate()
+                                    except:
+                                        pass
+                                if poll_session:
+                                    poll_session.close()
                             except:
                                 pass
                             
@@ -920,6 +1006,13 @@ async def stream_job_progress(
                                 # Wait longer before next poll attempt
                                 await asyncio.sleep(2.0)  # Wait 2 seconds before next poll
                                 break  # Exit retry loop, continue while loop
+                        finally:
+                            # Ensure session is always closed
+                            if poll_session:
+                                try:
+                                    poll_session.close()
+                                except:
+                                    pass
                         except Exception as db_error:
                             # Check if this is actually a connection error that wasn't caught above
                             error_msg = str(db_error)
@@ -941,7 +1034,13 @@ async def stream_job_progress(
                                 logger.warning(f"[STREAM_RETRY] Job {job_id}: Database connection error (caught as Exception) on attempt {retry_attempt + 1}/{max_retries} (consecutive failures: {consecutive_failures}/{max_consecutive_failures}): {error_msg}")
                                 
                                 try:
-                                    poll_session.close()
+                                    if poll_session and hasattr(poll_session, 'connection'):
+                                        try:
+                                            poll_session.connection().invalidate()
+                                        except:
+                                            pass
+                                    if poll_session:
+                                        poll_session.close()
                                 except:
                                     pass
                                 
@@ -1318,10 +1417,10 @@ async def stream_job_progress(
                             break
                     
                     # OPTIMIZATION #4: Optimize database queries with joinedload
-                    # Check for new artifacts - use short-lived session with retry logic
+                    # Check for new artifacts - use helper function with retry and connection invalidation
                     current_artifacts = []
-                    for check_retry in range(2):  # 2 retries for artifact check
-                        artifacts_check_session = SessionLocal()
+                    artifacts_check_session = await get_poll_session_with_retry(max_retries=2, retry_delay=0.3)
+                    if artifacts_check_session:
                         try:
                             # OPTIMIZATION: Use joinedload to fetch job with artifacts in one query
                             # This reduces database roundtrips from 2 to 1
@@ -1337,16 +1436,13 @@ async def stream_job_progress(
                                 current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
                                     ContentArtifact.job_id == job_id
                                 ).all()
-                            break  # Success
                         except (OperationalError, DisconnectionError) as check_error:
-                            logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact check query failed on attempt {check_retry + 1}/2: {check_error}")
+                            logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact check query failed: {check_error}")
                             try:
-                                artifacts_check_session.close()
+                                if hasattr(artifacts_check_session, 'connection'):
+                                    artifacts_check_session.connection().invalidate()
                             except:
                                 pass
-                            if check_retry < 1:
-                                await asyncio.sleep(0.5)
-                                continue
                             current_artifacts = []
                         except Exception as check_error:
                             logger.warning(f"[STREAM_WARN] Job {job_id}: Artifact check query error: {check_error}")
@@ -1356,6 +1452,9 @@ async def stream_job_progress(
                                 artifacts_check_session.close()
                             except:
                                 pass
+                    else:
+                        logger.warning(f"[STREAM_WARN] Job {job_id}: Failed to get session for artifact check, skipping")
+                        current_artifacts = []
                     
                     # FIX 4: Check SSE store events FIRST and MORE FREQUENTLY to ensure immediate event delivery
                     # This prevents database artifact_ready events from skipping earlier SSE store events

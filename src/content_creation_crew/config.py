@@ -151,7 +151,7 @@ class Config:
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "20"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
-    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "3600"))  # 1 hour
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "900"))  # 15 minutes (900s) - prevents stale SSL connections
     DB_STATEMENT_TIMEOUT: int = int(os.getenv("DB_STATEMENT_TIMEOUT", "10000"))  # 10 seconds in milliseconds
     
     # Ollama URL alias (for compatibility)
