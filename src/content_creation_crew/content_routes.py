@@ -3280,6 +3280,23 @@ async def run_generation_async(
                     })
         
         # Update job status to completed - commit immediately with retry logic
+        # OPTIMIZATION: Recreate session and content_service if needed (they may have been closed earlier)
+        if session is None or not session.is_active or content_service is None:
+            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for completion status update")
+            if session:
+                try:
+                    session.close()
+                except:
+                    pass
+            session = SessionLocal()
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                logger.error(f"User {user_id} not found when recreating session for completion update")
+                if session:
+                    session.close()
+                raise Exception(f"User {user_id} not found")
+            content_service = ContentService(session, user)
+        
         max_completion_retries = 3
         completion_retry_delay = 0.5
         completion_updated = False
@@ -3290,11 +3307,21 @@ async def run_generation_async(
                 job = None
                 for get_job_retry in range(3):
                     try:
+                        # Ensure content_service exists
+                        if content_service is None:
+                            if session is None or not session.is_active:
+                                session = SessionLocal()
+                            user = session.query(User).filter(User.id == user_id).first()
+                            if user:
+                                content_service = ContentService(session, user)
+                            else:
+                                raise Exception(f"User {user_id} not found")
                         job = content_service.get_job(job_id)
                         break  # Success
                     except (OperationalError, DisconnectionError) as get_job_error:
                         logger.warning(f"[COMPLETION_RETRY] Job {job_id}: get_job failed on attempt {get_job_retry + 1}/3: {get_job_error}")
-                        session.rollback()
+                        if session:
+                            session.rollback()
                         if get_job_retry < 2:
                             await asyncio.sleep(0.3 * (get_job_retry + 1))
                             continue
@@ -3334,11 +3361,26 @@ async def run_generation_async(
                     
                     logger.info(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s")
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit SUCCESSFUL in {commit_duration:.3f}s", file=sys.stdout, flush=True)
+                    
+                    # OPTIMIZATION: Close session immediately after commit to prevent idle-in-transaction timeout
+                    try:
+                        session.close()
+                        logger.info(f"[SESSION_MGMT] Job {job_id}: Session closed after completion status commit")
+                    except Exception as close_error:
+                        logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing session: {close_error}")
+                    session = None  # Mark as closed
+                    content_service = None  # Will be recreated if needed
+                    
                 except Exception as commit_error:
                     commit_duration = time.time() - commit_start_time
                     error_type = type(commit_error).__name__
                     logger.error(f"[COMPLETION_COMMIT] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type} - {commit_error}", exc_info=True)
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Completion status commit FAILED after {commit_duration:.3f}s: {error_type}", file=sys.stderr, flush=True)
+                    if session:
+                        try:
+                            session.rollback()
+                        except:
+                            pass
                     raise
                 break  # Success - exit retry loop
             except (OperationalError, DisconnectionError) as commit_error:
@@ -3384,6 +3426,11 @@ async def run_generation_async(
                 break
         
         # Get all artifacts for completion event - use retry logic for connection errors
+        # OPTIMIZATION: Recreate session if needed (it may have been closed or failed)
+        if session is None or not session.is_active:
+            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for artifacts query")
+            session = SessionLocal()
+        
         artifacts = []
         max_artifacts_retries = 3
         artifacts_retry_delay = 0.5
@@ -3398,7 +3445,8 @@ async def run_generation_async(
                     artifacts_retry_delay *= 2  # Exponential backoff
                     # Use new session for retry
                     try:
-                        session.close()
+                        if session:
+                            session.close()
                     except:
                         pass
                     session = SessionLocal()
@@ -3433,9 +3481,20 @@ async def run_generation_async(
             **artifact_content  # Include all artifact content
         })
         
-        # Increment usage
-        for content_type in content_types:
-            policy.increment_usage(content_type)
+        # Increment usage - recreate policy if needed (session was closed earlier)
+        if session is None or not session.is_active:
+            logger.info(f"[SESSION_MGMT] Job {job_id}: Recreating session for usage increment")
+            session = SessionLocal()
+            user = session.query(User).filter(User.id == user_id).first()
+            if user:
+                policy = PlanPolicy(session, user)
+        
+        if policy:
+            try:
+                for content_type in content_types:
+                    policy.increment_usage(content_type)
+            except Exception as usage_error:
+                logger.warning(f"Job {job_id}: Failed to increment usage: {usage_error}")
         
         total_duration = time.time() - llm_start_time
         logger.info(f"[JOB_COMPLETE] Job {job_id}: Completed successfully in {total_duration:.2f}s")
