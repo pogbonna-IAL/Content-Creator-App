@@ -1195,8 +1195,35 @@ async def stream_job_progress(
                     if job.status != last_status:
                         event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
                         
+                        # CRITICAL FIX: For COMPLETED status, check SSE store first before sending basic status update
+                        # This prevents sending an empty complete event when a complete event with content already exists
+                        if job.status == JobStatus.COMPLETED.value:
+                            complete_events_from_store = sse_store.get_events_since(job_id, 0)
+                            complete_event_with_content = None
+                            for event in complete_events_from_store:
+                                if event.get('type') == 'complete':
+                                    event_data = event.get('data', {})
+                                    if event_data.get('audio_content') or event_data.get('content') or event_data.get('social_media_content') or event_data.get('video_content'):
+                                        complete_event_with_content = event
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Found complete event with content in SSE store (ID: {event.get('id')}), skipping basic status update")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Found complete event with content, skipping basic status update", file=sys.stdout, flush=True)
+                                        break
+                            
+                            if complete_event_with_content:
+                                # Don't send basic status update - the complete event handler below will send the full event
+                                last_status = job.status
+                            else:
+                                # No complete event with content yet, send basic status update
+                                event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
+                                event_id = sse_store.add_event(job_id, event_type, event_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: {event_type}\n"
+                                yield f"data: {json.dumps(event_data)}\n\n"
+                                flush_buffers()
+                                last_sent_event_id = max(last_sent_event_id, event_id)
+                                last_status = job.status
                         # If job failed, get the actual error details from SSE store
-                        if job.status == JobStatus.FAILED.value:
+                        elif job.status == JobStatus.FAILED.value:
                             # Get recent error events from SSE store
                             recent_events = sse_store.get_events_since(job_id, 0)  # Get all events
                             error_events = [e for e in recent_events if e.get('type') == 'error']
@@ -1215,17 +1242,51 @@ async def stream_job_progress(
                                 # No error event found, create generic one
                                 event_data = {'type': 'error', 'job_id': job_id, 'status': job.status, 'message': 'Job failed but no error details available. Check backend logs for details.'}
                                 event_id = sse_store.add_event(job_id, 'error', event_data)
+                            
+                            yield f"id: {event_id}\n"
+                            yield f"event: {event_type}\n"
+                            yield f"data: {json.dumps(event_data)}\n\n"
+                            flush_buffers()  # Flush status change events immediately
+                            last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
+                            last_status = job.status
+                        elif job.status == JobStatus.COMPLETED.value:
+                            # For completed status, check if complete event with content already exists in SSE store
+                            # If it does, skip sending a basic status update and let the complete event handler send it
+                            complete_events_from_store = sse_store.get_events_since(job_id, 0)
+                            complete_event_with_content = None
+                            for event in complete_events_from_store:
+                                if event.get('type') == 'complete':
+                                    event_data = event.get('data', {})
+                                    if event_data.get('audio_content') or event_data.get('content') or event_data.get('social_media_content') or event_data.get('video_content'):
+                                        complete_event_with_content = event
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Complete event with content already exists in SSE store (ID: {event.get('id')}), skipping basic status update")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Complete event with content already exists, skipping basic status update", file=sys.stdout, flush=True)
+                                        break
+                            
+                            if complete_event_with_content:
+                                # Don't send a basic status update - the complete event handler will send the full event
+                                last_status = job.status
+                            else:
+                                # No complete event with content yet, send basic status update
+                                event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
+                                event_id = sse_store.add_event(job_id, event_type, event_data)
+                                yield f"id: {event_id}\n"
+                                yield f"event: {event_type}\n"
+                                yield f"data: {json.dumps(event_data)}\n\n"
+                                flush_buffers()
+                                last_sent_event_id = max(last_sent_event_id, event_id)
+                                last_status = job.status
                         else:
                             # For other status changes, create standard event
                             event_data = {'type': event_type, 'job_id': job_id, 'status': job.status}
                             event_id = sse_store.add_event(job_id, event_type, event_data)
-                        
-                        yield f"id: {event_id}\n"
-                        yield f"event: {event_type}\n"
-                        yield f"data: {json.dumps(event_data)}\n\n"
-                        flush_buffers()  # Flush status change events immediately
-                        last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
-                        last_status = job.status
+                            
+                            yield f"id: {event_id}\n"
+                            yield f"event: {event_type}\n"
+                            yield f"data: {json.dumps(event_data)}\n\n"
+                            flush_buffers()  # Flush status change events immediately
+                            last_sent_event_id = max(last_sent_event_id, event_id)  # Update last sent event ID
+                            last_status = job.status
                         
                         # If completed or failed, send final event and exit
                         if job.status in [JobStatus.COMPLETED.value, JobStatus.FAILED.value]:
