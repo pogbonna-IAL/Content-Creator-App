@@ -20,6 +20,7 @@ class ContentCache:
         """
         self.cache: Dict[str, Dict] = {}
         self.default_ttl = default_ttl
+        self.access_count: Dict[str, int] = {}  # Track access frequency for cache warming
     
     def get_cache_key(self, topic: str, content_types: list = None, prompt_version: str = None, model: str = None, moderation_version: str = None) -> str:
         """
@@ -96,6 +97,9 @@ class ContentCache:
         # Cache hit
         if increment_counter:
             increment_counter("cache_hits_total")
+        
+        # OPTIMIZATION: Track access frequency for cache warming
+        self.access_count[key] = self.access_count.get(key, 0) + 1
         
         # Return cached content (without expiration metadata)
         return {
@@ -178,6 +182,24 @@ class ContentCache:
             'total_entries': len(self.cache),
             'default_ttl': self.default_ttl
         }
+    
+    def get_popular_topics(self, limit: int = 10) -> list:
+        """
+        Get most frequently accessed cache keys for cache warming
+        
+        Args:
+            limit: Maximum number of popular topics to return
+            
+        Returns:
+            List of cache keys sorted by access frequency
+        """
+        # Sort by access count (descending) and return top N keys
+        sorted_keys = sorted(
+            self.access_count.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:limit]
+        return [key for key, _ in sorted_keys]
 
 
 # Global cache instance

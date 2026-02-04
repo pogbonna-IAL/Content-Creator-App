@@ -3,7 +3,7 @@ Content Service - Manages ContentJob and ContentArtifact persistence
 """
 import logging
 import hashlib
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from typing import Optional, List, Dict
 from fastapi import HTTPException, status
@@ -137,12 +137,24 @@ class ContentService:
         logger.info(f"Created job {job.id} for user {self.user.id}, topic: {topic}")
         return job
     
-    def get_job(self, job_id: int) -> Optional[ContentJob]:
-        """Get job by ID (only if user has access)"""
-        job = self.db.query(ContentJob).filter(
+    def get_job(self, job_id: int, load_artifacts: bool = False) -> Optional[ContentJob]:
+        """
+        Get job by ID (only if user has access)
+        
+        Args:
+            job_id: Job ID
+            load_artifacts: If True, eagerly load artifacts using joinedload (OPTIMIZATION #4)
+        """
+        query = self.db.query(ContentJob).filter(
             ContentJob.id == job_id,
             ContentJob.user_id == self.user.id
-        ).first()
+        )
+        
+        # OPTIMIZATION #4: Use joinedload to fetch artifacts in same query
+        if load_artifacts:
+            query = query.options(joinedload(ContentJob.artifacts))
+        
+        job = query.first()
         return job
     
     def list_jobs(

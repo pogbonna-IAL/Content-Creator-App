@@ -264,6 +264,27 @@ async def lifespan(app):
     migration_thread = threading.Thread(target=run_migrations, daemon=True)
     migration_thread.start()
     
+    # OPTIMIZATION #7: Pre-warm TTS models to reduce first-request latency
+    async def prewarm_tts_models():
+        """Pre-load TTS models to reduce first-request latency"""
+        try:
+            from content_creation_crew.services.tts_provider import get_tts_provider
+            tts_provider = get_tts_provider()
+            if tts_provider and tts_provider.is_available():
+                # Synthesize a small test phrase to load model into memory
+                test_text = "Hello, this is a test."
+                try:
+                    logger.info("Pre-warming TTS models...")
+                    tts_provider.synthesize(test_text, voice_id="default", format="wav")
+                    logger.info("✓ TTS models pre-warmed successfully")
+                except Exception as e:
+                    logger.warning(f"TTS pre-warming failed: {e}")
+        except Exception as e:
+            logger.warning(f"Could not pre-warm TTS: {e}")
+    
+    # Pre-warm TTS models in background (non-blocking)
+    asyncio.create_task(prewarm_tts_models())
+    
     # Yield immediately - app can now respond to health checks
     yield  # Application runs here
     

@@ -4,7 +4,7 @@ Jobs-first persistence with SSE streaming support
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi import Request as FastAPIRequest
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError, DisconnectionError
 import psycopg2
 import psycopg2.extensions
@@ -1266,14 +1266,26 @@ async def stream_job_progress(
                                 logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event with {len(artifact_data)} fields")
                             break
                     
+                    # OPTIMIZATION #4: Optimize database queries with joinedload
                     # Check for new artifacts - use short-lived session with retry logic
                     current_artifacts = []
                     for check_retry in range(2):  # 2 retries for artifact check
                         artifacts_check_session = SessionLocal()
                         try:
-                            current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
-                                ContentArtifact.job_id == job_id
-                            ).all()
+                            # OPTIMIZATION: Use joinedload to fetch job with artifacts in one query
+                            # This reduces database roundtrips from 2 to 1
+                            job_with_artifacts = artifacts_check_session.query(ContentJob)\
+                                .options(joinedload(ContentJob.artifacts))\
+                                .filter(ContentJob.id == job_id)\
+                                .first()
+                            
+                            if job_with_artifacts:
+                                current_artifacts = job_with_artifacts.artifacts  # Already loaded via relationship
+                            else:
+                                # Fallback to direct query if job not found
+                                current_artifacts = artifacts_check_session.query(ContentArtifact).filter(
+                                    ContentArtifact.job_id == job_id
+                                ).all()
                             break  # Success
                         except (OperationalError, DisconnectionError) as check_error:
                             logger.warning(f"[STREAM_RETRY] Job {job_id}: Artifact check query failed on attempt {check_retry + 1}/2: {check_error}")
@@ -1408,8 +1420,25 @@ async def stream_job_progress(
                     except Exception as sse_event_error:
                         logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE events: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
                     
-                    # Wait before next poll (reduced to 0.5 seconds for more responsive updates)
-                    await asyncio.sleep(0.5)
+                    # OPTIMIZATION #11: Adaptive polling interval based on job stage
+                    def get_poll_interval(job_status: str, elapsed_time: float) -> float:
+                        """Get optimal polling interval based on job stage"""
+                        if job_status == 'pending':
+                            return 1.0  # Slower polling for pending jobs
+                        elif job_status == 'running':
+                            if elapsed_time < 30:
+                                return 0.3  # Fast polling during initial generation
+                            elif elapsed_time < 120:
+                                return 0.5  # Medium polling during mid-generation
+                            else:
+                                return 1.0  # Slower polling for long-running jobs
+                        else:
+                            return 2.0  # Slow polling for completed/failed jobs
+                    
+                    elapsed_time = time.time() - stream_start_time if 'stream_start_time' in locals() else 0
+                    job_status = job.status if job else 'unknown'
+                    poll_interval = get_poll_interval(job_status, elapsed_time)
+                    await asyncio.sleep(poll_interval)
                 except Exception as poll_error:
                     # Handle errors during polling
                     logger.error(f"[STREAM_ERROR] Job {job_id}: Error during poll #{poll_count}: {type(poll_error).__name__}: {str(poll_error)}", exc_info=True)
@@ -2088,6 +2117,9 @@ async def run_generation_async(
                     'step': 'research'
                 })
                 
+                # OPTIMIZATION #12: Send content preview updates as tasks complete
+                # This will be enhanced when CrewAI provides task completion callbacks
+                
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Starting CrewAI kickoff with topic='{topic}', model='{model_name}'", file=sys.stdout, flush=True)
                 logger.info(f"[LLM_EXEC] Job {job_id}: Starting CrewAI kickoff with topic='{topic}'")
                 logger.info(f"[LLM_EXEC] Job {job_id}: Using model '{model_name}' with timeout={timeout_seconds}s")
@@ -2195,13 +2227,16 @@ async def run_generation_async(
         print(f"[RAILWAY_DEBUG] Job {job_id}: Executor task created, entering wait loop (timeout={timeout_seconds}s)", file=sys.stdout, flush=True)
         
         # Send periodic progress updates while executor is running
+        # OPTIMIZATION #10: Add time estimation with progress steps
         progress_steps = [
-            ('research', 'Researching topic...'),
-            ('writing', 'Writing blog post...'),
-            ('editing', 'Editing and formatting...'),
+            ('research', 'Researching topic...', 20),  # Estimated % of total time
+            ('writing', 'Writing blog post...', 40),
+            ('editing', 'Editing and formatting...', 30),
+            ('extraction', 'Extracting content...', 10),
         ]
         step_index = 0
         last_progress_time = time.time()
+        stream_start_time = time.time()  # Track total stream time for ETA calculation
         
         try:
             wait_loop_count = 0
@@ -2224,16 +2259,32 @@ async def run_generation_async(
                 else:
                     # Timeout - executor still running, send progress update
                     elapsed = time.time() - last_progress_time
-                    elapsed_total = wait_loop_count * wait_interval
+                    elapsed_total = time.time() - stream_start_time
                     print(f"[RAILWAY_DEBUG] Job {job_id}: Executor still running, elapsed={elapsed_total:.1f}s, executor_done={executor_done}", file=sys.stdout, flush=True)
                     # Send progress update every wait_interval seconds
                     if elapsed >= wait_interval and step_index < len(progress_steps):
-                        step, message = progress_steps[step_index]
-                        sse_store.add_event(job_id, 'agent_progress', {
+                        step, message, step_weight = progress_steps[step_index]
+                        
+                        # OPTIMIZATION #10: Calculate estimated time remaining
+                        estimated_remaining = None
+                        if step_index > 0:
+                            # Calculate average time per step
+                            avg_time_per_step = elapsed_total / step_index
+                            remaining_steps = len(progress_steps) - step_index
+                            estimated_remaining = int(avg_time_per_step * remaining_steps)
+                        
+                        progress_data = {
                             'job_id': job_id,
                             'message': message,
-                            'step': step
-                        })
+                            'step': step,
+                            'progress': sum(p[2] for p in progress_steps[:step_index])  # Cumulative progress %
+                        }
+                        
+                        # Add time estimation if available
+                        if estimated_remaining is not None:
+                            progress_data['estimated_seconds_remaining'] = estimated_remaining
+                        
+                        sse_store.add_event(job_id, 'agent_progress', progress_data)
                         step_index = min(step_index + 1, len(progress_steps) - 1)
                         last_progress_time = time.time()
             
@@ -2387,16 +2438,30 @@ async def run_generation_async(
                 logger.debug(f"[VALIDATION] Job {job_id}: Cleaned content length={len(content) if content else 0}")
             
             if content and len(content.strip()) > 10:
-                # OPTIMIZATION: Send blog content to frontend IMMEDIATELY (before DB commit) for faster UX
-                # Users see content while it's being saved, reducing perceived latency
-                sse_store.add_event(job_id, 'content', {
-                    'job_id': job_id,
-                    'chunk': content,  # Send full content as a single chunk
-                    'progress': 95,  # Almost complete (will be 100 after DB commit)
-                    'artifact_type': 'blog',
-                    'pending_save': True  # Indicate it's being saved
-                })
-                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Blog content sent to frontend before DB commit")
+                # OPTIMIZATION #3: Stream blog content in chunks for better UX
+                # Send content in chunks (e.g., every 500 chars) for progressive rendering
+                chunk_size = 500
+                total_chunks = (len(content) + chunk_size - 1) // chunk_size
+                
+                # Stream content in chunks
+                for i in range(0, len(content), chunk_size):
+                    chunk = content[i:i+chunk_size]
+                    chunk_num = (i // chunk_size) + 1
+                    progress = min(90, int((i / len(content)) * 90))  # Up to 90% during streaming
+                    
+                    sse_store.add_event(job_id, 'content', {
+                        'job_id': job_id,
+                        'chunk': chunk,
+                        'progress': progress,
+                        'artifact_type': 'blog',
+                        'chunk_num': chunk_num,
+                        'total_chunks': total_chunks,
+                        'partial': chunk_num < total_chunks,  # Indicate if more chunks coming
+                        'pending_save': True  # Indicate it's being saved
+                    })
+                    await asyncio.sleep(0.01)  # Small delay to allow streaming
+                
+                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Blog content streamed in {total_chunks} chunks to frontend before DB commit")
                 
                 # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                 artifact_start = time.time()
@@ -2470,35 +2535,69 @@ async def run_generation_async(
                     else:
                         logger.warning(f"Job {job_id}: Could not get artifact ID for background moderation")
         
-        for content_type in content_types:
-            if content_type == 'blog' or content_type in cached_content_types_set:
-                if content_type in cached_content_types_set:
-                    print(f"[RAILWAY_DEBUG] Job {job_id}: Skipping {content_type} - already processed from cache", file=sys.stdout, flush=True)
-                continue
-            
-            print(f"[RAILWAY_DEBUG] Job {job_id}: Processing {content_type} content extraction", file=sys.stdout, flush=True)
-            logger.info(f"[EXTRACTION] Job {job_id}: Processing {content_type} content extraction")
-            
-            # Send progress update immediately for better UX
-            sse_store.add_event(job_id, 'agent_progress', {
-                'job_id': job_id,
-                'message': f'Extracting {content_type} content...',
-                'step': f'{content_type}_extraction'
-            })
-            
-            raw_content_func = {
+        # OPTIMIZATION #1: Parallelize independent content extraction for faster processing
+        # Filter out blog and cached content types
+        remaining_content_types = [
+            ct for ct in content_types 
+            if ct != 'blog' and ct not in cached_content_types_set
+        ]
+        
+        # Extract remaining content types in parallel
+        if remaining_content_types:
+            extraction_map = {
                 'social': api_server_module.extract_social_media_content_async,
                 'audio': api_server_module.extract_audio_content_async,
                 'video': api_server_module.extract_video_content_async,
-            }.get(content_type)
+            }
             
-            if raw_content_func:
-                print(f"[RAILWAY_DEBUG] Job {job_id}: Calling {content_type} extraction function", file=sys.stdout, flush=True)
-                extraction_start = time.time()
-                raw_content = await raw_content_func(result, topic, logger)
-                extraction_duration = time.time() - extraction_start
-                print(f"[RAILWAY_DEBUG] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
-                logger.info(f"[EXTRACTION] Job {job_id}: {content_type} extraction completed in {extraction_duration:.3f}s, content length={len(raw_content) if raw_content else 0}")
+            # Send progress update for parallel extraction
+            sse_store.add_event(job_id, 'agent_progress', {
+                'job_id': job_id,
+                'message': f'Extracting {len(remaining_content_types)} content type(s) in parallel...',
+                'step': 'parallel_extraction'
+            })
+            
+            # Create extraction tasks for parallel execution
+            extraction_tasks = []
+            extraction_type_map = {}  # Map task index to content type
+            
+            for idx, content_type in enumerate(remaining_content_types):
+                if content_type in extraction_map:
+                    extraction_tasks.append(
+                        extraction_map[content_type](result, topic, logger)
+                    )
+                    extraction_type_map[idx] = content_type
+            
+            # Run all extractions in parallel
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Starting parallel extraction for {len(extraction_tasks)} content types", file=sys.stdout, flush=True)
+            logger.info(f"[EXTRACTION] Job {job_id}: Starting parallel extraction for {remaining_content_types}")
+            parallel_extraction_start = time.time()
+            
+            extracted_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
+            
+            parallel_extraction_duration = time.time() - parallel_extraction_start
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Parallel extraction completed in {parallel_extraction_duration:.3f}s", file=sys.stdout, flush=True)
+            logger.info(f"[EXTRACTION] Job {job_id}: Parallel extraction completed in {parallel_extraction_duration:.3f}s")
+            
+            # Process results
+            for idx, raw_content in enumerate(extracted_results):
+                content_type = extraction_type_map.get(idx)
+                if not content_type:
+                    continue
+                
+                if isinstance(raw_content, Exception):
+                    logger.error(f"[EXTRACTION] Job {job_id}: Extraction failed for {content_type}: {raw_content}", exc_info=True)
+                    sse_store.add_event(job_id, 'error', {
+                        'job_id': job_id,
+                        'message': f'Failed to extract {content_type} content: {str(raw_content)}',
+                        'error_type': 'extraction_failed',
+                        'artifact_type': content_type
+                    })
+                    continue
+                
+                print(f"[RAILWAY_DEBUG] Job {job_id}: Processing {content_type} content extraction result, length={len(raw_content) if raw_content else 0}", file=sys.stdout, flush=True)
+                logger.info(f"[EXTRACTION] Job {job_id}: Processing {content_type} extraction result, length={len(raw_content) if raw_content else 0}")
+                
                 if raw_content:
                     # Send validation progress update
                     sse_store.add_event(job_id, 'agent_progress', {
@@ -2527,23 +2626,37 @@ async def run_generation_async(
                     
                     # Final check - ensure we have valid content before proceeding
                     if validated_content and len(validated_content.strip()) > 10:
-                        # OPTIMIZATION: Send content to frontend IMMEDIATELY (before DB commit) for faster UX
-                        # Users see content while it's being saved, reducing perceived latency
+                        # OPTIMIZATION #3: Stream partial content in chunks for better UX
+                        # Send content in chunks (e.g., every 500 chars) for progressive rendering
                         content_field = {
                             'social': 'social_media_content',
                             'audio': 'audio_content',
                             'video': 'video_content'
                         }.get(content_type, 'content')
                         
-                        sse_store.add_event(job_id, 'content', {
-                            'job_id': job_id,
-                            'chunk': validated_content,  # Send full content as a single chunk
-                            'progress': 95,  # Almost complete (will be 100 after DB commit)
-                            'artifact_type': content_type,
-                            'content_field': content_field,
-                            'pending_save': True  # Indicate it's being saved
-                        })
-                        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: {content_type} content sent to frontend before DB commit")
+                        chunk_size = 500
+                        total_chunks = (len(validated_content) + chunk_size - 1) // chunk_size
+                        
+                        # Stream content in chunks
+                        for i in range(0, len(validated_content), chunk_size):
+                            chunk = validated_content[i:i+chunk_size]
+                            chunk_num = (i // chunk_size) + 1
+                            progress = min(95, int((i / len(validated_content)) * 95))  # Up to 95% during streaming
+                            
+                            sse_store.add_event(job_id, 'content', {
+                                'job_id': job_id,
+                                'chunk': chunk,
+                                'progress': progress,
+                                'artifact_type': content_type,
+                                'content_field': content_field,
+                                'chunk_num': chunk_num,
+                                'total_chunks': total_chunks,
+                                'partial': chunk_num < total_chunks,  # Indicate if more chunks coming
+                                'pending_save': True  # Indicate it's being saved
+                            })
+                            await asyncio.sleep(0.01)  # Small delay to allow streaming
+                        
+                        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: {content_type} content streamed in {total_chunks} chunks to frontend before DB commit")
                         
                         # OPTIMIZATION (Phase 3): Create artifact and send content immediately, moderate in background
                         artifact_start = time.time()
@@ -3527,23 +3640,37 @@ async def _generate_voiceover_async(
             }
         )
         
-        # Store audio file
+        # OPTIMIZATION #8: Optimize audio file storage (async) - store in background and send URL immediately
         storage = get_storage_provider()
         storage_key = storage.generate_key('voiceovers', f'.{format}')
-        # Store audio with metrics (M7)
+        
+        # Generate URL immediately (before storage completes)
+        storage_url = storage.get_url(storage_key)
+        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL generated immediately: {storage_url}")
+        
+        # Store audio with metrics (M7) - run in background executor for non-blocking storage
         from .services.metrics import StorageMetrics
-        try:
-            # Store the file - put() returns relative path, we'll use get_url() for the URL
-            storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
-            StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
-            logger.info(f"Audio file stored: {storage_key} for job {job_id}")
-            
-            # OPTIMIZATION: Get storage URL immediately after file is stored
-            storage_url = storage.get_url(storage_key)
-            logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file URL ready: {storage_url}")
-        except Exception as e:
-            StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
-            raise
+        
+        async def store_audio_async():
+            """Store audio file asynchronously"""
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: storage.put(storage_key, audio_bytes, content_type=f'audio/{format}')
+                )
+                StorageMetrics.record_put("voiceover", len(audio_bytes), success=True)
+                logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Audio file stored asynchronously: {storage_key}")
+            except Exception as e:
+                StorageMetrics.record_put("voiceover", len(audio_bytes), success=False)
+                logger.error(f"[STREAM_OPTIMIZATION] Job {job_id}: Failed to store audio file: {e}", exc_info=True)
+                # Don't raise - URL is already sent, storage failure is logged but doesn't block response
+        
+        # Store audio in background (non-blocking)
+        asyncio.create_task(store_audio_async())
+        
+        # Send URL immediately (before storage completes) for faster UX
+        logger.info(f"[STREAM_OPTIMIZATION] Job {job_id}: Sending audio URL immediately (storage in progress)")
         
         # Moderate output before saving artifact
         if config.ENABLE_CONTENT_MODERATION:

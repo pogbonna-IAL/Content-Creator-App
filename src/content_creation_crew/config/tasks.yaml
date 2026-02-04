@@ -1,15 +1,15 @@
 research_task:
   description: >
-    Research {topic}. Output JSON: {{"intro": "...", "points": [...], "trends": "..."}}. Max 200 words. Be concise.
+    Research {topic}. Output JSON: {{"intro": "...", "points": [...], "trends": "..."}}. Max 150 words.
   expected_output: >
-    Research JSON: intro, 3-5 key points, trends. Ready for writer.
+    JSON: intro, 3-5 points, trends.
   agent: researcher
 
 writing_task:
   description: >
-    Write blog post about {topic} using research. Output JSON: {{"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}}. ~450-500 words total.
+    Write blog post about {topic} using research. Output JSON: {{"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}}. ~400-500 words.
   expected_output: >
-    Blog post JSON: title, intro, 2-3 sections, conclusion. Ready for editing.
+    Blog JSON: title, intro, 2-3 sections, conclusion.
   agent: writer
   context:
     - research_task
@@ -18,7 +18,7 @@ editing_task:
   description: >
     Edit blog post about {topic}. Fix grammar, improve flow. Output ONLY valid JSON: {{"title": "...", "introduction": "...", "sections": [...], "conclusion": "..."}}. No markdown.
   expected_output: >
-    Polished blog post JSON. Grammar fixed, ready to publish.
+    Polished blog JSON. Grammar fixed, ready to publish.
   agent: editor
   context:
     - writing_task
