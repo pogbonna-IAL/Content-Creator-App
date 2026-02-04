@@ -1306,30 +1306,30 @@ async def stream_job_progress(
                             except:
                                 pass
                     
-            # FIX 4: Check SSE store events FIRST and MORE FREQUENTLY to ensure immediate event delivery
-            # This prevents database artifact_ready events from skipping earlier SSE store events
-            # Also ensures tts_started and tts_progress events are delivered immediately
-            try:
-                sse_store_events = sse_store.get_events_since(job_id, last_sent_event_id)
-                if sse_store_events:
-                    logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(sse_store_events)} SSE store events before artifact check, last_sent_event_id={last_sent_event_id}")
-                    for event in sse_store_events:
-                        event_id = event.get('id', 0)
-                        event_type = event.get('type', 'unknown')
-                        if event_id > last_sent_event_id:
-                            logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
-                            yield f"id: {event_id}\n"
-                            yield f"event: {event_type}\n"
-                            yield f"data: {json.dumps(event.get('data', {}))}\n\n"
-                            flush_buffers()
-                            last_sent_event_id = event_id
-                            logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
-                        else:
-                            logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping SSE store event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
-            except Exception as sse_event_error:
-                logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE store events before artifact check: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
-            
-            if current_artifacts and len(current_artifacts) > last_artifact_count:
+                    # FIX 4: Check SSE store events FIRST and MORE FREQUENTLY to ensure immediate event delivery
+                    # This prevents database artifact_ready events from skipping earlier SSE store events
+                    # Also ensures tts_started and tts_progress events are delivered immediately
+                    try:
+                        sse_store_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                        if sse_store_events:
+                            logger.info(f"[STREAM_EVENT_CHECK] Job {job_id}: Found {len(sse_store_events)} SSE store events before artifact check, last_sent_event_id={last_sent_event_id}")
+                            for event in sse_store_events:
+                                event_id = event.get('id', 0)
+                                event_type = event.get('type', 'unknown')
+                                if event_id > last_sent_event_id:
+                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sending SSE store event {event_type} (id: {event_id}, last_sent: {last_sent_event_id})")
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: {event_type}\n"
+                                    yield f"data: {json.dumps(event.get('data', {}))}\n\n"
+                                    flush_buffers()
+                                    last_sent_event_id = event_id
+                                    logger.info(f"[STREAM_EVENT] Job {job_id}: Sent SSE store event {event_type} (id: {event_id})")
+                                else:
+                                    logger.debug(f"[STREAM_EVENT] Job {job_id}: Skipping SSE store event {event_type} (id: {event_id}) - already sent (last_sent: {last_sent_event_id})")
+                    except Exception as sse_event_error:
+                        logger.error(f"[STREAM_ERROR] Job {job_id}: Failed to check SSE store events before artifact check: {type(sse_event_error).__name__}: {str(sse_event_error)}", exc_info=True)
+                    
+                    if current_artifacts and len(current_artifacts) > last_artifact_count:
                 # New artifacts created
                 print(f"[RAILWAY_DEBUG] Job {job_id}: Detected {len(current_artifacts) - last_artifact_count} new artifact(s) in database", file=sys.stdout, flush=True)
                 new_artifacts = current_artifacts[last_artifact_count:]
