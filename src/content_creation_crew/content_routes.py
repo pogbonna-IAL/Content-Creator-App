@@ -1256,7 +1256,34 @@ async def stream_job_progress(
                                         pass
                             logger.info(f"[STREAM_COMPLETE] Job {job_id}: Status changed to {job.status} after {elapsed:.1f}s, total polls={poll_count}, artifacts={artifact_count}")
                             
-                            # Send artifacts if completed
+                            # CRITICAL FIX: Check SSE store FIRST for complete event before building from artifacts
+                            # The complete event from run_generation_async should already be in the SSE store with content
+                            if job.status == JobStatus.COMPLETED.value:
+                                complete_events_from_store = sse_store.get_events_since(job_id, 0)
+                                complete_event_from_store = None
+                                for event in complete_events_from_store:
+                                    if event.get('type') == 'complete':
+                                        complete_event_from_store = event
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Found complete event in SSE store (ID: {event.get('id')})")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Found complete event in SSE store (ID: {event.get('id')})", file=sys.stdout, flush=True)
+                                        break
+                                
+                                # If we found a complete event in SSE store with content, use it instead of building from artifacts
+                                if complete_event_from_store:
+                                    event_data = complete_event_from_store.get('data', {})
+                                    has_content = bool(event_data.get('audio_content') or event_data.get('content') or event_data.get('social_media_content') or event_data.get('video_content'))
+                                    if has_content:
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Using complete event from SSE store (has content)")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Using complete event from SSE store with content", file=sys.stdout, flush=True)
+                                        yield f"id: {complete_event_from_store.get('id')}\n"
+                                        yield f"event: complete\n"
+                                        yield f"data: {json.dumps(event_data)}\n\n"
+                                        flush_buffers()
+                                        last_sent_event_id = max(last_sent_event_id, complete_event_from_store.get('id', 0))
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Sent complete event from SSE store")
+                                        break  # Exit polling loop
+                            
+                            # Send artifacts if completed (fallback if SSE store doesn't have complete event with content)
                             if job.status == JobStatus.COMPLETED.value:
                                 artifacts = []
                                 # Retry logic for artifacts query
@@ -1298,17 +1325,29 @@ async def stream_job_progress(
                                 # Include full content from each artifact type
                                 content_found_in_artifacts = False
                                 if artifacts:
+                                    logger.info(f"[STREAM_COMPLETE] Job {job_id}: Found {len(artifacts)} artifacts, checking content...")
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Found {len(artifacts)} artifacts, checking content...", file=sys.stdout, flush=True)
                                     for artifact in artifacts:
+                                        logger.info(f"[STREAM_COMPLETE] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, content_length={len(artifact.content_text) if artifact.content_text else 0}")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, content_length={len(artifact.content_text) if artifact.content_text else 0}", file=sys.stdout, flush=True)
                                         if artifact.content_text:
                                             content_found_in_artifacts = True
                                             if artifact.type == 'blog':
                                                 artifact_data['content'] = artifact.content_text
+                                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Added blog content to complete event, length={len(artifact.content_text)}")
                                             elif artifact.type == 'social':
                                                 artifact_data['social_media_content'] = artifact.content_text
+                                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Added social content to complete event, length={len(artifact.content_text)}")
                                             elif artifact.type == 'audio':
                                                 artifact_data['audio_content'] = artifact.content_text
+                                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Added audio content to complete event, length={len(artifact.content_text)}")
+                                                print(f"[RAILWAY_DEBUG] Job {job_id}: Added audio_content to artifact_data, length={len(artifact.content_text)}", file=sys.stdout, flush=True)
                                             elif artifact.type == 'video':
                                                 artifact_data['video_content'] = artifact.content_text
+                                                logger.info(f"[STREAM_COMPLETE] Job {job_id}: Added video content to complete event, length={len(artifact.content_text)}")
+                                        else:
+                                            logger.warning(f"[STREAM_COMPLETE] Job {job_id}: Artifact type={artifact.type} has no content_text")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Artifact type={artifact.type} has no content_text", file=sys.stdout, flush=True)
                                         # Handle voiceover_audio artifacts (they have content_json, not content_text)
                                         elif artifact.type == 'voiceover_audio' and artifact.content_json:
                                             logger.info(f"[STREAM_COMPLETE] Job {job_id}: Including voiceover_audio artifact in complete event")
@@ -3565,24 +3604,51 @@ async def run_generation_async(
                 except Exception as close_error:
                     logger.warning(f"[SESSION_MGMT] Job {job_id}: Error closing artifacts session: {close_error}")
         artifact_content = {}
+        logger.info(f"[COMPLETE_EVENT] Job {job_id}: Building complete event from {len(artifacts)} artifacts")
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Building complete event from {len(artifacts)} artifacts", file=sys.stdout, flush=True)
         for artifact in artifacts:
+            logger.info(f"[COMPLETE_EVENT] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, length={len(artifact.content_text) if artifact.content_text else 0}")
+            print(f"[RAILWAY_DEBUG] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, length={len(artifact.content_text) if artifact.content_text else 0}", file=sys.stdout, flush=True)
             if artifact.content_text:
                 if artifact.type == 'blog':
                     artifact_content['content'] = artifact.content_text
+                    logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added blog content, length={len(artifact.content_text)}")
                 elif artifact.type == 'social':
                     artifact_content['social_media_content'] = artifact.content_text
+                    logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added social content, length={len(artifact.content_text)}")
                 elif artifact.type == 'audio':
                     artifact_content['audio_content'] = artifact.content_text
+                    logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added audio_content, length={len(artifact.content_text)}")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Added audio_content to complete event, length={len(artifact.content_text)}", file=sys.stdout, flush=True)
                 elif artifact.type == 'video':
                     artifact_content['video_content'] = artifact.content_text
+                    logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added video content, length={len(artifact.content_text)}")
+            else:
+                logger.warning(f"[COMPLETE_EVENT] Job {job_id}: Artifact type={artifact.type} has no content_text")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Artifact type={artifact.type} has no content_text", file=sys.stdout, flush=True)
+        
+        # Log what content will be included
+        content_summary = {
+            'has_content': 'content' in artifact_content,
+            'content_length': len(artifact_content.get('content', '')),
+            'has_audio': 'audio_content' in artifact_content,
+            'audio_length': len(artifact_content.get('audio_content', '')),
+            'has_social': 'social_media_content' in artifact_content,
+            'has_video': 'video_content' in artifact_content,
+        }
+        logger.info(f"[COMPLETE_EVENT] Job {job_id}: Complete event content summary: {content_summary}")
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Complete event content summary: {content_summary}", file=sys.stdout, flush=True)
         
         # Send completion event with all content
-        sse_store.add_event(job_id, 'complete', {
+        complete_event_data = {
             'job_id': job_id,
             'status': JobStatus.COMPLETED.value,
             'message': 'Content generation completed successfully',
             **artifact_content  # Include all artifact content
-        })
+        }
+        event_id = sse_store.add_event(job_id, 'complete', complete_event_data)
+        logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added complete event to SSE store (ID: {event_id}) with {len(artifact_content)} content fields")
+        print(f"[RAILWAY_DEBUG] Job {job_id}: Added complete event to SSE store (ID: {event_id}) with {len(artifact_content)} content fields", file=sys.stdout, flush=True)
         
         # Increment usage - recreate policy if needed (session was closed earlier)
         usage_session = None
