@@ -3,6 +3,8 @@
  * Formats blog content with Word document-style formatting for titles, headings, sub-headings, and paragraphs
  */
 
+import React from 'react'
+
 interface FormattedElement {
   type: 'title' | 'heading' | 'subheading' | 'paragraph' | 'list' | 'text'
   content: string
@@ -119,7 +121,7 @@ function parseBlogContent(content: string): FormattedElement[] {
 /**
  * Format blog content with Word document-style formatting
  */
-export function formatBlogContent(content: string): JSX.Element {
+export function formatBlogContent(content: string): React.ReactElement {
   if (!content || !content.trim()) {
     return <div className="text-gray-400 italic">No content available</div>
   }
