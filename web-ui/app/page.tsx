@@ -719,7 +719,9 @@ export default function Home() {
                     hasAudio: !!data.audio_content,
                     audioLength: data.audio_content?.length || 0,
                     hasSocial: !!data.social_media_content,
-                    hasVideo: !!data.video_content
+                    hasVideo: !!data.video_content,
+                    hasVoiceoverAudio: !!data.voiceover_audio_url,
+                    voiceoverAudioUrl: data.voiceover_audio_url
                   })
                   
                   // Final content received - ALWAYS use this as it contains the complete content
@@ -728,6 +730,8 @@ export default function Home() {
                   // Use audio_content from completion message, or fallback to accumulated audio content
                   const audioContent = data.audio_content || accumulatedAudioContent || ''
                   const videoContent = data.video_content || ''
+                  // Voiceover audio URL (for audio playback)
+                  const voiceoverAudioUrl = data.voiceover_audio_url || null
                   
                   // Capture job_id if present in completion event
                   if (data.job_id && isMounted) {
@@ -795,8 +799,15 @@ export default function Home() {
                       }
                     }
                     
+                    // Handle voiceover audio URL if available (for audio playback)
+                    if (voiceoverAudioUrl) {
+                      console.log('✓ Voiceover audio URL received:', voiceoverAudioUrl)
+                      // Store voiceover audio URL - AudioPanel will use it if available
+                      // Note: AudioPanel manages its own voiceover state, but we can log it here
+                    }
+                    
                     // Set appropriate status message based on what was generated
-                    if (hasBlogContent || hasSocialContent || hasAudioContent || hasVideoContent) {
+                    if (hasBlogContent || hasSocialContent || hasAudioContent || hasVideoContent || voiceoverAudioUrl) {
                       if (!status || status === '') {
                         setStatus('Content generation complete!')
                       }
@@ -1045,6 +1056,10 @@ export default function Home() {
                 if (data.video_content) {
                   setVideoOutput(data.video_content)
                   console.log('✓ Video content found in final buffer')
+                }
+                if (data.voiceover_audio_url) {
+                  console.log('✓ Voiceover audio URL found in final buffer:', data.voiceover_audio_url)
+                  // AudioPanel manages its own voiceover state, but log for debugging
                 }
                 if (data.content && !hasBlogContent) {
                   setOutput(data.content)

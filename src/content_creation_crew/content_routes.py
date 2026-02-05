@@ -1242,9 +1242,56 @@ async def stream_job_progress(
                                     else:
                                         logger.debug(f"[STREAM_POLL] Job {job_id}: Complete event {event_id} already sent (last_sent={last_sent_event_id}), skipping")
                     
-                    # Exit polling loop if complete event was sent
+                    # CRITICAL FIX: Check for other SSE store events (video rendering, voiceover, etc.) before exiting
+                    # Continue polling for a short time after complete event to catch late events
                     if should_exit_polling:
-                        logger.info(f"[STREAM_POLL] Job {job_id}: Exiting polling loop after sending complete event")
+                        # Check for any other new events (video rendering, voiceover, etc.)
+                        other_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                        if other_events:
+                            logger.info(f"[STREAM_POLL] Job {job_id}: Found {len(other_events)} additional events after complete event, sending them")
+                            print(f"[RAILWAY_DEBUG] Job {job_id}: Found {len(other_events)} additional events, sending them", file=sys.stdout, flush=True)
+                            for event in other_events:
+                                event_id = event.get('id', 0)
+                                event_type = event.get('type', 'unknown')
+                                event_data = event.get('data', {})
+                                if event_id > last_sent_event_id:
+                                    yield f"id: {event_id}\n"
+                                    yield f"event: {event_type}\n"
+                                    yield f"data: {json.dumps(event_data)}\n\n"
+                                    flush_buffers()
+                                    last_sent_event_id = event_id
+                                    logger.info(f"[STREAM_POLL] Job {job_id}: Sent additional event {event_type} (id: {event_id})")
+                                    print(f"[RAILWAY_DEBUG] Job {job_id}: Sent additional event {event_type} (id: {event_id})", file=sys.stdout, flush=True)
+                        
+                        # Continue polling for a short time (5 seconds) to catch any late events
+                        # This ensures video rendering events and voiceover events are captured
+                        logger.info(f"[STREAM_POLL] Job {job_id}: Complete event sent, continuing to poll for 5s to catch late events")
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Continuing to poll for 5s to catch late events", file=sys.stdout, flush=True)
+                        late_event_start_time = time.time()
+                        late_event_timeout = 5.0  # Poll for 5 more seconds
+                        
+                        while time.time() - late_event_start_time < late_event_timeout:
+                            await asyncio.sleep(0.5)  # Poll every 0.5 seconds
+                            
+                            # Check for new events
+                            late_events = sse_store.get_events_since(job_id, last_sent_event_id)
+                            if late_events:
+                                logger.info(f"[STREAM_POLL] Job {job_id}: Found {len(late_events)} late events, sending them")
+                                print(f"[RAILWAY_DEBUG] Job {job_id}: Found {len(late_events)} late events", file=sys.stdout, flush=True)
+                                for event in late_events:
+                                    event_id = event.get('id', 0)
+                                    event_type = event.get('type', 'unknown')
+                                    event_data = event.get('data', {})
+                                    if event_id > last_sent_event_id:
+                                        yield f"id: {event_id}\n"
+                                        yield f"event: {event_type}\n"
+                                        yield f"data: {json.dumps(event_data)}\n\n"
+                                        flush_buffers()
+                                        last_sent_event_id = event_id
+                                        logger.info(f"[STREAM_POLL] Job {job_id}: Sent late event {event_type} (id: {event_id})")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Sent late event {event_type} (id: {event_id})", file=sys.stdout, flush=True)
+                        
+                        logger.info(f"[STREAM_POLL] Job {job_id}: Exiting polling loop after sending complete event and checking for late events")
                         print(f"[RAILWAY_DEBUG] Job {job_id}: Exiting polling loop after sending complete event", file=sys.stdout, flush=True)
                         break
                     
@@ -3762,6 +3809,7 @@ async def run_generation_async(
         for artifact in artifacts:
             logger.info(f"[COMPLETE_EVENT] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, length={len(artifact.content_text) if artifact.content_text else 0}")
             print(f"[RAILWAY_DEBUG] Job {job_id}: Artifact type={artifact.type}, has content_text={bool(artifact.content_text)}, length={len(artifact.content_text) if artifact.content_text else 0}", file=sys.stdout, flush=True)
+            # Handle artifacts with content_text (blog, social, audio, video)
             if artifact.content_text:
                 if artifact.type == 'blog':
                     artifact_content['content'] = artifact.content_text
@@ -3776,9 +3824,36 @@ async def run_generation_async(
                 elif artifact.type == 'video':
                     artifact_content['video_content'] = artifact.content_text
                     logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added video content, length={len(artifact.content_text)}")
+            # Handle voiceover_audio artifacts (they use content_json, not content_text)
+            elif artifact.type == 'voiceover_audio' and artifact.content_json:
+                # Extract audio URL from content_json
+                storage_key = artifact.content_json.get('storage_key') or artifact.content_json.get('mp3_storage_key')
+                storage_url = artifact.content_json.get('storage_url') or artifact.content_json.get('mp3_storage_url') or artifact.content_json.get('mp3_url')
+                
+                # If no URL in JSON, generate from storage_key
+                if not storage_url and storage_key:
+                    try:
+                        from .services.storage_provider import get_storage_provider
+                        storage = get_storage_provider()
+                        storage_url = storage.get_url(storage_key)
+                    except Exception as url_error:
+                        logger.warning(f"[COMPLETE_EVENT] Job {job_id}: Failed to get voiceover URL from storage_key: {url_error}")
+                
+                # Prefer MP3 URL if available, fallback to WAV
+                mp3_url = artifact.content_json.get('mp3_storage_url') or artifact.content_json.get('mp3_url')
+                preferred_url = mp3_url if mp3_url else storage_url
+                
+                if preferred_url:
+                    artifact_content['voiceover_audio_url'] = preferred_url
+                    artifact_content['voiceover_audio_metadata'] = artifact.content_json
+                    logger.info(f"[COMPLETE_EVENT] Job {job_id}: Added voiceover_audio URL: {preferred_url}")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: Added voiceover_audio URL to complete event: {preferred_url}", file=sys.stdout, flush=True)
+                else:
+                    logger.warning(f"[COMPLETE_EVENT] Job {job_id}: voiceover_audio artifact has no storage_url or storage_key")
+                    print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - voiceover_audio artifact has no URL", file=sys.stderr, flush=True)
             else:
-                logger.warning(f"[COMPLETE_EVENT] Job {job_id}: Artifact type={artifact.type} has no content_text")
-                print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Artifact type={artifact.type} has no content_text", file=sys.stdout, flush=True)
+                logger.warning(f"[COMPLETE_EVENT] Job {job_id}: Artifact type={artifact.type} has no content_text or content_json")
+                print(f"[RAILWAY_DEBUG] Job {job_id}: WARNING - Artifact type={artifact.type} has no content_text or content_json", file=sys.stdout, flush=True)
         
         # Log what content will be included
         content_summary = {
@@ -3788,6 +3863,8 @@ async def run_generation_async(
             'audio_length': len(artifact_content.get('audio_content', '')),
             'has_social': 'social_media_content' in artifact_content,
             'has_video': 'video_content' in artifact_content,
+            'has_voiceover_audio': 'voiceover_audio_url' in artifact_content,
+            'voiceover_audio_url': artifact_content.get('voiceover_audio_url'),
         }
         logger.info(f"[COMPLETE_EVENT] Job {job_id}: Complete event content summary: {content_summary}")
         print(f"[RAILWAY_DEBUG] Job {job_id}: Complete event content summary: {content_summary}", file=sys.stdout, flush=True)
