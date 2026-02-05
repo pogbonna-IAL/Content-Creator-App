@@ -3274,6 +3274,7 @@ async def run_generation_async(
                             progress = min(95, int((i / len(validated_content)) * 95))  # Up to 95% during streaming
                             
                             sse_store.add_event(job_id, 'content', {
+                                'type': 'content',  # CRITICAL: Frontend checks data.type
                                 'job_id': job_id,
                                 'chunk': chunk,
                                 'progress': progress,
@@ -5218,6 +5219,7 @@ async def _render_video_async(
             job_id,
             'video_render_started',
             {
+                'type': 'video_render_started',  # CRITICAL: Frontend checks data.type
                 'job_id': job_id,
                 'renderer': renderer,
                 'resolution': resolution,
@@ -5252,6 +5254,7 @@ async def _render_video_async(
                 job_id,
                 'scene_started',
                 {
+                    'type': 'scene_started',  # CRITICAL: Frontend checks data.type
                     'job_id': job_id,
                     'scene_index': idx,
                     'scene_title': scene.get('title', f'Scene {idx + 1}')
@@ -5266,6 +5269,7 @@ async def _render_video_async(
                 job_id,
                 'scene_completed',
                 {
+                    'type': 'scene_completed',  # CRITICAL: Frontend checks data.type
                     'job_id': job_id,
                     'scene_index': idx,
                     'scene_title': scene.get('title', f'Scene {idx + 1}')
@@ -5387,6 +5391,7 @@ async def _render_video_async(
             job_id,
             'artifact_ready',
             {
+                'type': 'artifact_ready',  # CRITICAL: Frontend checks data.type
                 'job_id': job_id,
                 'artifact_type': 'final_video',
                 'artifact_id': artifact.id,
@@ -5399,6 +5404,7 @@ async def _render_video_async(
             job_id,
             'video_render_completed',
             {
+                'type': 'video_render_completed',  # CRITICAL: Frontend checks data.type
                 'job_id': job_id,
                 'artifact_id': artifact.id,
                 'duration_sec': metadata.get('duration_sec'),
@@ -5423,6 +5429,7 @@ async def _render_video_async(
             job_id,
             'video_render_failed',
             {
+                'type': 'video_render_failed',  # CRITICAL: Frontend checks data.type
                 'job_id': job_id,
                 'message': error_message,
                 'error_type': type(e).__name__
