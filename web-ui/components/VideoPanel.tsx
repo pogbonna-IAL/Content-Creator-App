@@ -53,9 +53,9 @@ export default function VideoPanel({ output, isLoading, error, status, progress,
   const [currentScene, setCurrentScene] = useState<{ index: number; title: string } | null>(null)
   const [totalScenes, setTotalScenes] = useState<number>(0)
   
-  // Track video render stream resources for cancellation
-  const [videoRenderReaderRef, setVideoRenderReaderRef] = useState<ReadableStreamDefaultReader<Uint8Array> | null>(null)
-  const [videoRenderAbortControllerRef, setVideoRenderAbortControllerRef] = useState<AbortController | null>(null)
+  // Track video render stream resources for cancellation (use refs to avoid stale closures)
+  const videoRenderReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const videoRenderAbortControllerRef = useRef<AbortController | null>(null)
 
   // Check if video script exists (output is not empty)
   const hasVideoScript = output && output.trim().length > 0
@@ -147,24 +147,24 @@ export default function VideoPanel({ output, isLoading, error, status, progress,
   // Stream video render progress via SSE
   const streamVideoRenderProgress = async (renderJobId: number) => {
     // Clean up any existing stream
-    if (videoRenderReaderRef) {
+    if (videoRenderReaderRef.current) {
       try {
-        await videoRenderReaderRef.cancel().catch(() => {})
-        videoRenderReaderRef.releaseLock()
+        await videoRenderReaderRef.current.cancel().catch(() => {})
+        videoRenderReaderRef.current.releaseLock()
       } catch (e) {
         console.log('Error cleaning up previous video render reader:', e)
       }
-      setVideoRenderReaderRef(null)
+      videoRenderReaderRef.current = null
     }
     
-    if (videoRenderAbortControllerRef) {
-      videoRenderAbortControllerRef.abort()
-      setVideoRenderAbortControllerRef(null)
+    if (videoRenderAbortControllerRef.current) {
+      videoRenderAbortControllerRef.current.abort()
+      videoRenderAbortControllerRef.current = null
     }
 
     // Create new abort controller
     const abortController = new AbortController()
-    setVideoRenderAbortControllerRef(abortController)
+    videoRenderAbortControllerRef.current = abortController
 
     try {
       const streamUrl = getApiUrl(`v1/content/jobs/${renderJobId}/stream`)
@@ -177,12 +177,49 @@ export default function VideoPanel({ output, isLoading, error, status, progress,
 
       console.log('VideoPanel - Starting SSE stream for video render job:', renderJobId)
 
-      const response = await fetch(streamUrl, {
-        method: 'GET',
-        headers,
-        credentials: 'include',
-        signal: abortController.signal,
-      })
+      // Add connection timeout to detect connection issues early
+      let response: Response
+      try {
+        const connectionTimeoutId = setTimeout(() => {
+          if (!response) {
+            console.error('VideoPanel - Connection timeout after 10s, aborting fetch')
+            abortController.abort()
+          }
+        }, 10000)
+
+        response = await fetch(streamUrl, {
+          method: 'GET',
+          headers,
+          credentials: 'include',
+          signal: abortController.signal,
+        })
+        
+        clearTimeout(connectionTimeoutId)
+      } catch (fetchError: any) {
+        // Handle network errors (CORS, connection refused, timeout, etc.)
+        console.error('VideoPanel - Fetch error (network/CORS/timeout):', fetchError)
+        const errorMessage = fetchError.message || 'Network error'
+        const isNetworkError = errorMessage.includes('network') || 
+                              errorMessage.includes('Failed to fetch') ||
+                              errorMessage.includes('CORS') ||
+                              errorMessage.includes('timeout') ||
+                              errorMessage.includes('aborted') ||
+                              fetchError.name === 'TypeError' ||
+                              fetchError.name === 'AbortError'
+        
+        if (isNetworkError) {
+          const detailedError = errorMessage.includes('timeout') || errorMessage.includes('aborted')
+            ? `Connection timeout or aborted. The video rendering service may be slow to respond. Please try again.`
+            : `Network error connecting to video rendering stream. ` +
+              `Please check: 1) Backend is running and accessible, ` +
+              `2) Network connectivity, ` +
+              `3) Try refreshing the page. ` +
+              `URL: ${streamUrl}. ` +
+              `Original error: ${errorMessage}`
+          throw new Error(detailedError)
+        }
+        throw fetchError
+      }
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -194,7 +231,7 @@ export default function VideoPanel({ output, isLoading, error, status, progress,
         throw new Error('No response body reader available')
       }
 
-      setVideoRenderReaderRef(reader)
+      videoRenderReaderRef.current = reader
 
       const decoder = new TextDecoder()
       let buffer = ''
@@ -323,36 +360,66 @@ export default function VideoPanel({ output, isLoading, error, status, progress,
         }
       }
     } catch (err) {
-      console.error('VideoPanel - SSE stream error:', err)
-      setVideoRenderError(err instanceof Error ? err.message : 'Failed to stream video render progress')
-      setIsRenderingVideo(false)
+      // Handle abort errors gracefully (user cancelled or component unmounted)
+      if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'))) {
+        console.log('VideoPanel - Stream aborted (this is normal if user cancelled or component unmounted)')
+        // Don't set error for user-initiated aborts
+        if (!abortController.signal.aborted) {
+          // Only set error if abort wasn't intentional
+          setVideoRenderError('Video rendering stream was interrupted. Please try again.')
+        }
+        setIsRenderingVideo(false)
+      } else {
+        console.error('VideoPanel - SSE stream error:', err)
+        const errorMessage = err instanceof Error ? err.message : 'Failed to stream video render progress'
+        setVideoRenderError(errorMessage)
+        setIsRenderingVideo(false)
+      }
     } finally {
       // Clean up
-      if (videoRenderReaderRef) {
+      if (videoRenderReaderRef.current) {
         try {
-          await videoRenderReaderRef.cancel().catch(() => {})
-          videoRenderReaderRef.releaseLock()
+          await videoRenderReaderRef.current.cancel().catch(() => {})
+          videoRenderReaderRef.current.releaseLock()
         } catch (e) {
           console.log('Error cleaning up video render reader:', e)
         }
-        setVideoRenderReaderRef(null)
+        videoRenderReaderRef.current = null
       }
-      setVideoRenderAbortControllerRef(null)
+      videoRenderAbortControllerRef.current = null
     }
   }
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (videoRenderReaderRef) {
-        videoRenderReaderRef.cancel().catch(() => {})
-        videoRenderReaderRef.releaseLock()
+      // Cleanup using refs (always current values)
+      if (videoRenderReaderRef.current) {
+        try {
+          videoRenderReaderRef.current.cancel().catch(() => {
+            // Ignore errors during cleanup
+          })
+          videoRenderReaderRef.current.releaseLock()
+        } catch (e) {
+          // Ignore errors during cleanup
+          console.debug('Error cleaning up reader on unmount:', e)
+        }
+        videoRenderReaderRef.current = null
       }
-      if (videoRenderAbortControllerRef) {
-        videoRenderAbortControllerRef.abort()
+      if (videoRenderAbortControllerRef.current) {
+        try {
+          // Only abort if not already aborted
+          if (!videoRenderAbortControllerRef.current.signal.aborted) {
+            videoRenderAbortControllerRef.current.abort()
+          }
+        } catch (e) {
+          // Ignore errors during cleanup
+          console.debug('Error aborting controller on unmount:', e)
+        }
+        videoRenderAbortControllerRef.current = null
       }
     }
-  }, [videoRenderReaderRef, videoRenderAbortControllerRef])
+  }, []) // Empty dependency array - only run on mount/unmount
 
   return (
     <div className="glass-effect neon-border rounded-2xl p-6 h-full flex flex-col">
