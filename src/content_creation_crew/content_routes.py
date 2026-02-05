@@ -1191,6 +1191,45 @@ async def stream_job_progress(
                         flush_buffers()  # Flush keep-alive for immediate delivery
                         last_keepalive_time = current_time
                     
+                    # CRITICAL FIX: Check SSE store for complete event on EVERY poll if job is completed
+                    # This handles the case where complete event is added after status changes to COMPLETED
+                    # Use get_events_since(job_id, last_sent_event_id) to get only NEW events to avoid duplicates
+                    should_exit_polling = False
+                    if job.status == JobStatus.COMPLETED.value:
+                        complete_events_from_store = sse_store.get_events_since(job_id, last_sent_event_id)  # Get only new events to avoid duplicates
+                        for event in complete_events_from_store:
+                            if event.get('type') == 'complete':
+                                event_data = event.get('data', {})
+                                has_content = bool(event_data.get('audio_content') or event_data.get('content') or event_data.get('social_media_content') or event_data.get('video_content'))
+                                if has_content:
+                                    event_id = event.get('id', 0)
+                                    # Only send if we haven't already sent this event
+                                    if event_id > last_sent_event_id:
+                                        logger.info(f"[STREAM_POLL] Job {job_id}: Found complete event with content in polling loop (ID: {event_id})")
+                                        print(f"[RAILWAY_DEBUG] Job {job_id}: Found complete event with content in polling loop (ID: {event_id})", file=sys.stdout, flush=True)
+                                        try:
+                                            yield f"id: {event_id}\n"
+                                            yield f"event: complete\n"
+                                            yield f"data: {json.dumps(event_data)}\n\n"
+                                            flush_buffers()
+                                            last_sent_event_id = max(last_sent_event_id, event_id)
+                                            logger.info(f"[STREAM_POLL] Job {job_id}: ✓ Sent complete event from polling loop, event_id={event_id}")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ✓ Sent complete event from polling loop, event_id={event_id}", file=sys.stdout, flush=True)
+                                            should_exit_polling = True  # Mark to exit polling loop
+                                            break  # Exit for loop
+                                        except Exception as yield_error:
+                                            logger.error(f"[STREAM_POLL] Job {job_id}: Error yielding complete event: {yield_error}", exc_info=True)
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ERROR yielding complete event: {type(yield_error).__name__} - {str(yield_error)}", file=sys.stderr, flush=True)
+                                            # Continue polling if yield fails
+                                    else:
+                                        logger.debug(f"[STREAM_POLL] Job {job_id}: Complete event {event_id} already sent (last_sent={last_sent_event_id}), skipping")
+                    
+                    # Exit polling loop if complete event was sent
+                    if should_exit_polling:
+                        logger.info(f"[STREAM_POLL] Job {job_id}: Exiting polling loop after sending complete event")
+                        print(f"[RAILWAY_DEBUG] Job {job_id}: Exiting polling loop after sending complete event", file=sys.stdout, flush=True)
+                        break
+                    
                     # Check for status changes
                     if job.status != last_status:
                         event_type = 'complete' if job.status == JobStatus.COMPLETED.value else 'error' if job.status == JobStatus.FAILED.value else 'status_update'
