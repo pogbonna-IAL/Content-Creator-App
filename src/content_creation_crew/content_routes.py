@@ -1208,13 +1208,31 @@ async def stream_job_progress(
                                         logger.info(f"[STREAM_POLL] Job {job_id}: Found complete event with content in polling loop (ID: {event_id})")
                                         print(f"[RAILWAY_DEBUG] Job {job_id}: Found complete event with content in polling loop (ID: {event_id})", file=sys.stdout, flush=True)
                                         try:
+                                            # Log what we're about to send
+                                            data_json = json.dumps(event_data)
+                                            data_length = len(data_json)
+                                            logger.info(f"[STREAM_POLL] Job {job_id}: About to yield complete event - event_id={event_id}, data_length={data_length}")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: About to yield complete event - event_id={event_id}, data_length={data_length}", file=sys.stdout, flush=True)
+                                            
+                                            # Yield all parts of the SSE event
                                             yield f"id: {event_id}\n"
+                                            logger.debug(f"[STREAM_POLL] Job {job_id}: Yielded id line")
+                                            
                                             yield f"event: complete\n"
-                                            yield f"data: {json.dumps(event_data)}\n\n"
+                                            logger.debug(f"[STREAM_POLL] Job {job_id}: Yielded event line")
+                                            
+                                            yield f"data: {data_json}\n\n"
+                                            logger.debug(f"[STREAM_POLL] Job {job_id}: Yielded data line, length={data_length}")
+                                            
+                                            # CRITICAL: Flush buffers multiple times to ensure data is sent
                                             flush_buffers()
+                                            await asyncio.sleep(0.1)  # Small delay to ensure data is sent before breaking
+                                            flush_buffers()  # Flush again after delay
+                                            
+                                            logger.info(f"[STREAM_POLL] Job {job_id}: ✓ All parts of complete event yielded and flushed, event_id={event_id}")
+                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ✓ All parts of complete event yielded and flushed, event_id={event_id}, data_length={data_length}", file=sys.stdout, flush=True)
+                                            
                                             last_sent_event_id = max(last_sent_event_id, event_id)
-                                            logger.info(f"[STREAM_POLL] Job {job_id}: ✓ Sent complete event from polling loop, event_id={event_id}")
-                                            print(f"[RAILWAY_DEBUG] Job {job_id}: ✓ Sent complete event from polling loop, event_id={event_id}", file=sys.stdout, flush=True)
                                             should_exit_polling = True  # Mark to exit polling loop
                                             break  # Exit for loop
                                         except Exception as yield_error:
@@ -3775,6 +3793,7 @@ async def run_generation_async(
         
         # Send completion event with all content
         complete_event_data = {
+            'type': 'complete',  # CRITICAL: Frontend checks data.type === 'complete'
             'job_id': job_id,
             'status': JobStatus.COMPLETED.value,
             'message': 'Content generation completed successfully',
