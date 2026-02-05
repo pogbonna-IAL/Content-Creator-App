@@ -4736,6 +4736,11 @@ async def _generate_voiceover_async(
         from .services.metrics import StorageMetrics
         storage_start_time = time.time()
         
+        # MP3 conversion for browser compatibility (fallback format)
+        mp3_bytes = None
+        mp3_storage_key = None
+        mp3_storage_url = None
+        
         try:
             logger.info(f"[VOICEOVER_ASYNC] Storing audio file synchronously: {storage_key} ({len(audio_bytes)} bytes)")
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Storing audio file: {storage_key} ({len(audio_bytes)} bytes)", file=sys.stdout, flush=True)
@@ -4753,6 +4758,96 @@ async def _generate_voiceover_async(
             logger.info(f"[VOICEOVER_ASYNC] Audio file stored successfully in {storage_duration:.3f}s: {storage_key}")
             print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Audio file stored successfully in {storage_duration:.3f}s", file=sys.stdout, flush=True)
             sys.stdout.flush()
+            
+            # Convert WAV to MP3 for better browser compatibility (if format is wav)
+            if format == 'wav':
+                try:
+                    logger.info(f"[VOICEOVER_ASYNC] Converting WAV to MP3 for browser compatibility...")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Converting WAV to MP3...", file=sys.stdout, flush=True)
+                    
+                    # Convert WAV to MP3 using pydub (requires ffmpeg)
+                    from pydub import AudioSegment
+                    import io
+                    
+                    # Load WAV from bytes
+                    wav_audio = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+                    
+                    # Export to MP3
+                    mp3_buffer = io.BytesIO()
+                    wav_audio.export(mp3_buffer, format="mp3", bitrate="128k")
+                    mp3_bytes = mp3_buffer.getvalue()
+                    
+                    logger.info(f"[VOICEOVER_ASYNC] MP3 conversion successful: {len(mp3_bytes)} bytes (original WAV: {len(audio_bytes)} bytes)")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] MP3 conversion successful: {len(mp3_bytes)} bytes", file=sys.stdout, flush=True)
+                    
+                    # Store MP3 version
+                    mp3_storage_key = storage.generate_key('voiceovers', '.mp3')
+                    await loop.run_in_executor(
+                        None,
+                        lambda: storage.put(mp3_storage_key, mp3_bytes, content_type='audio/mpeg')
+                    )
+                    
+                    mp3_storage_url = storage.get_url(mp3_storage_key)
+                    StorageMetrics.record_put("voiceover_mp3", len(mp3_bytes), success=True)
+                    
+                    logger.info(f"[VOICEOVER_ASYNC] MP3 file stored: {mp3_storage_key}")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] MP3 file stored: {mp3_storage_key}", file=sys.stdout, flush=True)
+                    sys.stdout.flush()
+                    
+                except ImportError:
+                    logger.warning(f"[VOICEOVER_ASYNC] pydub not available, skipping MP3 conversion")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: pydub not available, skipping MP3 conversion", file=sys.stderr, flush=True)
+                except Exception as mp3_error:
+                    # Don't fail the whole process if MP3 conversion fails
+                    logger.warning(f"[VOICEOVER_ASYNC] MP3 conversion failed (non-fatal): {str(mp3_error)}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: MP3 conversion failed (non-fatal): {str(mp3_error)}", file=sys.stderr, flush=True)
+                    mp3_bytes = None  # Clear on error
+            
+            # Convert WAV to MP3 for better browser compatibility (if format is wav)
+            if format == 'wav':
+                try:
+                    logger.info(f"[VOICEOVER_ASYNC] Converting WAV to MP3 for browser compatibility...")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Converting WAV to MP3...", file=sys.stdout, flush=True)
+                    
+                    # Convert WAV to MP3 using pydub (requires ffmpeg)
+                    from pydub import AudioSegment
+                    import io
+                    
+                    # Load WAV from bytes
+                    wav_audio = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+                    
+                    # Export to MP3
+                    mp3_buffer = io.BytesIO()
+                    wav_audio.export(mp3_buffer, format="mp3", bitrate="128k")
+                    mp3_bytes = mp3_buffer.getvalue()
+                    
+                    logger.info(f"[VOICEOVER_ASYNC] MP3 conversion successful: {len(mp3_bytes)} bytes (original WAV: {len(audio_bytes)} bytes)")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] MP3 conversion successful: {len(mp3_bytes)} bytes", file=sys.stdout, flush=True)
+                    
+                    # Store MP3 version
+                    mp3_storage_key = storage.generate_key('voiceovers', '.mp3')
+                    await loop.run_in_executor(
+                        None,
+                        lambda: storage.put(mp3_storage_key, mp3_bytes, content_type='audio/mpeg')
+                    )
+                    
+                    mp3_storage_url = storage.get_url(mp3_storage_key)
+                    StorageMetrics.record_put("voiceover_mp3", len(mp3_bytes), success=True)
+                    
+                    logger.info(f"[VOICEOVER_ASYNC] MP3 file stored: {mp3_storage_key}")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] MP3 file stored: {mp3_storage_key}", file=sys.stdout, flush=True)
+                    sys.stdout.flush()
+                    
+                except ImportError:
+                    logger.warning(f"[VOICEOVER_ASYNC] pydub not available, skipping MP3 conversion")
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: pydub not available, skipping MP3 conversion", file=sys.stderr, flush=True)
+                except Exception as mp3_error:
+                    # Don't fail the whole process if MP3 conversion fails
+                    logger.warning(f"[VOICEOVER_ASYNC] MP3 conversion failed (non-fatal): {str(mp3_error)}", exc_info=True)
+                    print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] WARNING: MP3 conversion failed (non-fatal): {str(mp3_error)}", file=sys.stderr, flush=True)
+                    mp3_bytes = None  # Clear on error
+                    mp3_storage_key = None
+                    mp3_storage_url = None
             
             # Verify file exists (for local storage) - use same path logic as LocalDiskStorageProvider
             if hasattr(storage, 'base_path'):
@@ -4858,6 +4953,14 @@ async def _generate_voiceover_async(
             'provider': metadata.get('provider', 'piper')
         }
         
+        # Add MP3 format URLs if conversion was successful (for browser compatibility)
+        if mp3_storage_key and mp3_storage_url:
+            artifact_metadata['mp3_storage_key'] = mp3_storage_key
+            artifact_metadata['mp3_storage_url'] = mp3_storage_url
+            artifact_metadata['mp3_url'] = mp3_storage_url  # Alias for frontend compatibility
+            logger.info(f"[VOICEOVER_ASYNC] Added MP3 URLs to artifact metadata for job {job_id}")
+            print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Added MP3 URLs to artifact metadata", file=sys.stdout, flush=True)
+        
         artifact = content_service.create_artifact(
             job_id=job_id,
             artifact_type='voiceover_audio',
@@ -4872,6 +4975,8 @@ async def _generate_voiceover_async(
         logger.info(f"Created voiceover_audio artifact {artifact.id} for job {job_id}")
         
         # Send artifact ready event BEFORE commit with complete metadata
+        # Prefer MP3 URL if available (better browser compatibility), fallback to WAV
+        preferred_url = mp3_storage_url if mp3_storage_url else storage_url
         artifact_ready_event_id = sse_store.add_event(
             job_id,
             'artifact_ready',
@@ -4881,8 +4986,9 @@ async def _generate_voiceover_async(
                 'artifact_type': 'voiceover_audio',
                 'artifact_id': artifact.id,
                 'metadata': artifact_metadata,
-                'url': storage_url,  # Include URL for frontend compatibility
-                'storage_url': storage_url
+                'url': preferred_url,  # Prefer MP3 for browser compatibility
+                'storage_url': storage_url,  # Original WAV URL
+                'mp3_url': mp3_storage_url if mp3_storage_url else None  # MP3 URL if available
             }
         )
         logger.info(f"[VOICEOVER_ASYNC] artifact_ready event sent with ID {artifact_ready_event_id} for job {job_id} (BEFORE commit)")
@@ -4892,6 +4998,8 @@ async def _generate_voiceover_async(
         print(f"[RAILWAY_DEBUG] [VOICEOVER_ASYNC] Sending tts_completed event for job {job_id} (BEFORE commit)", file=sys.stdout, flush=True)
         sys.stdout.flush()
         
+        # Prefer MP3 URL for tts_completed event (better browser compatibility)
+        preferred_completed_url = mp3_storage_url if mp3_storage_url else storage_url
         tts_completed_event_id = sse_store.add_event(
             job_id,
             'tts_completed',
@@ -4900,8 +5008,9 @@ async def _generate_voiceover_async(
                 'job_id': job_id,
                 'artifact_id': artifact.id,
                 'duration_sec': metadata.get('duration_sec'),
-                'storage_url': storage_url,
-                'url': storage_url,  # Also include 'url' field for frontend compatibility
+                'storage_url': storage_url,  # Original WAV URL
+                'url': preferred_completed_url,  # Prefer MP3 for browser compatibility
+                'mp3_url': mp3_storage_url if mp3_storage_url else None,  # MP3 URL if available
                 'saved': True  # Indicate it's now saved
             }
         )

@@ -381,10 +381,12 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
               } else if (data.type === 'artifact_ready' && data.artifact_type === 'voiceover_audio') {
                 setVoiceoverStatus('Voiceover ready!')
                 setVoiceoverProgress(90)
-                // Check both metadata.storage_url and url fields
-                const audioUrl = data.metadata?.storage_url || data.metadata?.url || data.url
+                // Prefer MP3 URL for better browser compatibility, fallback to WAV
+                const audioUrl = data.mp3_url || data.metadata?.mp3_url || data.metadata?.mp3_storage_url || 
+                                data.metadata?.storage_url || data.metadata?.url || data.url
                 if (audioUrl) {
-                  console.log('AudioPanel - Setting audio URL:', audioUrl)
+                  const formatUsed = (data.mp3_url || data.metadata?.mp3_url) ? 'MP3' : 'WAV'
+                  console.log(`AudioPanel - Setting audio URL (${formatUsed}):`, audioUrl)
                   setAudioUrl(audioUrl)
                   setAudioMetadata(data.metadata || {})
                   
@@ -417,9 +419,12 @@ export default function AudioPanel({ output, isLoading, error, status, progress,
                 setVoiceoverStatus('Voiceover generation complete!')
                 setVoiceoverProgress(100)
                 setIsGeneratingVoiceover(false)
-                const audioUrl = data.storage_url || data.url || data.metadata?.storage_url
+                // Prefer MP3 URL for better browser compatibility, fallback to WAV
+                const audioUrl = data.mp3_url || data.metadata?.mp3_url || data.metadata?.mp3_storage_url ||
+                                data.storage_url || data.url || data.metadata?.storage_url
                 if (audioUrl) {
-                  console.log('AudioPanel - Setting audio URL from tts_completed:', audioUrl)
+                  const formatUsed = (data.mp3_url || data.metadata?.mp3_url) ? 'MP3' : 'WAV'
+                  console.log(`AudioPanel - Setting audio URL from tts_completed (${formatUsed}):`, audioUrl)
                   setAudioUrl(audioUrl)
                 }
               } else if (data.type === 'tts_failed') {

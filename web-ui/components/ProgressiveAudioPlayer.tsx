@@ -136,7 +136,7 @@ export default function ProgressiveAudioPlayer({
               errorMsg += 'Format error - audio file cannot be decoded. The file may be corrupted or in an unsupported format.'
               break
             case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-              errorMsg += 'Format not supported - browser cannot play this audio format. Try downloading the file instead.'
+              errorMsg += 'Format not supported - browser cannot play this audio format. The file may need to be converted to MP3 format. Try downloading the file instead.'
               break
             default:
               errorMsg += audio.error.message || 'Unknown error'
