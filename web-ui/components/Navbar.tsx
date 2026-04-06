@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import AboutModal from './AboutModal'
@@ -45,9 +46,14 @@ export default function Navbar({ selectedFeature, onFeatureSelect }: NavbarProps
               className="flex items-center space-x-3 flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
               aria-label="Go to home page"
             >
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center glow-text">
-                <span className="text-2xl font-bold">C</span>
-              </div>
+              <Image
+                src="/logo.png"
+                alt="Content Creator — Create Smarter. Share Faster."
+                width={40}
+                height={40}
+                className="rounded-lg object-contain shrink-0"
+                priority
+              />
               <div>
                 <h1 className="text-xl font-bold text-gradient">Content Creator</h1>
                 <p className="text-xs text-gray-200">AI-Powered Content Generation</p>

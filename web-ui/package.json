@@ -6,7 +6,8 @@
     "dev": "next dev --turbo=false",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "import-brand": "python scripts/import_brand_assets.py"
   },
   "dependencies": {
     "js-cookie": "^3.0.5",

@@ -1,13 +1,6 @@
 /**
- * Script to generate PWA icons from existing icon.svg
- * 
- * Requirements:
- * - Install sharp: npm install --save-dev sharp
- * - Run: node scripts/generate-icons.js
- * 
- * This will generate:
- * - icon-192.png (192x192)
- * - icon-512.png (512x512)
+ * Legacy: generate PWA icons from icon.svg (requires sharp).
+ * Preferred: use brand PNGs — npm run import-brand (see scripts/import_brand_assets.py).
  */
 
 const sharp = require('sharp')
